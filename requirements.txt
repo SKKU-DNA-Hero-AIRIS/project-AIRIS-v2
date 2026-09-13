@@ -1,0 +1,22 @@
+# 시뮬레이터 코어
+numpy>=1.26,<3
+scipy>=1.11
+taichi>=1.7
+pyyaml>=6.0
+
+# 최적화 / 회귀
+cma>=3.3
+scikit-learn>=1.4
+pandas>=2.0
+pyarrow>=15
+
+# 시각화 / 대시보드
+plotly>=5.20
+matplotlib>=3.8
+streamlit>=1.36,<2
+
+# 실시간 포즈 추정 (E 담당, 5주차)
+ultralytics>=8.3,<9
+
+# 테스트
+pytest>=8

@@ -1,0 +1,15 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "airis"
+version = "0.1.0"
+description = "Air-gate posture and nozzle optimization via particle simulation and CMA-ES"
+requires-python = ">=3.10"
+
+[tool.setuptools.packages.find]
+include = ["airis*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

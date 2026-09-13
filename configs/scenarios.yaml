@@ -1,0 +1,37 @@
+# 시나리오별 자세 제약과 페널티. 소유자: B.
+# pose 변수 단위: degree. 범위 밖은 최적화 대상에서 제외.
+
+default:
+  pose_bounds:
+    shoulder_abduction: [0, 150]
+    shoulder_flexion: [-30, 150]
+    elbow_flexion: [0, 140]
+    torso_pitch: [-20, 45]
+    torso_yaw: [-180, 180]
+    hip_flexion: [0, 30]
+  discomfort_weights:
+    shoulder_abduction: 0.3
+    torso_pitch: 0.5
+  fixed_pose: {}
+  nozzle_height_range_m: [0.3, 2.0]
+
+pregnant:
+  inherits: default
+  pose_bounds:
+    torso_pitch: [-10, 15]
+  discomfort_weights:
+    torso_pitch: 2.0
+    shoulder_abduction: 0.6
+  nozzle_strength_cap:
+    torso_front: 0.6
+
+wheelchair:
+  inherits: default
+  fixed_pose:
+    hip_flexion: 90
+    knee_flexion: 90
+  pose_bounds:
+    torso_pitch: [-10, 20]
+    torso_yaw: [-45, 45]
+  seat_height_m: 0.5
+  nozzle_height_range_m: [0.2, 1.5]

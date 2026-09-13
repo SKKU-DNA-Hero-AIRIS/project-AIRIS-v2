@@ -1,0 +1,45 @@
+# 물리 상수 단일 소스. 소유자: B (물리 모델). 변경은 PR로만.
+# 민감도 실험은 이 파일의 값을 기준으로 스윕한다.
+
+jet:
+  nozzle_diameter_m: 0.004        # 3~5 mm (업계 자료)
+  exit_velocity_mps: 25.0         # 에어샤워 표준 풍속
+  potential_core_diameters: 6.0   # 포텐셜 코어 길이 (노즐 지름 배수)
+  decay_constant: 6.7             # 중심 속도 감쇠 상수 (자유 제트 실험식)
+  spread_half_angle_deg: 12.0     # 제트 확산 반각
+  impingement:
+    enabled: true
+    stagnation_radius_factor: 2.0 # 정체 영역 반경 (제트 반지름 배수)
+    wall_jet_start_factor: 2.9    # 벽면 제트 영역 시작
+  pulse:
+    enabled: false
+    period_s: 0.5
+    duty: 0.5
+
+particles:
+  count_per_candidate: 20000
+  size_distribution_um:           # 입자 지름 분포 (로그 정규)
+    median: 20.0
+    sigma_log: 0.6
+  density_kg_m3: 2000.0
+  drag_model: schiller_naumann
+
+adhesion:                         # rock'n'roll 모델 근사
+  critical_shear_pa_median: 0.5
+  critical_shear_sigma_log: 0.8
+  fabric_roughness_factor: 1.0    # 옷감 거칠기 보정 (Keedy 2008 기준 보정 예정)
+  redeposition_prob: 0.05
+
+simulation:
+  duration_s: 3.0
+  dt_s: 0.002
+  seed: 0
+
+scoring:
+  part_weights:
+    torso_front: 1.0
+    torso_back: 1.0
+    arms: 1.0
+    legs: 0.8
+    head: 0.5
+  discomfort_weight: 0.1
