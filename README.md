@@ -37,7 +37,7 @@ configs/
   physics.yaml         # 물리 상수 단일 소스              [B]
   scenarios.yaml       # 시나리오 제약                    [B]
 validation/lbm/        # LBM 검증 파이프라인               [D]
-tests/                 # 정성 검증 테스트 = CI 게이트       [D]
+tests/                 # 정성 검증 테스트 (병합 전 로컬 실행) [D]
 scripts/               # 실행 스크립트                    [C]
 docs/
   interfaces.md        # 인터페이스 계약

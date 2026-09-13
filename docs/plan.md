@@ -44,7 +44,7 @@
 
 ## 협업 규칙
 
-- `main` 보호. 기능 브랜치 → PR → D 리뷰 → CI(pytest) 통과 → 병합.
+- `main` 보호 (직접 push 불가). 기능 브랜치 → PR → D 리뷰 → 병합. 병합 전 로컬에서 `pytest -q` 통과 확인.
 - `configs/physics.yaml`은 B 소유. 다른 사람은 PR로만 수정.
 - 실험은 전부 로그: 실험 ID, 커밋 해시, 설정 해시, 결과 경로. C가 `docs/experiments.md`에 표로 관리.
 - 주 2회 통합 점검 (A+B는 추가로 주 2회 페어).
