@@ -15,7 +15,7 @@
 |---|---|---|---|
 | `BodyParams` | E(포즈 추정), C(샘플링) | B | 체형 5개 값 |
 | `PoseParams` | C(최적화 변수) | B | degree. `to_vector / from_vector` 순서 고정 |
-| `NozzleConfig` | C(최적화 변수) | B, A, D | 위치 (M,3), 방향 (M,3), 세기 (M,) |
+| `NozzleConfig` | B (`configs/nozzles.yaml`) | A, D | 위치 (M,3), 방향 (M,3), 세기 (M,). 고정 입력 |
 | `Scenario` | B (`configs/scenarios.yaml`) | C, A, D | 상속 지원 |
 | `BodyState` | B (`build_body`) | A, D, E | 패치 + 캡슐 |
 | `EvalResult` | A, D | C, E | `score`는 최적화용, 나머지는 분석용 |
@@ -46,9 +46,10 @@
 
 ## 최적화 벡터 인코딩 (C)
 
-- `PoseParams` 중 `scenario.fixed_pose`에 없는 변수 + 노즐 M개 × (높이 z, 방향 yaw, 방향 pitch, 세기) 를 이어붙임.
-- 각 변수는 `pose_bounds` / `nozzle_height_range_m` / [0, 1] 로 [-1, 1] 정규화.
-- 노즐의 x, y 위치는 부스 벽면에 고정 (변수 아님). 높이와 방향만 최적화.
+- `PoseParams` 중 `scenario.fixed_pose`에 없는 변수만 이어붙인다 (기본 7개, 휠체어는 5개).
+- 각 변수는 `pose_bounds`로 [-1, 1] 정규화.
+- 노즐은 `configs/nozzles.yaml`에서 로드한 고정 `NozzleConfig`를 그대로 넘긴다 (변수 아님).
+- README 12절의 노즐 확장을 채택하면 노즐 M개 × (높이 z, yaw, pitch, 세기)가 벡터 뒤에 붙는다. 그 전까지는 구현하지 않는다.
 
 ## 데이터셋 스키마 (C → E)
 
@@ -59,7 +60,7 @@ parquet, 한 행 = 체형 1개 × 시나리오 1개.
 | `body_height_m` … | float | `BodyParams` 필드 전부 |
 | `scenario` | str | |
 | `pose_shoulder_abduction` … | float | 최적 `PoseParams` |
-| `nozzle_0_z`, `nozzle_0_yaw`, … | float | 최적 노즐 벡터 평탄화 |
+| `nozzle_layout_hash` | str | 사용한 고정 노즐 배치의 해시 |
 | `score`, `total_removal`, `discomfort` | float | |
 | `exp_id`, `commit`, `seed` | str/int | 재현용 |
 

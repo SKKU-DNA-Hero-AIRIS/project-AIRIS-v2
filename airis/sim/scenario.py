@@ -39,6 +39,12 @@ def _resolve(name: str, raw: dict) -> Scenario:
     )
 
 
+def load_nozzle_layout(path: Path | None = None) -> dict:
+    """고정 노즐 배치 원본. NozzleConfig로 전개하는 것은 B의 1주차 구현 (jet.py 또는 여기)."""
+    path = path or _ROOT / "configs" / "nozzles.yaml"
+    return yaml.safe_load(path.read_text(encoding="utf-8"))
+
+
 def load_physics(path: Path | None = None) -> dict:
     path = path or _ROOT / "configs" / "physics.yaml"
     return yaml.safe_load(path.read_text(encoding="utf-8"))
