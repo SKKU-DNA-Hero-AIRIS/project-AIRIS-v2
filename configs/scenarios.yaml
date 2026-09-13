@@ -1,4 +1,5 @@
 # 시나리오별 자세 제약과 페널티. 소유자: B.
+# nozzle_height_range_m, nozzle_strength_cap 은 README 12절 노즐 확장용. 현재는 읽기만 하고 쓰지 않는다.
 # pose 변수 단위: degree. 범위 밖은 최적화 대상에서 제외.
 
 default:
