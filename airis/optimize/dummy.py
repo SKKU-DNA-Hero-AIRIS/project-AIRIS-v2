@@ -1,6 +1,6 @@
 """평가기가 없는 동안 최적화 루프를 검증하기 위한 더미. 소유자: C.
 
-D 의 PatchEvaluator 가 병합되면 이 파일은 단위 테스트 전용으로 남는다.
+실제 실행은 --evaluator patch (D 의 PatchEvaluator) 를 쓰고, 이 파일은 루프 단위 테스트 전용이다.
 노즐은 평가에 쓰지 않는다. 실행 스크립트는 configs/nozzles.yaml 의 load_nozzles() 를 넘긴다.
 docs/tracks/C_optimize.md 단계 2.
 """
@@ -11,24 +11,9 @@ import numpy as np
 from airis.sim import (
     PART_NAMES, Evaluator, EvalResult, NozzleConfig, PoseParams, Scenario,
 )
+from airis.sim.scoring import discomfort
 
 from .encoding import PoseEncoder
-
-
-def discomfort(pose: PoseParams, scenario: Scenario, encoder: PoseEncoder | None = None) -> float:
-    """docs/tracks/00_common.md 4.4 의 불편도.
-
-    TODO(D): scoring.py 가 병합되면 그쪽 구현을 import 하고 이 함수를 지운다.
-    """
-    enc = encoder or PoseEncoder(scenario)
-    base = PoseParams()
-    total = 0.0
-    for key, weight in scenario.discomfort_weights.items():
-        if not weight or not hasattr(base, key):
-            continue
-        lo, hi = enc.bounds_for(key)
-        total += float(weight) * abs(getattr(pose, key) - getattr(base, key)) / (hi - lo)
-    return float(total)
 
 
 class DummyEvaluator(Evaluator):
@@ -57,6 +42,6 @@ class DummyEvaluator(Evaluator):
             score=-dist2,
             removal_by_part=np.zeros(len(PART_NAMES), dtype=np.float32),
             total_removal=0.0,
-            discomfort=discomfort(pose, self.scenario, self.encoder),
+            discomfort=discomfort(pose, self.scenario),
             extra={"distance": float(np.sqrt(dist2)), "evaluator": "dummy"},
         )
