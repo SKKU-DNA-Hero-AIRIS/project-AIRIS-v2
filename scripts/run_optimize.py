@@ -108,6 +108,8 @@ def main(argv: list[str] | None = None) -> int:
     print()
     print(f"best_score   {result.best_score:.6f}")
     print(f"평가 횟수    {result.n_evals} ({len(result.history)} 세대)")
+    if result.n_evals:
+        print(f"불가 후보    {result.n_infeasible} ({result.n_infeasible / result.n_evals:.1%})")
     print(f"종료 사유    {result.stop_reason}")
     print(f"소요 시간    {result.elapsed_s:.2f} s")
     print(f"저장 위치    {out}")
