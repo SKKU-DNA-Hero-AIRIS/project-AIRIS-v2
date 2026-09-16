@@ -193,9 +193,10 @@ class PatchEvaluator(Evaluator):
         probe = np.asarray(state.patch_pos, dtype=np.float64) + delta * normal
 
         # 정상 상태 평가라 t = 0. 펄스는 무시한다 (00_common.md 4.1).
-        u_mn = self._velocity_field_per_nozzle(probe, nozzle, 0.0, self.cfg)   # (M,N,3)
-        visible = occlusion(state, nozzle, self.cfg)                           # (M,N)
-        u = (np.asarray(u_mn, dtype=np.float64) * visible[..., None]).sum(axis=0)
+        u_mn = np.asarray(self._velocity_field_per_nozzle(probe, nozzle, 0.0, self.cfg))  # (M,N,3)
+        visible = occlusion(state, nozzle, self.cfg)                                      # (M,N)
+        # 가려진 노즐의 기여를 빼고 합산한다. (M,N,3) 마스크 곱 대신 축약 합으로 한 번에.
+        u = np.einsum("mnk,mn->nk", u_mn, visible.astype(u_mn.dtype)).astype(np.float64)
 
         tau = scoring.wall_shear(u, normal, self.cfg)
         removal = scoring.removal_fraction(tau, self.cfg)

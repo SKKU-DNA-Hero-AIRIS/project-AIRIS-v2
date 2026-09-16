@@ -1,18 +1,20 @@
 """가짜 입력. 소유자: D. 다른 트랙(A, C)도 여기서 import한다.
 
-B의 `build_body` / `load_nozzles` / `velocity_field_per_nozzle`가 병합되기 전까지의
-대체재다 (`docs/tracks/00_common.md` 3절). B 병합 후에도 단위 테스트용으로 남긴다.
+B의 `build_body` / `load_nozzles`가 병합되기 전까지의 대체재였고, B 병합 후에는
+단위 테스트용으로 남긴다 (`docs/tracks/00_common.md` 3절).
 
 제공하는 것
 - `fake_body(arms_up, yaw_deg)`   -> BodyState : 몸통/머리/팔 4개 캡슐, 패치 280개
-- `fake_nozzles()`                -> NozzleConfig : 좌우 벽 × 높이 4단 = 8개
-- `fake_velocity_field_per_nozzle(points, nozzle, t, cfg)` -> (M, P, 3)
-  `00_common.md` 4.1 자유 제트 수식의 최소 구현. B 병합 후 삭제하고
-  `airis.sim.jet.velocity_field_per_nozzle`로 교체한다.
+- `fake_nozzles()`                -> NozzleConfig : 좌우 벽 × 높이 2단 = 4개
+
+`fake_velocity_field_per_nozzle`는 B 병합 후 삭제했다 (D 문서 단계 1).
+제트는 `airis.sim.jet.velocity_field_per_nozzle`를 쓴다.
 
 배열 규약은 `airis/sim/types.py`를 따른다 (위치/방향 float32 (N,3), 부위 ID int32).
 """
 from __future__ import annotations
+
+import functools
 
 import numpy as np
 
@@ -45,10 +47,9 @@ _ARM_GRID = (8, 4)
 _HEAD_GRID = (6, 8)         # (위도 밴드, 경도)
 
 # --- 가짜 노즐 ----------------------------------------------------------------
-# 벽 y, 높이 단, yaw, pitch, 세기는 configs/nozzles.yaml layout에서 읽는다
-# (D는 configs를 수정하지 않는다. 읽기만 한다). x는 D 문서 단계 1대로 부스 중앙.
-
-_GAUSSIAN_HALFWIDTH_TO_SIGMA = 1.177  # 반속도 반경 -> 표준편차 (00_common.md 4.1)
+# 높이는 D 문서 단계 1이 지정한 두 단. 벽 y, yaw, pitch, 세기는 configs/nozzles.yaml
+# layout에서 읽는다 (D는 configs를 수정하지 않는다. 읽기만 한다).
+_NOZZLE_Z_LEVELS_M = (1.0, 1.4)
 
 
 def _unit(v: np.ndarray, axis: int = -1) -> np.ndarray:
@@ -116,8 +117,11 @@ def _rotate_z(v: np.ndarray, yaw_deg: float, center: np.ndarray | None = None) -
     return (v - center) @ rot.T + center
 
 
-def _booth() -> dict:
-    return load_nozzle_layout()["booth"]
+@functools.lru_cache(maxsize=1)
+def _booth_center() -> tuple[float, float, float]:
+    """부스 중앙 바닥점. fake_body가 평가마다 불리므로 YAML은 한 번만 읽는다."""
+    booth = load_nozzle_layout()["booth"]
+    return (float(booth["length_m"]) / 2.0, 0.0, 0.0)
 
 
 def fake_body(arms_up: bool = False, yaw_deg: float = 0.0) -> BodyState:
@@ -126,15 +130,13 @@ def fake_body(arms_up: bool = False, yaw_deg: float = 0.0) -> BodyState:
     - `arms_up=False`: 팔이 몸통 옆에 붙어 안쪽 면이 몸통에 가린다.
     - `arms_up=True`: 팔이 옆위로 벌어져 벽면 노즐에 가까워진다.
     - `yaw_deg`: 몸 전체를 z축으로 회전. 0이면 몸의 정면이 +x(진행 방향)를 본다.
-      `fake_nozzles`의 제트는 진행 방향으로 기울어 있어 몸의 +x 쪽에 닿는다.
-      따라서 yaw 0이 노즐을 마주 본 상태이고, 180이 등진 상태다 (E1).
+      B의 `build_body`와 같은 규약이다.
 
     부위는 회전 전 몸 기준 좌표에서 정한다. 몸통 패치는 법선의 x 성분 부호로
     `torso_front` / `torso_back`을 나누므로, 등지면(yaw 180) 정면 패치가 함께 돈다.
     다리는 없다 -> `removal_by_part[legs]`는 항상 0 (패치 0개).
     """
-    booth = _booth()
-    center = np.array([booth["length_m"] / 2.0, 0.0, 0.0])
+    center = np.array(_booth_center())
     cx = center[0]
 
     torso_top_z = _TORSO_BOTTOM_Z + _TORSO_LENGTH_M
@@ -208,28 +210,27 @@ def fake_body(arms_up: bool = False, yaw_deg: float = 0.0) -> BodyState:
     )
 
 
-def fake_nozzles(z_levels_m: tuple[float, ...] | None = None) -> NozzleConfig:
-    """좌우 벽 × 높이 단. 부스 중앙 x에서 안쪽을 보되 진행 방향(+x)으로 기울어져 있다.
+def fake_nozzles(z_levels_m: tuple[float, ...] = _NOZZLE_Z_LEVELS_M) -> NozzleConfig:
+    """좌우 벽에 각 `len(z_levels_m)`개. 안쪽을 보되 진행 방향(+x)으로 기울어져 있다.
 
-    `configs/nozzles.yaml` layout의 두 x열 대신 부스 중앙 한 열만 쓴다 (D 문서 단계 1).
-    기울기 때문에 제트는 몸 중심보다 +x 쪽을 지나며 몸의 정면(+x)과 팔을 씻는다.
-
-    높이는 기본으로 layout의 `z_levels`(4단)를 쓴다. D 문서의 두 단(1.0 / 1.4 m)으로는
-    든 팔(z 1.45~1.94 m)이 제트 밖으로 빠져 "팔을 들면 제거율 상승"(E1)이 성립하지 않는다.
+    x는 제트 축이 몸 중심선(y = 0)을 부스 중앙 x에서 지나도록 둔다:
+    `x = length_m/2 - |wall_y| · tan(yaw)` (= 1.0 - 0.6·tan25° ≈ 0.72).
+    B의 `configs/nozzles.yaml`이 실제 두 열(0.62, 0.82)을 고른 근거와 같은 식이고,
+    실제 두 열의 평균과 일치한다. D 문서의 x = 1.0(부스 중앙)에 두면 25도 기울기 때문에
+    제트 축이 몸통을 0.25 m 차이로 비껴간다.
     """
     nozzle_file = load_nozzle_layout()
     layout = nozzle_file["layout"]
-    wall_y = layout["wall_y"]
-    x = float(nozzle_file["booth"]["length_m"]) / 2.0
-    if z_levels_m is None:
-        z_levels_m = tuple(layout["z_levels"])
+    center_x = float(nozzle_file["booth"]["length_m"]) / 2.0
     yaw, pitch = np.radians(layout["yaw_deg"]), np.radians(layout["pitch_deg"])
 
     positions, directions = [], []
-    for y in wall_y:
+    for y in layout["wall_y"]:
+        y = float(y)
         inward = -np.sign(y)  # y = +0.6 이면 -y 방향이 안쪽
+        x = center_x - abs(y) * np.tan(yaw)
         for z in z_levels_m:
-            positions.append([x, float(y), float(z)])
+            positions.append([x, y, float(z)])
             # 안쪽 법선에서 진행 방향(+x)으로 yaw, 아래로 pitch.
             directions.append([np.sin(yaw) * np.cos(pitch),
                                inward * np.cos(yaw) * np.cos(pitch),
@@ -240,45 +241,3 @@ def fake_nozzles(z_levels_m: tuple[float, ...] | None = None) -> NozzleConfig:
         directions=_unit(np.array(directions)).astype(np.float32),
         strengths=np.full(len(positions), float(layout["strength"]), dtype=np.float32),
     )
-
-
-def fake_velocity_field_per_nozzle(points: np.ndarray, nozzle: NozzleConfig, t: float,
-                                   cfg: dict, surface_normals: np.ndarray | None = None
-                                   ) -> np.ndarray:
-    """(P,3) -> (M,P,3). `00_common.md` 4.1 자유 제트의 최소 구현.
-
-    `surface_normals`(정체점 보정)는 받기만 하고 무시한다. B의
-    `velocity_field_per_nozzle`와 시그니처를 맞춰 그대로 갈아끼울 수 있게 한다.
-    """
-    jet = cfg["jet"]
-    diameter = float(jet["nozzle_diameter_m"])
-    decay = float(jet["decay_constant"])
-    spread = float(jet["halfwidth_spread_rate"])
-
-    p = np.asarray(points, dtype=np.float64).reshape(-1, 3)             # (P,3)
-    n = np.asarray(nozzle.positions, dtype=np.float64)                  # (M,3)
-    d = _unit(np.asarray(nozzle.directions, dtype=np.float64))          # (M,3)
-    u0 = float(jet["exit_velocity_mps"]) * np.asarray(
-        nozzle.strengths, dtype=np.float64)[:, None]                   # (M,1)
-
-    # r = p - n 을 (M,P,3)로 만들지 않고 행렬곱으로 전개한다 (d는 단위 벡터).
-    s = d @ p.T - np.einsum("ij,ij->i", d, n)[:, None]                  # (M,P) 축 방향 거리
-    r_sq = (np.einsum("ij,ij->i", p, p)[None, :] + np.einsum("ij,ij->i", n, n)[:, None]
-            - 2.0 * (n @ p.T))                                         # (M,P) |r|^2
-    rho_sq = np.maximum(r_sq - s * s, 0.0)                              # (M,P) 반경 거리^2
-
-    core = decay * diameter                                            # L_c
-    s_safe = np.where(s > 0.0, s, 1.0)
-    u_c = np.where(s_safe <= core, u0, u0 * core / s_safe)
-    sigma = (0.5 * diameter + spread * s_safe) / _GAUSSIAN_HALFWIDTH_TO_SIGMA
-    speed = np.where(s > 0.0, u_c * np.exp(-0.5 * rho_sq / (sigma * sigma)), 0.0)
-
-    pulse = jet.get("pulse", {})
-    if pulse.get("enabled", False):
-        phase = (nozzle.pulse_phase if nozzle.pulse_phase is not None
-                 else np.zeros(nozzle.count))
-        gate = ((t / float(pulse["period_s"]) + np.asarray(phase, dtype=np.float64)) % 1.0
-                < float(pulse["duty"]))
-        speed = speed * gate[:, None]
-
-    return speed[..., None] * d[:, None, :]
