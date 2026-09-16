@@ -16,6 +16,9 @@
     R_part  = 면적 가중 평균 per part
     score, disc = scoring.score(R_part, pose, scenario, cfg)
 
+`build_body` 직후 부스 밖 자세 불가 규칙(`00_common.md` 5절)을 먼저 검사하고, 걸리면 제트
+계산 없이 `score = -1.0`을 돌려준다.
+
 물리 상수는 전부 `physics_cfg`(= `configs/physics.yaml`)에서 읽는다.
 """
 from __future__ import annotations
@@ -28,11 +31,14 @@ from . import scoring
 from .body import build_body as _default_build_body
 from .interface import Evaluator
 from .jet import velocity_field_per_nozzle as _default_velocity_field_per_nozzle
+from .scenario import load_nozzle_layout
 from .types import PART_NAMES, BodyParams, BodyState, EvalResult, NozzleConfig, PoseParams, Scenario
 
 _EPS = 1e-12
 # 후보 거르기 여유. float32 반올림보다 충분히 커서 거르기가 항상 보수적이 되게 한다.
 _CONE_SLACK = 1e-4
+# 부스 밖 자세의 점수 (00_common.md 5절).
+INFEASIBLE_SCORE = -1.0
 
 
 def _segment_segment_dist_sq(s1: np.ndarray, d1: np.ndarray,
@@ -164,26 +170,64 @@ def _area_weighted_by_part(values: np.ndarray, area: np.ndarray,
     return np.divide(weighted, total, out=np.zeros(n_parts), where=total > 0.0)
 
 
+def outside_booth(patch_pos: np.ndarray, booth: dict) -> bool:
+    """패치가 하나라도 옆벽(|y| > width/2)이나 천장(z > height) 밖이면 True.
+
+    x 방향은 열린 문이라 검사하지 않는다 (`00_common.md` 5절). 경계와 같은 값은 안쪽이다.
+    """
+    pos = np.asarray(patch_pos)
+    if pos.size == 0:
+        return False
+    half_width = 0.5 * float(booth["width_m"])
+    return bool(np.abs(pos[:, 1]).max() > half_width
+                or pos[:, 2].max() > float(booth["height_m"]))
+
+
 class PatchEvaluator(Evaluator):
     """입자 없이 패치별 벽면 전단만으로 제거율을 구하는 numpy 평가기.
 
     `build_body`와 `velocity_field_per_nozzle`는 B 소유다. 기본값으로 B의 구현을
     쓰되, B 병합 전이나 단위 테스트에서는 `tests/fakes.py`의 가짜를 주입할 수 있게
     생성자 인자로 뺐다 (`docs/tracks/00_common.md` 3절).
+
+    - `patches_per_m2`: `build_body`에 넘기는 패치 밀도. `None`이면 `build_body` 기본값
+      (2000, 검증용). 최적화 루프는 400을 쓴다 (D 문서 완료 기준).
+    - `booth`: 부스 밖 판정에 쓰는 `{"width_m", "height_m", ...}`. `None`이면
+      `configs/nozzles.yaml`의 `booth`.
     """
 
     def __init__(self, physics_cfg: dict,
                  build_body: Callable[..., BodyState] | None = None,
-                 velocity_field_per_nozzle: Callable[..., np.ndarray] | None = None):
+                 velocity_field_per_nozzle: Callable[..., np.ndarray] | None = None,
+                 *, patches_per_m2: float | None = None,
+                 booth: dict | None = None):
         self.cfg = physics_cfg
         self._build_body = build_body or _default_build_body
         self._velocity_field_per_nozzle = (
             velocity_field_per_nozzle or _default_velocity_field_per_nozzle)
+        self.patches_per_m2 = patches_per_m2
+        self.booth = booth if booth is not None else load_nozzle_layout()["booth"]
+
+    def build_state(self, body: BodyParams, pose: PoseParams, scenario: Scenario) -> BodyState:
+        """`evaluate`가 쓰는 것과 같은 밀도로 몸을 만든다."""
+        if self.patches_per_m2 is None:
+            # 밀도 인자를 받지 않는 주입 함수(가짜 몸)도 쓸 수 있게 기본값일 때는 넘기지 않는다.
+            return self._build_body(body, pose, scenario)
+        return self._build_body(body, pose, scenario, patches_per_m2=self.patches_per_m2)
 
     def evaluate(self, pose: PoseParams, nozzle: NozzleConfig,
                  body: BodyParams, scenario: Scenario) -> EvalResult:
+        state = self.build_state(body, pose, scenario)
+        if outside_booth(state.patch_pos, self.booth):
+            return EvalResult(
+                score=INFEASIBLE_SCORE,
+                removal_by_part=np.zeros(len(PART_NAMES)),
+                total_removal=0.0,
+                discomfort=scoring.discomfort(pose, scenario),
+                extra={"infeasible": True},
+            )
+
         delta = float(self.cfg["air"]["wall_offset_m"])
-        state = self._build_body(body, pose, scenario)
 
         normal = np.asarray(state.patch_normal, dtype=np.float64)
         area = np.asarray(state.patch_area, dtype=np.float64)
@@ -210,5 +254,6 @@ class PatchEvaluator(Evaluator):
             removal_by_part=removal_by_part,
             total_removal=total_removal,
             discomfort=disc,
-            extra={"tau": tau, "removal": removal, "visible_frac": float(visible.mean())},
+            extra={"tau": tau, "removal": removal, "visible_frac": float(visible.mean()),
+                   "infeasible": False},
         )

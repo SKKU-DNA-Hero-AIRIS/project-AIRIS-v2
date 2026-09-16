@@ -16,6 +16,11 @@ B 병합 전후 자동 전환 (`docs/tracks/D_patch_baseline.md` 단계 5)
   `configs/`는 수정하지 않는다 (00_common.md 1절).
 - 값은 격자 탐색으로 고르고, 두 값 각각 ±20% 이웃 9곳 중 8곳에서 E1 방향이 유지됨을
   확인했다 (PR 본문 참고).
+
+테스트용 부스 (E1 전용)
+- 부스 밖 자세 불가 규칙(00_common.md 5절)은 팔 90도 같은 자세를 score -1로 끊는다. E1은
+  제트·가림·제거율의 **방향**을 보는 테스트라 규칙과 섞이지 않게, E1 평가기에는 벽과 천장을
+  충분히 넓힌 부스를 준다. 규칙 자체는 아래 "부스 밖 자세 불가" 절에서 실제 부스로 따로 본다.
 """
 from __future__ import annotations
 
@@ -30,13 +35,15 @@ from scipy.stats import norm
 from airis.sim import scoring
 from airis.sim.body import build_body
 from airis.sim.jet import velocity_field_per_nozzle
-from airis.sim.patch_baseline import PatchEvaluator, occlusion
+from airis.sim.patch_baseline import INFEASIBLE_SCORE, PatchEvaluator, occlusion, outside_booth
 from airis.sim.scenario import load_nozzle_layout, load_nozzles, load_physics, load_scenarios
 from airis.sim.types import PART_NAMES, BodyParams, BodyState, NozzleConfig, PoseParams, Scenario
 from tests.fakes import fake_body, fake_nozzles
 
 # E1 테스트용 제트 덮어쓰기. 근거는 모듈 docstring.
 _E1_JET_OVERRIDES = {"nozzle_diameter_m": 0.08, "halfwidth_spread_rate": 0.2}
+# E1 전용 부스 배율. 폭·높이만 키우고 길이(마네킹 x 위치)는 그대로 둔다. 근거는 모듈 docstring.
+_E1_BOOTH_SCALE = 10.0
 
 _ARMS = PART_NAMES.index("arms")
 _FRONT = PART_NAMES.index("torso_front")
@@ -98,10 +105,14 @@ def scenarios() -> dict[str, Scenario]:
 @pytest.fixture(scope="module")
 def sim(e1_physics, scenarios):
     make_body = select_body_fn(scenario=scenarios["default"])
+    booth = dict(load_nozzle_layout()["booth"])
+    booth["width_m"] *= _E1_BOOTH_SCALE
+    booth["height_m"] *= _E1_BOOTH_SCALE
     evaluator = PatchEvaluator(
         e1_physics,
         build_body=lambda body, pose, scen: make_body(pose, scen),
         velocity_field_per_nozzle=velocity_field_per_nozzle,
+        booth=booth,
     )
     return SimpleNamespace(evaluator=evaluator, nozzles=select_nozzles(),
                            scenario=scenarios["default"], uses_fake_body=make_body.uses_fake,
@@ -134,19 +145,6 @@ def _yaw_facing_nozzles(nozzle: NozzleConfig) -> float:
     v = nozzle.positions[:, :2].astype(np.float64).mean(axis=0) - body_xy
     assert abs(v[0]) > 1e-3, "노즐 뱅크가 몸과 같은 x에 있으면 마주 보는 방향이 정의되지 않는다"
     return _wrap_deg(math.degrees(math.atan2(v[1], v[0])))
-
-
-def _move_nozzles_closer_along_axis(nozzle: NozzleConfig, wall_distance_m: float) -> NozzleConfig:
-    """벽면 노즐을 자기 제트 축을 따라 앞으로 옮겨 벽과의 거리 |y|를 줄인다.
-
-    D 문서는 "노즐 y를 ±0.6 -> ±0.4로 옮긴다"고 적는다. y만 바꾸면 25도 기울어진
-    제트가 몸에 닿는 지점도 함께 옮겨가 "가까움"과 "조준 변화"가 섞인다. 축을 따라
-    옮기면 조준점은 그대로이고 거리만 줄어든다 (y는 문서대로 ±0.4가 된다).
-    """
-    step = (np.abs(nozzle.positions[:, 1]) - wall_distance_m) / np.abs(nozzle.directions[:, 1])
-    return NozzleConfig(positions=nozzle.positions + step[:, None] * nozzle.directions,
-                        directions=nozzle.directions, strengths=nozzle.strengths,
-                        pulse_phase=nozzle.pulse_phase)
 
 
 # --- 전환 fixture 자체 -------------------------------------------------------
@@ -219,20 +217,17 @@ def test_facing_away_reduces_front_removal(sim):
     assert away.removal_by_part[_BACK] > facing.removal_by_part[_BACK]
 
 
-@pytest.mark.xfail(strict=True, reason=(
-    "현재 제트·제거율 모델에서 성립하지 않는다 (발견 사항, PR 본문). 가까워지면 가우시안 "
-    "단면 σ ∝ s 가 좁아져 제트가 덮는 면적이 줄고 로그 정규 제거율은 포화하므로, 총 "
-    "제거율이 오히려 40~55% 떨어진다. 제거율이 사실상 0인 약한 제트에서만 성립하고 그 "
-    "영역에서는 다른 E1 방향이 무너진다. strict: 모델이 바뀌어 통과하면 이 표시를 지워라."))
-def test_closer_to_nozzle_increases_removal(sim):
-    """노즐에 가까울수록 제거율이 오른다. 벽면 노즐을 |y| 0.6 -> 0.4로 옮긴다."""
-    near = _move_nozzles_closer_along_axis(sim.nozzles, wall_distance_m=0.4)
-    assert np.allclose(np.abs(near.positions[:, 1]), 0.4, atol=1e-6)
+@pytest.mark.parametrize("pose", [PoseParams(), PoseParams(shoulder_abduction=90.0, torso_yaw=45.0)])
+def test_stronger_nozzles_increase_removal(sim, pose):
+    """노즐 세기를 0.5 -> 1.0 -> 1.5배로 올리면 총 제거율이 단조 증가한다.
 
-    base = _eval(sim, PoseParams())
-    closer = _eval(sim, PoseParams(), near)
-    assert base.total_removal > 0.0
-    assert closer.total_removal > base.total_removal
+    README E1의 "노즐에 가까이 서면 상승"을 대체한 항목이다. 가까워지는 비교는 현재 자유 제트
+    모델에서 성립하지 않는다 (D 문서 단계 5 표, PR #11 발견 사항 1).
+    """
+    removals = [_eval(sim, pose, _with_strengths(sim.nozzles, sim.nozzles.strengths * k)).total_removal
+                for k in (0.5, 1.0, 1.5)]
+    assert removals[0] > 0.0, "제트가 몸에 닿지 않아 비교가 무의미하다"
+    assert removals[0] < removals[1] < removals[2]
 
 
 def test_zero_strength_removes_nothing(sim):
@@ -326,6 +321,100 @@ def test_evaluator_uses_config_constants_not_literals(sim, e1_physics):
     base = _eval(sim, PoseParams())
     harder = ev.evaluate(PoseParams(), sim.nozzles, BodyParams(), sim.scenario)
     assert harder.total_removal < base.total_removal
+
+
+# --- 부스 밖 자세 불가 (00_common.md 5절) ------------------------------------
+
+_ARMS_OUT = PoseParams(shoulder_abduction=90.0, elbow_flexion=0.0)       # 팔 수평
+_HANDS_UP = PoseParams(shoulder_abduction=150.0, elbow_flexion=0.0)     # 만세 (범위 상한)
+
+
+def _extent(state: BodyState) -> tuple[float, float]:
+    """(max |y|, max z). 규칙이 보는 두 값을 테스트에서 따로 계산한다."""
+    pos = state.patch_pos.astype(np.float64)
+    return float(np.abs(pos[:, 1]).max()), float(pos[:, 2].max())
+
+
+def _never_called(*args, **kwargs):
+    raise AssertionError("부스 밖 자세인데 제트를 계산했다")
+
+
+def test_outside_booth_checks_side_walls_and_ceiling_but_not_x():
+    booth = {"length_m": 2.0, "width_m": 1.0, "height_m": 2.0}
+    inside = np.array([[1.0, 0.0, 1.0]])
+    assert not outside_booth(inside, booth)
+    assert not outside_booth(np.array([[1.0, 0.5, 2.0], [1.0, -0.5, 0.0]]), booth)   # 경계는 안쪽
+    assert outside_booth(np.vstack([inside, [[1.0, 0.5001, 1.0]]]), booth)
+    assert outside_booth(np.vstack([inside, [[1.0, -0.5001, 1.0]]]), booth)
+    assert outside_booth(np.vstack([inside, [[1.0, 0.0, 2.0001]]]), booth)
+    assert not outside_booth(np.array([[-5.0, 0.0, 1.0], [9.0, 0.0, 1.0]]), booth)   # x는 열린 문
+
+
+def test_arms_out_is_infeasible_hands_up_is_feasible(physics, scenarios):
+    """팔 90도(수평)는 옆벽 밖, 만세는 부스 안으로 판정된다.
+
+    판정은 부스 폭에 달려 있으므로 폭을 숫자로 박지 않는다. 두 자세의 좌우 끝 사이에 벽을 두고
+    높이는 실제 부스 값을 쓴다 (기준 장비가 바뀌어도 같은 주장을 검사한다).
+    """
+    scen = scenarios["default"]
+    real = load_nozzle_layout()["booth"]
+    probe = PatchEvaluator(physics, velocity_field_per_nozzle=_never_called, booth=real)
+    y_out, _ = _extent(probe.build_state(BodyParams(), _ARMS_OUT, scen))
+    y_up, z_up = _extent(probe.build_state(BodyParams(), _HANDS_UP, scen))
+    assert y_up < y_out, "만세가 팔 수평보다 옆으로 덜 나가야 한다"
+    if z_up > real["height_m"]:
+        pytest.skip(f"만세 손끝 z={z_up:.3f} m가 부스 높이 {real['height_m']} m를 넘는다")
+
+    booth = dict(real, width_m=y_up + y_out)            # 반폭 = 두 끝의 중간
+    nozzle = load_nozzles()
+    ev = PatchEvaluator(physics, velocity_field_per_nozzle=_never_called, booth=booth)
+    out = ev.evaluate(_ARMS_OUT, nozzle, BodyParams(), scen)
+    assert out.extra["infeasible"] is True
+    assert out.score == INFEASIBLE_SCORE == -1.0
+    assert out.total_removal == 0.0
+    assert out.removal_by_part.shape == (len(PART_NAMES),)
+    assert (out.removal_by_part == 0.0).all()
+
+    ev_up = PatchEvaluator(physics, booth=booth)
+    up = ev_up.evaluate(_HANDS_UP, nozzle, BodyParams(), scen)
+    assert up.extra["infeasible"] is False
+    assert np.isfinite(up.score)
+
+
+@pytest.mark.parametrize("pose", [PoseParams(), _ARMS_OUT, _HANDS_UP,
+                                  PoseParams(shoulder_flexion=150.0, shoulder_abduction=0.0)])
+def test_infeasible_flag_matches_configured_booth(physics, scenarios, pose):
+    """설정 파일의 부스로 판정한 결과가 테스트에서 직접 계산한 기하와 같다."""
+    scen = scenarios["default"]
+    booth = load_nozzle_layout()["booth"]
+    ev = PatchEvaluator(physics)
+    y_max, z_max = _extent(ev.build_state(BodyParams(), pose, scen))
+    expected = y_max > booth["width_m"] / 2.0 or z_max > booth["height_m"]
+    result = ev.evaluate(pose, load_nozzles(), BodyParams(), scen)
+    assert result.extra["infeasible"] is expected
+    if expected:
+        assert result.score == -1.0
+
+
+# --- patches_per_m2 -----------------------------------------------------------
+
+def test_patches_per_m2_is_passed_to_build_body(physics, scenarios):
+    calls = []
+
+    def recording_build(body, pose, scen, **kwargs):
+        calls.append(kwargs)
+        return build_body(body, pose, scen, **kwargs)
+
+    scen, nozzle = scenarios["default"], load_nozzles()
+    PatchEvaluator(physics, build_body=recording_build).evaluate(PoseParams(), nozzle, BodyParams(), scen)
+    coarse = PatchEvaluator(physics, build_body=recording_build, patches_per_m2=400.0)
+    result = coarse.evaluate(PoseParams(), nozzle, BodyParams(), scen)
+    assert calls == [{}, {"patches_per_m2": 400.0}]
+
+    n_coarse = build_body(BodyParams(), PoseParams(), scen, patches_per_m2=400.0).patch_pos.shape[0]
+    n_default = build_body(BodyParams(), PoseParams(), scen).patch_pos.shape[0]
+    assert n_coarse < n_default
+    assert result.extra["removal"].shape == (n_coarse,)
 
 
 # --- scoring.removal_fraction (00_common.md 4.3) -----------------------------

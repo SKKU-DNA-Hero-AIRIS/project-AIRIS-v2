@@ -17,6 +17,10 @@ README 6절 E2, docs/tracks/D_patch_baseline.md 단계 7.
     scatter.png       순위 산점도 (score, weighted_removal)
     top_mismatch.md   순위 차이가 가장 큰 자세 N개의 부위별 제거율 표 (csv 도 함께)
 
+부스 밖 자세(00_common.md 5절)는 샘플링 단계에서 버리고 다시 뽑는다. 규칙에 걸린 자세는 두
+평가기 모두 score −1 로 같아 순위 비교에 정보가 없고, 입자판을 돌릴 이유도 없다. 버린 수는
+summary.json 의 infeasible_rejected 에 남긴다.
+
 주의: 두 평가기의 score 는 같은 불편도 항(−w·discomfort)을 공유한다. 제거율이 둘 다 0에
 가까우면 score 순위가 불편도만으로 정해져 상관이 1에 가깝게 부풀려진다. 그래서 불편도를
 뺀 weighted_removal(= Σ part_weights·R_부위)의 상관을 함께 보고, 차이 표도 그 순위로 정렬한다.
@@ -32,7 +36,6 @@ import time
 import warnings
 from dataclasses import fields
 from datetime import datetime
-from functools import partial
 from pathlib import Path
 
 import numpy as np
@@ -47,7 +50,7 @@ from airis.optimize import cli                                  # noqa: E402
 from airis.optimize.encoding import PoseEncoder                 # noqa: E402
 from airis.sim import PART_NAMES, BodyParams, PoseParams        # noqa: E402
 from airis.sim.body import build_body                           # noqa: E402
-from airis.sim.patch_baseline import PatchEvaluator             # noqa: E402
+from airis.sim.patch_baseline import PatchEvaluator, outside_booth  # noqa: E402
 from airis.sim.scenario import load_physics, load_scenarios     # noqa: E402
 
 POSE_KEYS = [f.name for f in fields(PoseParams)]
@@ -56,7 +59,7 @@ EVALUATORS = ("patch", "particle")
 
 def build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(description="E2 패치판 vs 입자판 순위 상관")
-    ap.add_argument("--n", type=int, default=500, help="샘플 자세 수")
+    ap.add_argument("--n", type=int, default=500, help="비교할 자세 수 (부스 안 자세만 센다)")
     ap.add_argument("--scenario", default="default")
     ap.add_argument("--seed", type=int, default=0, help="자세 샘플링 시드")
     ap.add_argument("--body", default=None, help='BodyParams 덮어쓰기 JSON, 예: \'{"height_m":1.6}\'')
@@ -99,12 +102,26 @@ def apply_overrides(physics: dict, overrides: list[str]) -> dict:
     return cfg
 
 
-def sample_poses(scenario, n: int, seed: int) -> list[PoseParams]:
-    """자유 변수를 pose_bounds 안에서 독립 균등 샘플링. fixed_pose 는 PoseEncoder 가 채운다."""
+def sample_poses(scenario, n: int, seed: int, is_feasible=None,
+                 max_tries_per_pose: int = 50) -> tuple[list[PoseParams], int]:
+    """자유 변수를 pose_bounds 안에서 독립 균등 샘플링. fixed_pose 는 PoseEncoder 가 채운다.
+
+    `is_feasible(pose) -> bool` 이 주어지면 False 인 자세는 버리고 n 개가 찰 때까지 더 뽑는다.
+    Returns: (자세 n 개, 버린 수).
+    """
     enc = PoseEncoder(scenario)
     rng = np.random.default_rng(seed)
-    xs = rng.uniform(-1.0, 1.0, size=(n, enc.dim))
-    return [enc.decode(x) for x in xs]
+    poses: list[PoseParams] = []
+    rejected = 0
+    while len(poses) < n:
+        if rejected > max_tries_per_pose * n:
+            raise SystemExit(f"부스 안 자세를 {n}개 채우지 못했다 ({len(poses)}개, 버린 수 {rejected})")
+        pose = enc.decode(rng.uniform(-1.0, 1.0, size=enc.dim))
+        if is_feasible is None or is_feasible(pose):
+            poses.append(pose)
+        else:
+            rejected += 1
+    return poses, rejected
 
 
 # ---------------------------------------------------------------- 평가
@@ -113,10 +130,11 @@ def weighted_removal(removal_by_part: np.ndarray, physics: dict) -> float:
     return float(sum(w.get(p, 0.0) * float(r) for p, r in zip(PART_NAMES, removal_by_part)))
 
 
-def run_patch(poses, nozzle, body, scenario, physics, patches_per_m2):
-    bb = build_body if patches_per_m2 is None else partial(build_body, patches_per_m2=patches_per_m2)
-    ev = PatchEvaluator(physics, build_body=bb)
-    return [ev.evaluate(p, nozzle, body, scenario) for p in poses]
+def run_patch(ev: PatchEvaluator, poses, nozzle, body, scenario):
+    results = [ev.evaluate(p, nozzle, body, scenario) for p in poses]
+    if any(r.extra.get("infeasible") for r in results):
+        raise RuntimeError("샘플링에서 걸렀는데 부스 밖 자세가 남았다")
+    return results
 
 
 def run_particle(poses, nozzle, body, scenario, physics, args):
@@ -274,13 +292,17 @@ def main(argv: list[str] | None = None) -> int:
     physics = apply_overrides(load_physics(), args.override)
     body = cli.dataclass_from_json(BodyParams, args.body)
     nozzle, nozzle_source = cli.resolve_nozzles()
-    poses = sample_poses(scenario, args.n, args.seed)
+    pev_patch = PatchEvaluator(physics, patches_per_m2=args.patches_per_m2)
+    poses, rejected = sample_poses(
+        scenario, args.n, args.seed,
+        is_feasible=lambda p: not outside_booth(
+            pev_patch.build_state(body, p, scenario).patch_pos, pev_patch.booth))
 
     print(f"E2: n={args.n}, scenario={args.scenario}, nozzles={nozzle_source}({nozzle.count}), "
-          f"overrides={args.override or '없음'}", flush=True)
+          f"overrides={args.override or '없음'}, 부스 밖으로 버린 자세 {rejected}", flush=True)
 
     t0 = time.perf_counter()
-    res_patch = run_patch(poses, nozzle, body, scenario, physics, args.patches_per_m2)
+    res_patch = run_patch(pev_patch, poses, nozzle, body, scenario)
     t_patch = time.perf_counter() - t0
     print(f"  patch 완료 {t_patch:.2f} s", flush=True)
 
@@ -305,6 +327,8 @@ def main(argv: list[str] | None = None) -> int:
         "created": datetime.now().isoformat(timespec="seconds"),
         "args": vars(args),
         "nozzle_source": nozzle_source,
+        "booth": pev_patch.booth,
+        "infeasible_rejected": rejected,
         "nozzle_hash": cli.nozzle_hash(nozzle),
         "body": {f.name: getattr(body, f.name) for f in fields(BodyParams)},
         "particle": {"particles_per_candidate": pev.N, "duration_s": pev.duration_s,
