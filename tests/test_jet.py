@@ -128,9 +128,39 @@ def test_velocity_is_sum_of_per_nozzle():
     np.testing.assert_allclose(velocity_field(pts, nz, 0.0, CFG), per.sum(0), atol=1e-4)
 
 
+def _reference_velocity_per_nozzle(points, nozzle, t, cfg):
+    """00_common.md 4.1 을 글자 그대로 옮긴 독립 참고 구현 (float64). (P,3) -> (M,P,3).
+
+    tests/fakes.py 의 fake_velocity_field_per_nozzle 을 대신한다 (D 의 PR #11 이 그 함수를 삭제).
+    jet.py 와 상수·보조 함수를 공유하지 않도록 1.177 은 4.1 식에서 직접 가져온다.
+    """
+    jet = cfg["jet"]
+    D = float(jet["nozzle_diameter_m"])
+    K = float(jet["decay_constant"])
+    k = float(jet["halfwidth_spread_rate"])
+    p = np.asarray(points, dtype=np.float64)[None, :, :]                   # (1,P,3)
+    n = np.asarray(nozzle.positions, dtype=np.float64)[:, None, :]         # (M,1,3)
+    d = np.asarray(nozzle.directions, dtype=np.float64)
+    d = (d / np.linalg.norm(d, axis=1, keepdims=True))[:, None, :]
+    U0 = float(jet["exit_velocity_mps"]) * np.asarray(nozzle.strengths, dtype=np.float64)[:, None]
+    r = p - n
+    s = (r * d).sum(axis=-1)                                               # (M,P)
+    rho = np.linalg.norm(r - s[..., None] * d, axis=-1)
+    Lc = K * D
+    s_pos = np.where(s > 0.0, s, 1.0)
+    Uc = np.where(s_pos <= Lc, U0, U0 * K * D / s_pos)
+    sigma = 0.5 * D / 1.177 + k * s_pos / 1.177
+    speed = np.where(s > 0.0, Uc * np.exp(-rho**2 / (2.0 * sigma**2)), 0.0)
+    pulse = jet["pulse"]
+    if pulse["enabled"]:
+        phase = np.zeros(len(U0)) if nozzle.pulse_phase is None else np.asarray(nozzle.pulse_phase, float)
+        speed = speed * (((t / float(pulse["period_s"]) + phase) % 1.0) < float(pulse["duty"]))[:, None]
+    return speed[..., None] * d
+
+
 def test_matches_reference_fake_implementation():
-    """D 의 tests/fakes.py 참고 구현(4.1 numpy)과 같은 점에서 같은 값. D 가 B 병합 후 이 함수로 교체한다."""
-    from tests.fakes import fake_nozzles, fake_velocity_field_per_nozzle
+    """4.1 독립 참고 구현(_reference_velocity_per_nozzle)과 같은 점에서 같은 값."""
+    from tests.fakes import fake_nozzles
 
     rng = np.random.default_rng(3)
     for nz in (load_nozzles(), fake_nozzles()):
@@ -139,7 +169,7 @@ def test_matches_reference_fake_implementation():
         pts = np.vstack([rng.random((2000, 3)) * [2.0, 1.2, 2.3] - [0, 0.6, 0], near_axis])
         pts = pts.astype(np.float32)
         ours = velocity_field_per_nozzle(pts, nz, 0.0, CFG)
-        ref = fake_velocity_field_per_nozzle(pts, nz, 0.0, CFG)
+        ref = _reference_velocity_per_nozzle(pts, nz, 0.0, CFG)
         np.testing.assert_allclose(ours, ref, rtol=1e-5, atol=1e-5)
 
 
