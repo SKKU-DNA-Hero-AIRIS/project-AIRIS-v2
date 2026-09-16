@@ -184,8 +184,15 @@ def batch_evaluate(self, candidates, body, scenario):
 
 ## 환경 기록
 
-(첫날 채움)
-
 | 머신 | 백엔드 | SAXPY 1e7 | 비고 |
 |---|---|---|---|
-| | | | |
+| Windows 11 노트북, RTX 5060 Laptop (8 GB, driver 592.82), Ryzen AI 9 | **cuda** (채택) | **0.494 ms** | Python 3.13.5 / taichi 1.7.4 / numpy 2.5.1. `ti.init(arch=ti.cuda)` 성공 |
+| 같은 머신 | vulkan | 0.661 ms | 폴백 후보. 정상 동작 |
+| 같은 머신 | cpu (x64) | 5.119 ms | 참고용. CI 용도로만 |
+
+측정 방법: `1e7` 원소 `y = a*x + y` 커널. JIT 워밍업 1회 후 20회 평균, 각 백엔드를 **별도 프로세스**에서 측정 (`ti.init`은 프로세스당 1회).
+`ti.init`이 요청한 arch로 뜨지 않고 조용히 폴백하는 경우가 있어 `ti.lang.impl.current_cfg().arch`로 실제 백엔드를 확인했다.
+
+- 개발 기본 백엔드는 **cuda**. 0.5 ms < 1 ms 기준이므로 GPU가 정상적으로 잡혔다.
+- `ParticleEvaluator(arch=...)`는 `"gpu"`를 받으면 cuda → vulkan → cpu 순으로 시도한다.
+- 다른 세션과 GPU를 공유하므로 개발 중 설정은 `N=1000, B=2, duration 0.5 s`로 유지한다 (`00_common.md` 7절).

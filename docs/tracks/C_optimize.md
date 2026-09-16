@@ -167,7 +167,7 @@ E4의 B0, B1을 평가한다.
 - [ ] 더미 수렴 테스트와 인코딩 테스트 통과.
 - [ ] D 병합 후 `--evaluator patch --scenario wheelchair`가 돌고, 결과 자세가 `hip_flexion=90`을 유지하며 팔 각도만 바뀐다.
 - [ ] `run_baselines.py`가 세 시나리오의 B0, B1 점수를 출력한다.
-- [ ] 1주차 체크포인트: 패치판으로 default 시나리오 3,000회 평가가 1분 안에 끝난다.
+- [ ] 1주차 체크포인트: 패치판(`--patches-per-m2 400`)으로 default 시나리오 3,000회 평가가 1분 안에 끝난다. `run_optimize.py --patches-per-m2`는 `PatchEvaluator(patches_per_m2=...)`로 전달한다.
 
 ## 병합 후 알림
 

@@ -152,3 +152,22 @@ def test_run_optimize_reports_unmerged_track(tmp_path, capsys, monkeypatch, dott
     assert "해당 트랙 미병합" in err
     assert cause in err
     assert not any(p.is_dir() for p in tmp_path.iterdir()), "실패 시 실험 폴더를 만들면 안 된다"
+
+
+def test_patch_evaluator_runs_in_loop(scenarios):
+    """D 병합 후: cli 가 실제 PatchEvaluator 를 만들고 CMA-ES 루프가 돈다 (짧게)."""
+    from airis.optimize import cli
+    from airis.sim.patch_baseline import PatchEvaluator
+
+    scenario = scenarios["wheelchair"]
+    nozzle = load_nozzles()
+    evaluator = cli.make_evaluator("patch", scenario, body=BodyParams(), nozzle=nozzle)
+    assert isinstance(evaluator, PatchEvaluator)
+
+    result = run_cmaes(evaluator, BodyParams(), scenario, nozzle,
+                       max_evals=8, popsize=4, seed=0)
+    assert result.n_evals == 8
+    assert np.isfinite(result.best_score)
+    assert result.best_pose.hip_flexion == 90
+    assert result.best_pose.knee_flexion == 90
+    assert result.best_result.removal_by_part.shape == (5,)

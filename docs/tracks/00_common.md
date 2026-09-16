@@ -59,6 +59,25 @@ u(p)   = U_c(s) · exp(−ρ² / (2σ²)) · d
 
 노즐 M개의 `u`를 벡터로 합산한다. 펄스가 켜져 있으면 `gate(t) = 1 if ((t/period + phase) mod 1) < duty else 0`을 곱한다. 시각 인자가 없는 정상 상태 평가는 `t = 0`, 펄스 무시.
 
+#### 4.1b 슬롯(평면) 제트 — 크로스팬 토출구 (B가 numpy로, A가 Taichi로 구현)
+
+기준 장비(퓨리움 PURIUM-10000-P)는 원형 노즐이 아니라 길이 `L`, 높이 `h`의 가로 슬롯에서 나오는 크로스팬 제트다. `NozzleConfig.slot_axis`가 `None`이 아닌 노즐은 아래 식을 쓴다 (`None`이면 4.1 원형 제트). 두 모델은 같은 배치 안에 섞일 수 있다.
+
+슬롯 중심 `n`, 분사 단위 방향 `d`, 슬롯 길이 방향 단위 벡터 `e` (`e ⊥ d`), 길이 `L = NozzleConfig.slot_length[m]`, 높이 `h = jet.slot.height_m`, 출구 속도 `U0 = jet.slot.exit_velocity_mps × strength`.
+점 `p`에 대해 `r = p − n`, `s = r·d`, 슬롯 방향 거리 `ρ_e = r·e`, 슬롯 두께 방향 거리 `ρ_n = |r − s·d − ρ_e·e|`.
+
+```
+s ≤ 0                : u = 0
+L_c = K_p·h          , K_p = jet.slot.decay_constant
+U_c(s) = U0                         (s ≤ L_c)
+U_c(s) = U0 · sqrt(K_p·h / s)       (s > L_c)          ← 평면 제트는 1/√s 감쇠
+σ(s)   = 0.5·h/1.177 + jet.slot.spread_rate · s / 1.177
+ρ_e'   = max(|ρ_e| − L/2, 0)                            ← 슬롯 길이 안에서는 균일, 끝에서 가우시안 감쇠
+u(p)   = U_c(s) · exp(−ρ_n² / (2σ²)) · exp(−ρ_e'² / (2σ²)) · d
+```
+
+`s = L_c`에서 `U_c`가 연속이다 (`sqrt(K_p·h/L_c) = 1`). 펄스 게이트는 4.1과 같다. 상수 `K_p`(≈ 5.8, Rajaratnam 평면 제트 `U_m/U0 = 2.4·sqrt(h/s)`), `spread_rate`(≈ 0.10)는 `configs/physics.yaml`의 `jet.slot`에만 둔다.
+
 ### 4.2 벽면 전단 (D, A)
 
 패치 위치 `x`, 바깥 법선 `n`. 공기 속도는 `x + δ·n` (`δ = air.wall_offset_m`)에서 조회한다.
@@ -108,6 +127,7 @@ v_p(t+dt) = v_air + (v_p(t) − v_air) · exp(−dt/τ_p) + g·dt
 - x: 진행 방향, y: 좌우(중심 0), z: 상하(바닥 0). 단위 m, 각도 degree.
 - 부스 크기는 `configs/nozzles.yaml`의 `booth`. 입자가 부스 밖으로 나가면 제거 확정.
 - 마네킹은 부스 중앙 `(booth.length_m/2, 0, 0)`에 선다.
+- **부스 밖 자세는 불가.** `BodyState.patch_pos`가 하나라도 `|y| > booth.width_m/2` 또는 `z > booth.height_m`이면 (x 방향은 열린 문이라 허용) 그 후보는 평가하지 않고 `score = −1.0`, `removal_by_part = 0`, `total_removal = 0`, `extra["infeasible"] = True`를 돌려준다. D와 A가 동일하게 구현한다. 사람마다 체형이 달라 `pose_bounds`로는 막을 수 없고, 벽 밖으로 나간 팔의 먼지가 공짜로 제거되는 것을 막기 위한 규칙이다.
 
 ## 6. 테스트와 PR
 
