@@ -88,6 +88,10 @@ def nozzle_hash(nozzle: NozzleConfig) -> str:
     return h.hexdigest()[:8]
 
 
+#: 패치판 기본 패치 밀도. 총괄 결정 ③a (docs/tracks/C_optimize.md 1주차 체크포인트).
+DEFAULT_PATCHES_PER_M2 = 400.0
+
+
 def make_evaluator(
     name: str,
     scenario: Scenario,
@@ -95,8 +99,11 @@ def make_evaluator(
     body: BodyParams,
     nozzle: NozzleConfig,
     dummy_target: PoseParams | None = None,
+    patches_per_m2: float | None = None,
 ) -> Evaluator:
     """--evaluator 이름으로 평가기를 만든다.
+
+    patches_per_m2 는 patch 평가기에만 넘긴다 (None 이면 build_body 기본 밀도).
 
     patch / particle 은 클래스가 있어도 내부가 NotImplementedError 일 수 있으므로
     기본 자세로 한 번 시험 평가해 본다. 미구현이면 TrackNotMerged 를 던진다.
@@ -111,7 +118,8 @@ def make_evaluator(
     module_path, cls_name = dotted.rsplit(".", 1)
     try:
         module = __import__(module_path, fromlist=[cls_name])
-        evaluator = getattr(module, cls_name)(load_physics())
+        kwargs = {"patches_per_m2": patches_per_m2} if name == "patch" and patches_per_m2 is not None else {}
+        evaluator = getattr(module, cls_name)(load_physics(), **kwargs)
     except (ImportError, AttributeError, NotImplementedError) as exc:
         raise TrackNotMerged(_not_merged_msg(name, track, dotted, doc, exc)) from exc
 

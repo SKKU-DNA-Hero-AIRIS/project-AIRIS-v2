@@ -33,6 +33,8 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--popsize", type=int, default=100)
     ap.add_argument("--sigma0", type=float, default=0.5)
     ap.add_argument("--tol-stagnation-gens", type=int, default=30)
+    ap.add_argument("--patches-per-m2", type=float, default=cli.DEFAULT_PATCHES_PER_M2,
+                    help="패치판 표면 패치 밀도 (--evaluator patch 에만 적용)")
     ap.add_argument("--body", default=None, help='BodyParams 덮어쓰기 JSON, 예: \'{"height_m":1.6}\'')
     ap.add_argument("--tag", default="opt", help="exp_id 접두어")
     ap.add_argument("--log-dir", default=str(ROOT / "outputs"))
@@ -60,6 +62,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         evaluator = cli.make_evaluator(
             args.evaluator, scenario, body=body, nozzle=nozzle, dummy_target=dummy_target,
+            patches_per_m2=args.patches_per_m2,
         )
     except cli.TrackNotMerged as exc:
         print(str(exc), file=sys.stderr)
@@ -68,7 +71,8 @@ def main(argv: list[str] | None = None) -> int:
     exp_id = explog.new_exp_id(args.tag)
     print(f"[{exp_id}] scenario={scenario.name} evaluator={args.evaluator} "
           f"seed={args.seed} popsize={args.popsize} max_evals={args.max_evals} "
-          f"nozzles={nozzle.count}({nozzle_source})")
+          f"nozzles={nozzle.count}({nozzle_source})"
+          + (f" patches_per_m2={args.patches_per_m2:g}" if args.evaluator == "patch" else ""))
 
     result = run_cmaes(
         evaluator, body, scenario, nozzle,
