@@ -42,6 +42,9 @@ _ARMS = PART_NAMES.index("arms")
 _FRONT = PART_NAMES.index("torso_front")
 _BACK = PART_NAMES.index("torso_back")
 
+# 겨드랑이·옆구리로 보는 몸통 위끝에서의 깊이.
+_FLANK_DEPTH_M = 0.25
+
 
 # --- B 병합 전후 전환 --------------------------------------------------------
 
@@ -167,19 +170,37 @@ def test_nozzle_fixture_falls_back_to_fake_nozzles_when_b_is_unmerged():
 
 # --- E1: 정성 검증 -----------------------------------------------------------
 
-def test_raising_arms_increases_armpit_removal(sim):
+def _armpit_flank_mask(state: BodyState) -> np.ndarray:
+    """겨드랑이·옆구리 패치: 몸통 패치 중 법선이 좌우(|n_y| > 0.7)를 보고 몸통 위끝에서
+    0.25 m 안에 있는 것. yaw 0 / 180에서만 y가 몸의 좌우 축이다."""
+    torso = np.isin(state.patch_part, [_FRONT, _BACK])
+    top = state.patch_pos[torso, 2].max()
+    return (torso & (np.abs(state.patch_normal[:, 1]) > 0.7)
+            & (state.patch_pos[:, 2] > top - _FLANK_DEPTH_M))
+
+
+
+@pytest.mark.parametrize("yaw_deg", [0.0, 180.0])
+def test_raising_arms_increases_armpit_removal(sim, yaw_deg):
     """팔을 들면 겨드랑이/옆구리 제거율이 오른다.
 
-    실제 몸은 `arms` + `torso_front` 합산, 가짜 몸은 `arms`만 비교한다 (D 문서 단계 5).
+    D 문서 단계 5는 `arms` + `torso_front` 부위 합산을 비교하라고 적는다. 실제 몸에서 이
+    합산은 yaw에 따라 부호가 바뀐다: 든 팔은 제트 띠(z 0.5~1.7 m) 위로 올라가 `arms`
+    제거율이 떨어질 수 있고(A 입자판 관찰과 같음), 이것이 합산을 끌어내린다. E1의 물리적
+    주장은 "팔에 가려 있던 옆구리가 드러난다"이므로 그 패치를 직접 비교한다 (PR 본문).
     """
-    down = _eval(sim, PoseParams(shoulder_abduction=20.0))
-    up = _eval(sim, PoseParams(shoulder_abduction=90.0))
+    def flank_removal(abduction):
+        pose = PoseParams(shoulder_abduction=abduction, torso_yaw=yaw_deg)
+        state = sim.evaluator._build_body(BodyParams(), pose, sim.scenario)
+        mask = _armpit_flank_mask(state)
+        assert mask.sum() >= 10, "겨드랑이·옆구리 패치를 찾지 못했다"
+        area = state.patch_area[mask].astype(np.float64)
+        removal = _eval(sim, pose).extra["removal"][mask]
+        return float((removal * area).sum() / area.sum())
 
-    parts = [_ARMS] if sim.uses_fake_body else [_ARMS, _FRONT]
-    before = down.removal_by_part[parts].sum()
-    after = up.removal_by_part[parts].sum()
-    assert before > 0.0, "제트가 몸에 닿지 않아 비교가 무의미하다"
-    assert after > before
+    down, up = flank_removal(20.0), flank_removal(90.0)
+    assert up > 0.0, "제트가 옆구리에 닿지 않아 비교가 무의미하다"
+    assert up > down
 
 
 def test_facing_away_reduces_front_removal(sim):
