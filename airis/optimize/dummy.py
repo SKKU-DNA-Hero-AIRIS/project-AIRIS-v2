@@ -1,6 +1,7 @@
 """평가기가 없는 동안 최적화 루프를 검증하기 위한 더미. 소유자: C.
 
 D 의 PatchEvaluator 가 병합되면 이 파일은 단위 테스트 전용으로 남는다.
+노즐 가짜는 tests/fakes.py 의 fake_nozzles 를 쓴다 (00_common.md 3절).
 docs/tracks/C_optimize.md 단계 2.
 """
 from __future__ import annotations
@@ -12,24 +13,6 @@ from airis.sim import (
 )
 
 from .encoding import PoseEncoder
-
-
-# TODO(C): tests/fakes.py (D 소유) 가 병합되면 이 함수를 지우고 fakes.fake_nozzles 를 import 한다.
-#          D 병합 전이라 docs/tracks/00_common.md 3절의 fake_nozzles 명세
-#          ("좌우 벽 각 2개, 높이 1.0/1.4 m, 안쪽 향함") 를 그대로 옮겨 임시로 둔다.
-#          configs/nozzles.yaml 의 실제 16개 배치와는 다르다. B 의 load_nozzles 가 병합되면 그쪽이 우선.
-def temp_nozzles() -> NozzleConfig:
-    """노즐 4개짜리 임시 배치. 부스 중앙 x=1.0, 벽면 y=±0.6, 높이 1.0/1.4 m."""
-    positions, directions = [], []
-    for wall_y, inward in ((-0.6, 1.0), (0.6, -1.0)):
-        for z in (1.0, 1.4):
-            positions.append((1.0, wall_y, z))
-            directions.append((0.0, inward, 0.0))
-    return NozzleConfig(
-        positions=np.array(positions, dtype=np.float32),
-        directions=np.array(directions, dtype=np.float32),
-        strengths=np.ones(len(positions), dtype=np.float32),
-    )
 
 
 def discomfort(pose: PoseParams, scenario: Scenario, encoder: PoseEncoder | None = None) -> float:

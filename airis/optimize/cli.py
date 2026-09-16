@@ -17,7 +17,7 @@ from airis.sim import (
 )
 from airis.sim.scenario import load_nozzles, load_physics
 
-from .dummy import DummyEvaluator, temp_nozzles
+from .dummy import DummyEvaluator
 
 EVALUATOR_CHOICES = ("dummy", "patch", "particle")
 
@@ -75,7 +75,9 @@ def resolve_nozzles() -> tuple[NozzleConfig, str]:
     try:
         return load_nozzles(), "config"
     except NotImplementedError:
-        return temp_nozzles(), "fake"
+        # B 미병합: 가짜는 tests/fakes.py 한 곳에만 둔다 (00_common.md 3절).
+        from tests.fakes import fake_nozzles
+        return fake_nozzles(), "fake"
 
 
 def nozzle_hash(nozzle: NozzleConfig) -> str:

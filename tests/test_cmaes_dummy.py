@@ -5,10 +5,11 @@ import numpy as np
 import pytest
 
 from airis.optimize.cmaes_runner import cma_seed, run_cmaes
-from airis.optimize.dummy import DummyEvaluator, temp_nozzles
+from airis.optimize.dummy import DummyEvaluator
 from airis.optimize.encoding import PoseEncoder
 from airis.sim import BodyParams, PoseParams
 from airis.sim.scenario import load_scenarios
+from tests.fakes import fake_nozzles
 
 pytest.importorskip("cma", reason="cma 패키지 필요 (pip install cma)")
 
@@ -26,7 +27,7 @@ def scenarios():
 def _run(scenario, **kwargs):
     evaluator = DummyEvaluator(TARGET, scenario)
     result = run_cmaes(
-        evaluator, BodyParams(), scenario, temp_nozzles(),
+        evaluator, BodyParams(), scenario, fake_nozzles(),
         **{"max_evals": 1500, "popsize": 20, "seed": 0, **kwargs},
     )
     return evaluator, result
