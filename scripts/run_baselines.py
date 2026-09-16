@@ -40,6 +40,8 @@ def build_parser() -> argparse.ArgumentParser:
                     help="평가할 시나리오. 생략 시 configs/scenarios.yaml 전부")
     ap.add_argument("--body", default=None, help='BodyParams 덮어쓰기 JSON')
     ap.add_argument("--log-dir", default=str(ROOT / "outputs"))
+    ap.add_argument("--patches-per-m2", type=float, default=cli.DEFAULT_PATCHES_PER_M2,
+                    help="패치판 표면 패치 밀도 (--evaluator patch 에만 적용)")
     ap.add_argument("--dummy-target", default=None, help="--evaluator dummy 의 목표 자세 JSON")
     return ap
 
@@ -66,6 +68,7 @@ def main(argv: list[str] | None = None) -> int:
         try:
             evaluator = cli.make_evaluator(
                 args.evaluator, scenario, body=body, nozzle=nozzle, dummy_target=dummy_target,
+                patches_per_m2=args.patches_per_m2,
             )
         except cli.TrackNotMerged as exc:
             print(str(exc), file=sys.stderr)
@@ -82,6 +85,7 @@ def main(argv: list[str] | None = None) -> int:
                 "evaluator": args.evaluator,
                 "nozzle_source": nozzle_source,
                 "nozzle_hash": cli.nozzle_hash(nozzle),
+                "patches_per_m2": args.patches_per_m2 if args.evaluator == "patch" else "",
                 "commit": commit,
                 "score": float(result.score),
                 "total_removal": float(result.total_removal),
@@ -102,7 +106,8 @@ def main(argv: list[str] | None = None) -> int:
         writer.writeheader()
         writer.writerows(rows)
 
-    print(f"평가기 {args.evaluator}, 노즐 {nozzle.count}개({nozzle_source})")
+    density = f", 패치 밀도 {args.patches_per_m2:g}/m²" if args.evaluator == "patch" else ""
+    print(f"평가기 {args.evaluator}, 노즐 {nozzle.count}개({nozzle_source}){density}")
     print()
     print(f"{'시나리오':<14}{'조건':<6}{'score':>12}{'total_removal':>15}{'discomfort':>12}")
     print("-" * 61)

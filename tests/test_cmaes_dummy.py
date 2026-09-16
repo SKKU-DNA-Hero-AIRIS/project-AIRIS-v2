@@ -190,7 +190,7 @@ def test_run_optimize_writes_three_files(tmp_path):
 class _NotImplementedEvaluator:
     """클래스는 있지만 evaluate 가 미구현인 평가기 (트랙 병합 전 스텁을 흉내 낸다)."""
 
-    def __init__(self, physics_cfg):
+    def __init__(self, physics_cfg, **kwargs):
         self.cfg = physics_cfg
 
     def evaluate(self, pose, nozzle, body, scenario):
@@ -235,3 +235,29 @@ def test_patch_evaluator_runs_in_loop(scenarios):
     assert result.best_pose.hip_flexion == 90
     assert result.best_pose.knee_flexion == 90
     assert result.best_result.removal_by_part.shape == (5,)
+
+
+def test_patches_per_m2_reaches_patch_evaluator(scenarios, tmp_path):
+    """--patches-per-m2 가 PatchEvaluator 까지 전달되고 meta.json 에 남는다."""
+    from airis.optimize import cli
+    from scripts.run_optimize import build_parser, main
+
+    assert build_parser().parse_args([]).patches_per_m2 == cli.DEFAULT_PATCHES_PER_M2 == 400.0
+
+    scenario = scenarios["default"]
+    nozzle = load_nozzles()
+    sparse = cli.make_evaluator("patch", scenario, body=BodyParams(), nozzle=nozzle, patches_per_m2=100)
+    dense = cli.make_evaluator("patch", scenario, body=BodyParams(), nozzle=nozzle, patches_per_m2=400)
+    assert sparse.patches_per_m2 == 100 and dense.patches_per_m2 == 400
+    n_sparse = sparse.build_state(BodyParams(), PoseParams(), scenario).patch_pos.shape[0]
+    n_dense = dense.build_state(BodyParams(), PoseParams(), scenario).patch_pos.shape[0]
+    assert n_sparse < n_dense
+
+    code = main([
+        "--evaluator", "patch", "--scenario", "default", "--patches-per-m2", "100",
+        "--max-evals", "8", "--popsize", "4", "--log-dir", str(tmp_path),
+    ])
+    assert code == 0
+    (run_dir,) = [p for p in tmp_path.iterdir() if p.is_dir()]
+    meta = json.loads((run_dir / "meta.json").read_text(encoding="utf-8"))
+    assert meta["args"]["patches_per_m2"] == 100
