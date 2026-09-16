@@ -4,7 +4,7 @@ import json
 import numpy as np
 import pytest
 
-from airis.optimize.cmaes_runner import cma_seed, run_cmaes
+from airis.optimize.cmaes_runner import INFEASIBLE_SCORE, cma_seed, run_cmaes
 from airis.optimize.dummy import DummyEvaluator
 from airis.optimize.encoding import PoseEncoder
 from airis.sim import BodyParams, PoseParams
@@ -77,10 +77,74 @@ def test_wheelchair_keeps_fixed_pose(scenarios):
 def test_history_columns(scenarios):
     _, result = _run(scenarios["default"], max_evals=200)
     for i, row in enumerate(result.history, start=1):
-        assert set(row) == {"gen", "evals", "best", "mean", "sigma"}
+        assert set(row) == {"gen", "evals", "best", "mean", "sigma", "infeasible_frac"}
+        assert row["infeasible_frac"] == 0.0   # 더미는 불가 판정을 내지 않는다
         assert row["gen"] == i
     best_values = [row["best"] for row in result.history]
     assert best_values == sorted(best_values), "누적 best 는 단조 증가해야 한다"
+
+
+class _BoothWallEvaluator(DummyEvaluator):
+    """shoulder_abduction 이 LIMIT 를 넘으면 부스 밖이라 불가로 판정하는 더미.
+
+    목표(TARGET, 벌림 95°)는 불가 구간에 있다. 불가 후보를 best 로 고르지 않으면
+    best 는 LIMIT 이하에 머문다.
+    """
+
+    LIMIT = 60.0
+
+    def evaluate(self, pose, nozzle, body, scenario):
+        result = super().evaluate(pose, nozzle, body, scenario)
+        if pose.shoulder_abduction > self.LIMIT:
+            result.score = INFEASIBLE_SCORE
+            result.extra["infeasible"] = True
+        return result
+
+
+class _BatchBoothWallEvaluator(_BoothWallEvaluator):
+    """batch_evaluate 를 오버라이드한 평가기(입자판 흉내). 점수만 돌려준다."""
+
+    def batch_evaluate(self, candidates, body, scenario):
+        return np.array(
+            [self.evaluate(p, n, body, scenario).score for p, n in candidates], dtype=np.float32,
+        )
+
+
+@pytest.mark.parametrize("cls", [_BoothWallEvaluator, _BatchBoothWallEvaluator])
+def test_infeasible_candidates_excluded_from_best(scenarios, cls):
+    scenario = scenarios["default"]
+    evaluator = cls(TARGET, scenario)
+    result = run_cmaes(
+        evaluator, BodyParams(), scenario, load_nozzles(),
+        max_evals=600, popsize=20, seed=0,
+    )
+    fracs = [row["infeasible_frac"] for row in result.history]
+    assert all(0.0 <= f <= 1.0 for f in fracs)
+    assert any(f > 0 for f in fracs), "목표가 불가 구간이라 불가 후보가 나와야 한다"
+    assert result.n_infeasible == round(sum(f * 20 for f in fracs))
+    assert result.best_pose.shoulder_abduction <= cls.LIMIT
+    assert result.best_score > INFEASIBLE_SCORE
+    assert not result.best_result.extra.get("infeasible", False)
+    assert all(row["best"] > INFEASIBLE_SCORE for row in result.history)
+
+
+class _AlwaysInfeasibleEvaluator(DummyEvaluator):
+    def evaluate(self, pose, nozzle, body, scenario):
+        result = super().evaluate(pose, nozzle, body, scenario)
+        result.score = INFEASIBLE_SCORE
+        result.extra["infeasible"] = True
+        return result
+
+
+def test_all_infeasible_has_no_best(scenarios):
+    scenario = scenarios["default"]
+    result = run_cmaes(
+        _AlwaysInfeasibleEvaluator(TARGET, scenario), BodyParams(), scenario, load_nozzles(),
+        max_evals=100, popsize=20, seed=0,
+    )
+    assert all(row["infeasible_frac"] == 1.0 for row in result.history)
+    assert all(row["best"] == -np.inf for row in result.history)
+    assert result.n_infeasible == result.n_evals
 
 
 def test_run_optimize_writes_three_files(tmp_path):
@@ -115,7 +179,7 @@ def test_run_optimize_writes_three_files(tmp_path):
     }
 
     header, *rows = (run_dir / "history.csv").read_text(encoding="utf-8").strip().splitlines()
-    assert header == "gen,evals,best,mean,sigma"
+    assert header == "gen,evals,best,mean,sigma,infeasible_frac"
     assert len(rows) == len(set(rows)) and rows
 
     index = (tmp_path / "index.csv").read_text(encoding="utf-8").strip().splitlines()
