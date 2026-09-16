@@ -341,6 +341,7 @@ scripts/               # 실행 스크립트                    [C]
 docs/
   interfaces.md        # 타입·함수 계약, 데이터셋 스키마
   plan.md              # 주차별 계획, 역할, 체크포인트, 협업 규칙
+  tracks/              # 트랙별 상세 구현 계획 (00_common, A, B, C, D)
 ```
 
 ---

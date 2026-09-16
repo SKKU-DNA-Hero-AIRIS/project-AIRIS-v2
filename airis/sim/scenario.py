@@ -5,7 +5,7 @@ from pathlib import Path
 
 import yaml
 
-from .types import Scenario
+from .types import Scenario, NozzleConfig
 
 _ROOT = Path(__file__).resolve().parents[2]
 
@@ -43,6 +43,11 @@ def load_nozzle_layout(path: Path | None = None) -> dict:
     """고정 노즐 배치 원본. NozzleConfig로 전개하는 것은 B의 1주차 구현 (jet.py 또는 여기)."""
     path = path or _ROOT / "configs" / "nozzles.yaml"
     return yaml.safe_load(path.read_text(encoding="utf-8"))
+
+
+def load_nozzles(path: Path | None = None) -> NozzleConfig:
+    """configs/nozzles.yaml의 layout을 전개해 NozzleConfig를 만든다. B 트랙 단계 5."""
+    raise NotImplementedError("B: 1주차 구현 대상 (docs/tracks/B_body_jet.md 단계 5)")
 
 
 def load_physics(path: Path | None = None) -> dict:

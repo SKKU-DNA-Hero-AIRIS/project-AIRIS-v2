@@ -76,6 +76,10 @@ class BodyState:
     patch_part: np.ndarray           # (N,) int, PART_NAMES 인덱스
     # 충돌 프리미티브: 캡슐 (p0, p1, r) 목록. 입자 충돌과 가림 판정에 사용.
     capsules: np.ndarray             # (K, 7) = [x0,y0,z0, x1,y1,z1, r]
+    # 캡슐 부위. -1 = 가림 전용 (휠체어 프레임 등, 패치 없음). A의 재부착 부위 판정에 사용.
+    capsule_part: np.ndarray | None = None   # (K,) int
+    # 패치가 속한 캡슐 인덱스. D의 가림 판정이 자기 캡슐을 제외할 때 사용.
+    patch_capsule: np.ndarray | None = None  # (N,) int
 
 
 @dataclass
