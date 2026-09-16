@@ -15,7 +15,7 @@
 |---|---|---|---|
 | `BodyParams` | E(포즈 추정), C(샘플링) | B | 체형 5개 값 |
 | `PoseParams` | C(최적화 변수) | B | degree. `to_vector / from_vector` 순서 고정 |
-| `NozzleConfig` | B (`configs/nozzles.yaml`) | A, D | 위치 (M,3), 방향 (M,3), 세기 (M,). 슬롯 제트면 `slot_axis` (M,3), `slot_length` (M,) 추가 (`None`이면 원형 노즐). 고정 입력 |
+| `NozzleConfig` | B (`configs/nozzles.yaml`) | A, D | 위치 (M,3), 방향 (M,3), 세기 (M,). 슬롯 제트면 `slot_axis` (M,3), `slot_length` (M,) 추가 (`None`이면 전부 원형; 배열이면 행 단위로 `slot_length[m] > 0`이고 `slot_axis[m] ≠ 0`인 노즐만 슬롯). 고정 입력 |
 | `Scenario` | B (`configs/scenarios.yaml`) | C, A, D | 상속 지원 |
 | `BodyState` | B (`build_body`) | A, D, E | 패치 + 캡슐 + `capsule_part`(K,) + `patch_capsule`(N,) |
 | `EvalResult` | A, D | C, E | `score`는 최적화용, 나머지는 분석용 |

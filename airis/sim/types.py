@@ -49,7 +49,8 @@ class NozzleConfig:
     directions: np.ndarray           # (M, 3) 단위 벡터
     strengths: np.ndarray            # (M,) exit_velocity 배수 (강/중/약 모드, 팬 병렬 수 반영. 1을 넘을 수 있음)
     pulse_phase: np.ndarray | None = None  # (M,) 0~1
-    # 슬롯(평면) 제트: 슬롯 길이 방향 단위 벡터와 길이. None 이면 원형 노즐 (00_common.md 4.1 / 4.1b).
+    # 슬롯(평면) 제트: 슬롯 길이 방향 단위 벡터와 길이. None 이면 전부 원형 노즐.
+    # 배열이면 행 단위: slot_length[m] > 0 이고 slot_axis[m] 이 0벡터가 아니면 슬롯(4.1b), 아니면 원형(4.1).
     slot_axis: np.ndarray | None = None    # (M, 3), 분사 방향에 수직
     slot_length: np.ndarray | None = None  # (M,) m
 
