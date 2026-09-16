@@ -5,21 +5,209 @@
 - 입자판 디버깅 시 비교 대상
 - 밀리초 단위여야 함 (numpy 벡터화)
 
-TODO(D, 1주차):
-- build_body → 패치별 유효 풍속 (velocity_field + 법선 각도 + 캡슐 가림)
-- 풍속 → 제거율 (임계값 + 시그모이드)
-- 부위별 집계, 불편도 페널티, EvalResult
+흐름 (`docs/tracks/D_patch_baseline.md` 단계 4)
+
+    state   = build_body(body, pose, scenario)
+    u_mn    = velocity_field_per_nozzle(patch_pos + d·n, nozzle, t=0, cfg)   # (M,N,3)
+    visible = occlusion(state, nozzle, cfg)                                  # (M,N)
+    u       = sum_m u_mn · visible[m]                                        # (N,3)
+    tau     = scoring.wall_shear(u, patch_normal, cfg)                       # (N,)
+    R       = scoring.removal_fraction(tau, cfg)                             # (N,)
+    R_part  = 면적 가중 평균 per part
+    score, disc = scoring.score(R_part, pose, scenario, cfg)
+
+물리 상수는 전부 `physics_cfg`(= `configs/physics.yaml`)에서 읽는다.
 """
 from __future__ import annotations
 
+from collections.abc import Callable
+
+import numpy as np
+
+from . import scoring
+from .body import build_body as _default_build_body
 from .interface import Evaluator
-from .types import BodyParams, PoseParams, NozzleConfig, Scenario, EvalResult
+from .jet import velocity_field_per_nozzle as _default_velocity_field_per_nozzle
+from .types import PART_NAMES, BodyParams, BodyState, EvalResult, NozzleConfig, PoseParams, Scenario
+
+_EPS = 1e-12
+# 후보 거르기 여유. float32 반올림보다 충분히 커서 거르기가 항상 보수적이 되게 한다.
+_CONE_SLACK = 1e-4
+
+
+def _segment_segment_dist_sq(s1: np.ndarray, d1: np.ndarray,
+                             p2: np.ndarray, d2: np.ndarray) -> np.ndarray:
+    """선분 (s1, s1+d1)과 (p2, p2+d2) 사이 최단 거리 제곱. 입력 (Q,3), 출력 (Q,).
+
+    Ericson, *Real-Time Collision Detection* 5.1.9 (ClosestPtSegmentSegment)를
+    1-D 배치로 벡터화했다. 길이 0인 선분(머리 구 캡슐 등)도 처리한다.
+    """
+    r = s1 - p2
+    a = np.einsum("ij,ij->i", d1, d1)
+    e = np.einsum("ij,ij->i", d2, d2)
+    f = np.einsum("ij,ij->i", d2, r)
+    c = np.einsum("ij,ij->i", d1, r)
+    b = np.einsum("ij,ij->i", d1, d2)
+    a_safe = np.maximum(a, _EPS)
+    e_safe = np.maximum(e, _EPS)
+
+    # 일반 경우. 평행이면 denom = 0 -> s = 0에서 시작.
+    denom = a * e - b * b
+    ok = denom > _EPS
+    s = np.where(ok, np.clip((b * f - c * e) / np.where(ok, denom, 1.0), 0.0, 1.0), 0.0)
+    t = (b * s + f) / e_safe
+    # t가 [0,1] 밖이면 끝점으로 고정하고 s를 다시 구한다.
+    s = np.where(t < 0.0, np.clip(-c / a_safe, 0.0, 1.0),
+                 np.where(t > 1.0, np.clip((b - c) / a_safe, 0.0, 1.0), s))
+    t = np.clip(t, 0.0, 1.0)
+
+    # 퇴화 경우는 일반식이 풀리지 않으므로 덮어쓴다 (f = d2·r 이 정확히 0이 되어
+    # 위의 t 재계산 분기에 들어가지 않는다).
+    point_capsule = e <= _EPS          # 캡슐 축이 점: t = 0, s는 점에 대한 투영
+    s = np.where(point_capsule, np.clip(-c / a_safe, 0.0, 1.0), s)
+    t = np.where(point_capsule, 0.0, t)
+    point_ray = a <= _EPS              # 선분이 점: s = 0, t는 캡슐 축에 대한 투영
+    s = np.where(point_ray, 0.0, s)
+    t = np.where(point_ray, np.clip(f / e_safe, 0.0, 1.0), t)
+
+    w = r + s[:, None] * d1 - t[:, None] * d2
+    return np.einsum("ij,ij->i", w, w)
+
+
+def occlusion(state: BodyState, nozzle: NozzleConfig, physics_cfg: dict) -> np.ndarray:
+    """(M, N) bool. 노즐 m이 패치 n을 볼 수 있으면 True.
+
+    `docs/tracks/D_patch_baseline.md` 단계 3.
+
+    1. 뒷면: `normal · (nozzle_pos - patch_pos) <= 0` 이면 노즐이 패치 뒤에 있으므로
+       거리 계산 없이 가림.
+    2. 후보 거르기 (보수적, float32): 노즐에서 본 캡슐 경계 구의 원뿔 밖에 있거나,
+       경계 구가 패치보다 멀리 있으면 그 캡슐은 이 광선을 가릴 수 없다. 노즐마다
+       행렬곱 한 번으로 (N, K)를 판정한다. 여유를 두어 남기기만 하고 버리지는 않는다.
+    3. 정확 판정 (float64, 후보만): 선분(패치 표면 `patch_pos + d·normal` -> 노즐)과
+       캡슐 축의 최단 거리가 반지름보다 작으면 가림. 자기 캡슐은 제외한다.
+
+    2단계는 결과를 바꾸지 않고 계산량만 줄인다 (전수 판정과 결과가 같음을 테스트로 확인).
+    """
+    delta = float(physics_cfg["air"]["wall_offset_m"])
+
+    pos = np.asarray(state.patch_pos, dtype=np.float64)          # (N,3)
+    normal = np.asarray(state.patch_normal, dtype=np.float64)    # (N,3)
+    npos = np.asarray(nozzle.positions, dtype=np.float64)        # (M,3)
+    caps = np.asarray(state.capsules, dtype=np.float64)          # (K,7)
+
+    # 1. 뒷면 노즐.
+    facing = npos @ normal.T - np.einsum("ij,ij->i", normal, pos)[None, :] > 0.0   # (M,N)
+    visible = facing.copy()
+    if caps.shape[0] == 0 or not facing.any():
+        return visible
+
+    start = pos + delta * normal                                 # (N,3) 선분 시작점
+    p2 = caps[:, 0:3]                                            # (K,3) 캡슐 축 시작
+    d2 = caps[:, 3:6] - p2                                       # (K,3) 캡슐 축 방향
+    radius = caps[:, 6]                                          # (K,)
+    center = p2 + 0.5 * d2
+    bound = 0.5 * np.sqrt(np.einsum("ij,ij->i", d2, d2)) + radius   # 경계 구 반지름
+    own = (None if state.patch_capsule is None
+           else np.asarray(state.patch_capsule, dtype=np.int64))
+    start32 = start.astype(np.float32)
+
+    # 2. 노즐마다 원뿔·깊이로 후보 (m, n, k)를 거른다.
+    cand_m, cand_n, cand_k = [], [], []
+    for m in range(npos.shape[0]):
+        n_sel = np.flatnonzero(facing[m])
+        if n_sel.size == 0:
+            continue
+        ray = start32[n_sel] - npos[m].astype(np.float32)                    # (Nm,3)
+        ray_len = np.sqrt(np.einsum("ij,ij->i", ray, ray))                   # (Nm,)
+
+        to_center = center - npos[m]                                         # (K,3)
+        center_dist = np.sqrt(np.einsum("ij,ij->i", to_center, to_center))   # (K,)
+        nozzle_inside = center_dist <= bound       # 원뿔이 정의되지 않음 -> 항상 후보
+        sin_half = np.where(nozzle_inside, 1.0, bound / np.maximum(center_dist, _EPS))
+        cos_half = np.sqrt(np.maximum(0.0, 1.0 - sin_half * sin_half))
+        axis = to_center / np.maximum(center_dist, _EPS)[:, None]
+
+        in_cone = (ray @ axis.T.astype(np.float32)
+                   >= ray_len[:, None] * (cos_half - _CONE_SLACK).astype(np.float32)[None, :])
+        in_reach = ((center_dist - bound).astype(np.float32)[None, :]
+                    <= ray_len[:, None] + np.float32(_CONE_SLACK))
+        cand = (in_cone & in_reach) | nozzle_inside[None, :]
+        if own is not None:
+            cand[np.arange(n_sel.size), own[n_sel]] = False
+
+        qi, kk = np.nonzero(cand)
+        cand_m.append(np.full(qi.size, m))
+        cand_n.append(n_sel[qi])
+        cand_k.append(kk)
+
+    cm = np.concatenate(cand_m)
+    if cm.size == 0:
+        return visible
+    cn = np.concatenate(cand_n)
+    ck = np.concatenate(cand_k)
+
+    # 3. 후보만 정확히 판정한다.
+    s1 = start[cn]
+    dist_sq = _segment_segment_dist_sq(s1, npos[cm] - s1, p2[ck], d2[ck])
+    hit = dist_sq < radius[ck] ** 2
+    visible[cm[hit], cn[hit]] = False
+    return visible
+
+
+def _area_weighted_by_part(values: np.ndarray, area: np.ndarray,
+                           part: np.ndarray) -> np.ndarray:
+    """부위별 면적 가중 평균 -> (len(PART_NAMES),). 패치가 없는 부위는 0."""
+    n_parts = len(PART_NAMES)
+    weighted = np.bincount(part, weights=values * area, minlength=n_parts)[:n_parts]
+    total = np.bincount(part, weights=area, minlength=n_parts)[:n_parts]
+    return np.divide(weighted, total, out=np.zeros(n_parts), where=total > 0.0)
 
 
 class PatchEvaluator(Evaluator):
-    def __init__(self, physics_cfg: dict):
+    """입자 없이 패치별 벽면 전단만으로 제거율을 구하는 numpy 평가기.
+
+    `build_body`와 `velocity_field_per_nozzle`는 B 소유다. 기본값으로 B의 구현을
+    쓰되, B 병합 전이나 단위 테스트에서는 `tests/fakes.py`의 가짜를 주입할 수 있게
+    생성자 인자로 뺐다 (`docs/tracks/00_common.md` 3절).
+    """
+
+    def __init__(self, physics_cfg: dict,
+                 build_body: Callable[..., BodyState] | None = None,
+                 velocity_field_per_nozzle: Callable[..., np.ndarray] | None = None):
         self.cfg = physics_cfg
+        self._build_body = build_body or _default_build_body
+        self._velocity_field_per_nozzle = (
+            velocity_field_per_nozzle or _default_velocity_field_per_nozzle)
 
     def evaluate(self, pose: PoseParams, nozzle: NozzleConfig,
                  body: BodyParams, scenario: Scenario) -> EvalResult:
-        raise NotImplementedError("D: 1주차 구현 대상")
+        delta = float(self.cfg["air"]["wall_offset_m"])
+        state = self._build_body(body, pose, scenario)
+
+        normal = np.asarray(state.patch_normal, dtype=np.float64)
+        area = np.asarray(state.patch_area, dtype=np.float64)
+        part = np.asarray(state.patch_part, dtype=np.int64)
+
+        # 공기 속도는 표면에서 wall_offset_m 만큼 띄운 곳에서 조회한다 (4.2).
+        probe = np.asarray(state.patch_pos, dtype=np.float64) + delta * normal
+
+        # 정상 상태 평가라 t = 0. 펄스는 무시한다 (00_common.md 4.1).
+        u_mn = self._velocity_field_per_nozzle(probe, nozzle, 0.0, self.cfg)   # (M,N,3)
+        visible = occlusion(state, nozzle, self.cfg)                           # (M,N)
+        u = (np.asarray(u_mn, dtype=np.float64) * visible[..., None]).sum(axis=0)
+
+        tau = scoring.wall_shear(u, normal, self.cfg)
+        removal = scoring.removal_fraction(tau, self.cfg)
+
+        removal_by_part = _area_weighted_by_part(removal, area, part)
+        total_removal = float((removal * area).sum() / area.sum()) if area.sum() > 0 else 0.0
+        total, disc = scoring.score(removal_by_part, pose, scenario, self.cfg)
+
+        return EvalResult(
+            score=total,
+            removal_by_part=removal_by_part,
+            total_removal=total_removal,
+            discomfort=disc,
+            extra={"tau": tau, "removal": removal, "visible_frac": float(visible.mean())},
+        )

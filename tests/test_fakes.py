@@ -147,9 +147,10 @@ def test_fake_body_is_deterministic():
 
 def test_fake_nozzles_fills_nozzleconfig_contract(booth):
     nz = fake_nozzles()
+    layout = load_nozzle_layout()["layout"]
     assert isinstance(nz, NozzleConfig)
     m = nz.count
-    assert m == 4                                  # 좌우 벽 각 2개
+    assert m == 2 * len(layout["z_levels"])        # 좌우 벽 × 높이 단
     assert nz.positions.shape == (m, 3)
     assert nz.directions.shape == (m, 3)
     assert nz.strengths.shape == (m,)
@@ -159,10 +160,14 @@ def test_fake_nozzles_fills_nozzleconfig_contract(booth):
     assert np.allclose(np.linalg.norm(nz.directions, axis=1), 1.0, atol=1e-6)
     assert (nz.strengths == 1.0).all()
 
-    # 좌우 벽면에 대칭으로 2개씩, 높이 두 단.
+    # 좌우 벽면에 대칭, 높이는 layout의 단, x는 부스 중앙.
     wall = booth["width_m"] / 2.0
     assert sorted(np.unique(nz.positions[:, 1]).tolist()) == pytest.approx([-wall, wall])
-    assert len(np.unique(nz.positions[:, 2])) == 2
+    assert sorted(np.unique(nz.positions[:, 2]).tolist()) == pytest.approx(layout["z_levels"])
+    assert np.allclose(nz.positions[:, 0], booth["length_m"] / 2.0)
+
+    # 높이를 직접 줄 수도 있다.
+    assert fake_nozzles(z_levels_m=(1.0, 1.4)).count == 4
 
 
 def test_fake_nozzles_point_inward_and_downstream():
@@ -173,16 +178,21 @@ def test_fake_nozzles_point_inward_and_downstream():
     assert (nz.directions[:, 0] > 0).all()
 
 
-def test_fake_nozzle_axes_pass_through_the_body():
-    """노즐 축이 몸을 비껴가면 정성 테스트가 전부 0 대 0이 된다."""
+def test_fake_nozzle_axes_pass_in_front_of_the_body():
+    """제트 축은 몸통 축보다 +x(정면) 쪽을 몸 가까이 지난다.
+
+    이 비대칭이 없으면 속도장이 x에 대해 대칭이 되어 yaw 0과 180이 같은 점수를 낸다.
+    """
     nz, state = fake_nozzles(), fake_body()
-    torso_axis_xy = state.capsules[0, 0:2]
+    torso_axis_xy = state.capsules[0, 0:2].astype(np.float64)
     r = torso_axis_xy - nz.positions[:, :2]
     d = nz.directions[:, :2] / np.linalg.norm(nz.directions[:, :2], axis=1, keepdims=True)
     s = (r * d).sum(1)
-    miss = np.linalg.norm(r - s[:, None] * d, axis=1)
-    assert (s > 0).all()                       # 몸이 노즐 앞쪽에 있다
-    assert (miss < state.capsules[0, 6]).all()  # 축이 몸통 반지름 안을 지난다
+    closest = nz.positions[:, :2] + s[:, None] * d
+    assert (s > 0).all()                                        # 몸이 노즐 앞쪽에 있다
+    assert (closest[:, 0] > torso_axis_xy[0]).all()             # 정면(+x) 쪽을 지난다
+    reach = state.capsules[0, 6] + 2 * 0.15                     # 몸통 + 제트 폭 여유
+    assert (np.linalg.norm(closest - torso_axis_xy, axis=1) < reach).all()
 
 
 # --- fake_velocity_field_per_nozzle ------------------------------------------
