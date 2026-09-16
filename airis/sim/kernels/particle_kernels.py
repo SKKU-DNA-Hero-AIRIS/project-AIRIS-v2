@@ -45,6 +45,10 @@ C_BOOTH_H = 15
 C_GZ = 16            # 중력 z 성분 (-9.81)
 NUM_CONST = 17
 
+# 부위 인덱스 (types.PART_NAMES 순서). 커널 안에서 컴파일 상수로 쓴다.
+PART_TORSO_FRONT = 1
+PART_TORSO_BACK = 2
+
 SQRT2LN2 = 1.177     # 반속도 반경 -> 가우시안 sigma 환산 (00_common.md 4.1)
 GRAVITY_Z = -9.81
 
@@ -134,7 +138,10 @@ class ParticleFields:
         self.cap_part = ti.field(ti.i32)           # -1 = 가림 전용
         fb.dense(ti.ij, (self.B, self.K)).place(self.cap_part)
         self.n_caps = ti.field(ti.i32)
-        fb.dense(ti.i, self.B).place(self.n_caps)
+        # 후보별 몸 전방 단위 벡터. BodyState.capsule_part는 캡슐당 하나라 몸통 캡슐이
+        # torso_front로만 들어오므로, 재부착 부위의 앞/뒤는 충돌 법선·전방 부호로 가른다.
+        self.body_fwd = ti.Vector.field(3, ti.f32)
+        fb.dense(ti.i, self.B).place(self.n_caps, self.body_fwd)
 
         self.noz_pos = ti.Vector.field(3, ti.f32)
         self.noz_dir = ti.Vector.field(3, ti.f32)
@@ -253,6 +260,8 @@ class ParticleFields:
                             n_hit = dv / dist
                         p = c + n_hit * (rad + 1e-4)                # 표면 밖으로
                         cp = self.cap_part[b, k]
+                        if cp == PART_TORSO_FRONT and n_hit.dot(self.body_fwd[b]) <= 0.0:
+                            cp = PART_TORSO_BACK
                         if cp >= 0 and self.rand_redep[i] < self.cst[C_P_REDEP]:
                             self.state[i] = 0                       # 몸에 재부착
                             self.part[i] = cp

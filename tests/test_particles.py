@@ -3,10 +3,11 @@
 `docs/tracks/A_particles.md` 단계 10의 후보 격리 테스트 6개 + 시각 확인용 산점도.
 개발 중 설정은 `N=1000, B=2, duration 0.5 s` (00_common.md 7절, GPU 공유).
 
-가짜 입력
-- 마네킹: B의 `build_body`가 아직 없으므로 원통 캡슐 BodyState를 여기서 직접 만든다
-  (`cylinder_body`). `tests/fakes.py`의 `fake_body`가 생기면 마지막 테스트가 자동으로 돈다.
-- 노즐: B의 `load_nozzles`가 없으므로 NozzleConfig를 직접 만든다.
+입력
+- 격리 테스트: 기하를 완전히 통제하려고 원통 캡슐 BodyState를 여기서 만든다
+  (`cylinder_body`, 후보마다 캡슐 수가 다르게). 노즐은 원통을 스치는 4개.
+- 실제 경로: B의 `build_body` + `load_nozzles`(16개)로 `evaluate`/`batch_evaluate`를
+  C가 부르는 그대로 호출한다. D의 `fake_body`/`fake_nozzles`도 한 번 돌린다.
 
 물리 상수 오버라이드 (`_sim_physics`)
 - configs/physics.yaml 그대로(노즐 지름 4 mm)면 몸 위치(노즐에서 0.45 m)의 중심 속도가
@@ -27,9 +28,14 @@ import pytest
 
 ti = pytest.importorskip("taichi")
 
+from airis.sim.jet import velocity_field  # noqa: E402
 from airis.sim.particles import ParticleEvaluator  # noqa: E402
-from airis.sim.scenario import load_nozzle_layout, load_physics, load_scenarios  # noqa: E402
-from airis.sim.types import PART_NAMES, BodyState, NozzleConfig, PoseParams  # noqa: E402
+from airis.sim.scenario import (  # noqa: E402
+    load_nozzle_layout, load_nozzles, load_physics, load_scenarios,
+)
+from airis.sim.types import (  # noqa: E402
+    PART_NAMES, BodyParams, BodyState, NozzleConfig, PoseParams,
+)
 
 ROOT = Path(__file__).resolve().parents[1]
 N_DEV = 1000
@@ -105,23 +111,11 @@ def grazing_nozzles(strength: float = 1.0) -> NozzleConfig:
 
 
 def layout_nozzles(rng: np.random.Generator) -> NozzleConfig:
-    """configs/nozzles.yaml layout을 전개한 16개 (B의 load_nozzles 대용) + 무작위 세기."""
-    lay = load_nozzle_layout()["layout"]
-    yaw = math.radians(lay["yaw_deg"])
-    pitch = math.radians(lay["pitch_deg"])
-    pos, dirs = [], []
-    for wy in lay["wall_y"]:
-        inward = -np.sign(wy)
-        d = np.array([math.sin(yaw), inward * math.cos(yaw), 0.0]) * math.cos(pitch)
-        d[2] = -math.sin(pitch)
-        for x in lay["x_positions"]:
-            for z in lay["z_levels"]:
-                pos.append([x, wy, z])
-                dirs.append(d)
-    m = len(pos)
-    return NozzleConfig(np.array(pos, np.float32), np.array(dirs, np.float32),
-                        rng.uniform(0.3, 1.0, m).astype(np.float32),
-                        pulse_phase=rng.random(m).astype(np.float32))
+    """B의 load_nozzles (16개)에 무작위 세기와 펄스 위상을 입힌 것."""
+    nz = load_nozzles()
+    return NozzleConfig(nz.positions, nz.directions,
+                        rng.uniform(0.3, 1.0, nz.count).astype(np.float32),
+                        pulse_phase=rng.random(nz.count).astype(np.float32))
 
 
 def _sim_physics() -> dict:
@@ -320,6 +314,69 @@ def test_jet_matches_numpy_reference(pulse_t):
     assert rel.max() < 1e-4, f"최대 상대 오차 {rel.max():.3e} (점 {int(rel.argmax())})"
 
 
+def test_jet_matches_b_velocity_field():
+    """제트 일치 (B 기준값): Taichi vs `airis.sim.jet.velocity_field`, 몸 주변 점 1000개.
+
+    점은 부스 중앙 몸 주변이며 모든 노즐에서 0.1 m 이상 떨어져 있다 (통합 관리자 안내).
+    B 구현은 float32로 rho^2 = |r|^2 - s^2를 계산해, 좌표 크기(~1 m)의 반올림 오차가 가는
+    제트의 지수에서 증폭된다. 정확한 float64 수식 대비 최대 약 4e-4 어긋난다 (측정값).
+    Taichi는 rho = |r - s*d|를 직접 계산해 float64 대비 1e-4 안에 든다. 그래서
+    - Taichi vs float64 독립 구현: 1e-4 (엄격)
+    - Taichi vs B: 1e-3. B가 정밀도를 고치면 1e-4로 조인다 (PR 본문에 제안).
+    """
+    cfg = load_physics()
+    rng = np.random.default_rng(99)
+    nozzle = layout_nozzles(rng)
+    cand = rng.uniform([CENTER_X - 0.3, -0.4, 0.2], [CENTER_X + 0.3, 0.4, 1.9], (20000, 3))
+    d_min = np.linalg.norm(cand[:, None] - nozzle.positions[None], axis=2).min(axis=1)
+    points = cand[d_min >= 0.1][:1000].astype(np.float32)
+    assert len(points) == 1000
+
+    ev = ParticleEvaluator(cfg, max_candidates=1, particles_per_candidate=1, duration_s=0.0)
+    try:
+        u_ti = ev.probe_velocity(points, nozzle).astype(np.float64)
+    finally:
+        ev.destroy()
+    u_b = velocity_field(points, nozzle, 0.0, cfg).astype(np.float64)
+    u_exact = _jet_velocity_numpy(points, nozzle, cfg)
+
+    assert (np.linalg.norm(u_exact, axis=1) > 0.1).sum() >= 150
+    assert _relative_error(u_ti, u_exact).max() < 1e-4
+    rel_b = _relative_error(u_ti, u_b)
+    assert rel_b.max() < 1e-3, f"Taichi vs B 최대 상대 오차 {rel_b.max():.3e}"
+
+
+def test_torso_redeposition_splits_front_back():
+    """재부착 부위: 몸통 캡슐(capsule_part = torso_front)에 부딪히면 충돌 법선과 몸 전방
+    (cos yaw, sin yaw, 0)의 부호로 torso_front / torso_back을 가른다."""
+    cfg = _sim_physics()
+    cfg["adhesion"]["redeposition_prob"] = 1.0               # 충돌하면 반드시 재부착
+    ev = ParticleEvaluator(cfg, max_candidates=2, particles_per_candidate=4, duration_s=0.0)
+    scenario = load_scenarios()["default"]
+    poses = [PoseParams(torso_yaw=0.0), PoseParams(torso_yaw=180.0)]
+    try:
+        ev.batch_evaluate_states([cylinder_body(p) for p in poses], poses,
+                                 grazing_nozzles(0.0), scenario)
+        # 각 후보의 입자 4개를 몸통 안쪽 +x, -x, 앞쪽 비스듬히, 뒤쪽 비스듬히 두고 부유 상태로.
+        # 법선이 정확히 좌우(·전방 = 0)인 점은 yaw 180에서 sin(pi) 반올림으로 부호가 흔들려 피한다.
+        offsets = np.array([[0.1, 0, 0], [-0.1, 0, 0], [0.08, -0.05, 0], [-0.08, 0.05, 0]],
+                           np.float32)
+        pos = np.tile(np.array([CENTER_X, 0.0, 1.0], np.float32) + offsets, (2, 1))
+        ev.f.pos.from_numpy(pos)
+        ev.f.state.from_numpy(np.ones(8, np.int32))
+        ev.f.rand_redep.from_numpy(np.zeros(8, np.float32))
+        ev.f.k_collide(2)
+        state, part = ev.f.state.to_numpy(), ev.f.part.to_numpy()
+    finally:
+        ev.destroy()
+    front, back = TORSO, PART_NAMES.index("torso_back")
+    assert np.all(state == 0)
+    # yaw 0: 전방 +x
+    np.testing.assert_array_equal(part[:4], [front, back, front, back])
+    # yaw 180: 전방 -x -> 앞뒤가 뒤집힌다
+    np.testing.assert_array_equal(part[4:], [back, front, back, front])
+
+
 def test_mass_conservation_every_step(ev_batch, scenario):
     """질량 보존: state 0/1/2 개수 합 == B·N, 매 스텝. 제거는 되돌아가지 않는다."""
     history = []
@@ -434,13 +491,29 @@ def _save_escape_plot(frames, final, body, nozzle, result):
     plt.close(fig)
 
 
-# -------------------------------------------------- fakes.py 병합 후 자동 활성화
-def test_fake_body_runs_when_available(ev_batch, scenario):
-    """D의 tests/fakes.py가 병합되면 fake_body 두 자세로 배치가 돌고 격리가 유지되는지."""
+# ------------------------------------------------- 실제 입력 (B build_body, D fakes)
+def test_batch_evaluate_with_build_body_matches_evaluate(ev_batch, scenario):
+    """C가 부르는 그대로: batch_evaluate([(PoseParams, NozzleConfig)], body, scenario)
+    -> (B,) float32, 입력 순서 유지, 각 원소 == evaluate(...).score."""
+    body = BodyParams()
+    nozzle = load_nozzles()
+    poses = [PoseParams(shoulder_abduction=120.0, torso_yaw=30.0), PoseParams()]
+    scores = ev_batch.batch_evaluate([(p, nozzle) for p in poses], body, scenario)
+    assert scores.dtype == np.float32 and scores.shape == (2,)
+    singles = [ev_batch.evaluate(p, nozzle, body, scenario) for p in poses]
+    np.testing.assert_array_equal(scores, np.array([r.score for r in singles], np.float32))
+    reversed_scores = ev_batch.batch_evaluate([(p, nozzle) for p in poses[::-1]], body, scenario)
+    np.testing.assert_array_equal(reversed_scores, scores[::-1])
+    assert singles[0].total_removal > 0.0
+    assert singles[0].extra["count_init"].sum() == N_DEV
+
+
+def test_fake_body_batch_isolation(ev_batch, scenario):
+    """D의 fake_body(캡슐 4개) + fake_nozzles로 배치가 돌고 격리가 유지되는지."""
     fakes = pytest.importorskip("tests.fakes", reason="tests/fakes.py 미병합 (D)")
     down, up = fakes.fake_body(arms_up=False), fakes.fake_body(arms_up=True)
     pose_down, pose_up = PoseParams(), PoseParams(shoulder_abduction=120.0)
-    nz = grazing_nozzles()
+    nz = fakes.fake_nozzles()
     batch = ev_batch.batch_evaluate_states([down, up], [pose_down, pose_up], nz, scenario)
     solo = ev_batch.batch_evaluate_states([up], [pose_up], nz, scenario)[0]
     _assert_same(solo, batch[1])

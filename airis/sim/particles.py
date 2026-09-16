@@ -21,12 +21,14 @@ import numpy as np
 from .body import build_body
 from .interface import Evaluator
 from .kernels import ParticleFields, init_taichi, pack_constants
+from .kernels.particle_kernels import PART_TORSO_BACK, PART_TORSO_FRONT
 from .scenario import load_nozzle_layout
 from .types import (
     PART_NAMES, BodyParams, BodyState, EvalResult, NozzleConfig, PoseParams, Scenario,
 )
 
 N_PARTS = len(PART_NAMES)
+assert PART_NAMES[PART_TORSO_FRONT] == "torso_front" and PART_NAMES[PART_TORSO_BACK] == "torso_back"
 SURFACE_LIFT_M = 1e-4          # 입자를 패치 표면에서 띄우는 거리 (단계 3)
 
 
@@ -75,6 +77,7 @@ class ParticleEvaluator(Evaluator):
         self._h_caps = np.zeros((self.max_candidates, self.f.K, 7), np.float32)
         self._h_cap_part = np.full((self.max_candidates, self.f.K), -1, np.int32)
         self._h_n_caps = np.zeros(self.max_candidates, np.int32)
+        self._h_body_fwd = np.zeros((self.max_candidates, 3), np.float32)
         self._h_count_init = np.zeros((self.max_candidates, N_PARTS), np.int32)
 
     def destroy(self) -> None:
@@ -196,7 +199,7 @@ class ParticleEvaluator(Evaluator):
         self._h_count_init[:] = 0
         for b in range(n_act):
             rng = np.random.default_rng(self._candidate_seed(poses[b], nozzle))
-            self._init_candidate(b, states[b], rng)
+            self._init_candidate(b, states[b], poses[b], rng)
 
         f = self.f
         for name, arr in self._h.items():
@@ -204,10 +207,12 @@ class ParticleEvaluator(Evaluator):
         f.capsules.from_numpy(self._h_caps)
         f.cap_part.from_numpy(self._h_cap_part)
         f.n_caps.from_numpy(self._h_n_caps)
+        f.body_fwd.from_numpy(self._h_body_fwd)
         f.count_init.from_numpy(self._h_count_init)
         f.k_zero_removed(n_act)
 
-    def _init_candidate(self, b: int, state: BodyState, rng: np.random.Generator) -> None:
+    def _init_candidate(self, b: int, state: BodyState, pose: PoseParams,
+                        rng: np.random.Generator) -> None:
         """A_particles.md 단계 3을 그대로. 난수 호출 순서가 결정론의 일부다."""
         n = self.N
         sl = slice(b * n, (b + 1) * n)
@@ -257,6 +262,7 @@ class ParticleEvaluator(Evaluator):
         self._h_caps[b, :k] = caps
         self._h_cap_part[b, :k] = cap_part
         self._h_n_caps[b] = k
+        self._h_body_fwd[b] = body_forward(pose)
         self._h_count_init[b] = np.bincount(part, minlength=N_PARTS)[:N_PARTS]
 
     def _upload_nozzles(self, nozzle: NozzleConfig) -> None:
@@ -279,6 +285,14 @@ class ParticleEvaluator(Evaluator):
         self.f.noz_strength.from_numpy(strength)
         self.f.noz_phase.from_numpy(phase)
         self.f.n_noz[None] = m
+
+
+def body_forward(pose: PoseParams) -> np.ndarray:
+    """몸 전방 단위 벡터 (cos yaw, sin yaw, 0). B의 build_body가 torso_yaw를 z축
+    반시계 회전으로 적용하므로 같은 규약이다. torso_pitch 기울기는 무시하는 근사라
+    앞/뒤 경계 근처(법선이 거의 좌우 또는 위아래인 곳)에서만 판정이 갈릴 수 있다."""
+    yaw = np.radians(pose.torso_yaw)
+    return np.array([np.cos(yaw), np.sin(yaw), 0.0], dtype=np.float32)
 
 
 # ---------------------------------------------------------------- 점수 (4.4)
