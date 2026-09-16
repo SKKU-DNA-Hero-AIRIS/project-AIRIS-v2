@@ -18,6 +18,7 @@ from collections.abc import Sequence
 
 import numpy as np
 
+from . import scoring
 from .body import build_body
 from .interface import Evaluator
 from .kernels import ParticleFields, init_taichi, pack_constants
@@ -134,8 +135,7 @@ class ParticleEvaluator(Evaluator):
         for b in range(n_act):
             removal_by_part = (removed[b] / np.maximum(init[b], 1)).astype(np.float32)
             total = float(removed[b].sum()) / self.N
-            discomfort = _discomfort(poses[b], scenario)
-            score = _score(removal_by_part, discomfort, self.cfg)
+            score, discomfort = scoring.score(removal_by_part, poses[b], scenario, self.cfg)
             results.append(EvalResult(
                 score=score,
                 removal_by_part=removal_by_part,
@@ -293,31 +293,6 @@ def body_forward(pose: PoseParams) -> np.ndarray:
     앞/뒤 경계 근처(법선이 거의 좌우 또는 위아래인 곳)에서만 판정이 갈릴 수 있다."""
     yaw = np.radians(pose.torso_yaw)
     return np.array([np.cos(yaw), np.sin(yaw), 0.0], dtype=np.float32)
-
-
-# ---------------------------------------------------------------- 점수 (4.4)
-# TODO(A): D 병합 후 `airis/sim/scoring.py`의 구현으로 교체한다. 지금은
-# `docs/tracks/00_common.md` 4.4를 그대로 인라인 구현했다. 부위별 제거율은 입자 수 가중.
-def _discomfort(pose: PoseParams, scenario: Scenario) -> float:
-    default = PoseParams()
-    total = 0.0
-    for k, c_k in scenario.discomfort_weights.items():
-        bounds = scenario.pose_bounds.get(k)
-        if not c_k or bounds is None:
-            continue
-        lo, hi = bounds
-        if hi <= lo:
-            continue
-        total += c_k * abs(getattr(pose, k) - getattr(default, k)) / (hi - lo)
-    return float(total)
-
-
-def _score(removal_by_part: np.ndarray, discomfort: float, cfg: dict) -> float:
-    sc = cfg["scoring"]
-    weights = sc["part_weights"]
-    gain = sum(weights.get(name, 0.0) * float(removal_by_part[i])
-               for i, name in enumerate(PART_NAMES))
-    return float(gain - sc["discomfort_weight"] * discomfort)
 
 
 def _shared_nozzle(candidates: Sequence[tuple[PoseParams, NozzleConfig]]) -> NozzleConfig:
