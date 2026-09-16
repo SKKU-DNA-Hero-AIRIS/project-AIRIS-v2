@@ -8,14 +8,13 @@ B 병합 전후 자동 전환 (`docs/tracks/D_patch_baseline.md` 단계 5)
   `velocity_field_per_nozzle`이다 (가짜 제트는 B 병합 후 삭제).
 
 테스트용 물리 상수 (E1 전용 덮어쓰기)
-- `configs/physics.yaml` 그대로(노즐 지름 4 mm)면 몸 표면 풍속이 1 m/s 안팎이라 벽면
-  전단이 임계값의 1/100 수준이고, 제거율이 모든 자세에서 사실상 0이다. 이 영역에서는
-  부위별 대소 비교가 Φ(-6) 꼬리의 반올림 수준 차이로 정해져 방향 검증이 안 된다.
-- 충돌 제트 보정(B 단계 8, 미구현)이 들어오기 전까지, 몸 표면에서 제거율이 의미 있는
-  범위(총 제거율 ~15%)가 되도록 제트를 굵고 넓게 덮어쓴다. dict를 복사해 덮어쓰며
-  `configs/`는 수정하지 않는다 (00_common.md 1절).
-- 값은 격자 탐색으로 고르고, 두 값 각각 ±20% 이웃 9곳 중 8곳에서 E1 방향이 유지됨을
-  확인했다 (PR 본문 참고).
+- B #10 이후 `configs/physics.yaml`(노즐 지름 25 mm, 실효 τ_med 0.05 Pa)에서 E1 다섯 항목 중
+  "등지면 정면 하락"만 실패한다: 마주 볼 때 torso_front 0.004, 등질 때 0.046. 충돌 제트 보정
+  (B 단계 8)이 꺼져 있어 전단이 접선 속도만 보므로, 제트를 정면으로 받는 면은 전단이 거의 0이고
+  제트가 스치는 면이 오히려 높다. 모델 한계이며 총괄 판단 대상이다 (PR 본문).
+- 보정이 들어오기 전까지 노즐 지름만 0.08 m로 덮어쓴다. 확산율은 원본(0.096)이다. dict를
+  복사해 덮어쓰며 `configs/`는 수정하지 않는다 (00_common.md 1절).
+- 0.064, 0.08, 0.096(±20%)에서 E1 전 항목이 통과하고, 0.05에서는 위 항목이 다시 실패한다.
 
 테스트용 부스 (E1 전용)
 - 부스 밖 자세 불가 규칙(00_common.md 5절)은 팔 90도 같은 자세를 score -1로 끊는다. E1은
@@ -41,7 +40,7 @@ from airis.sim.types import PART_NAMES, BodyParams, BodyState, NozzleConfig, Pos
 from tests.fakes import fake_body, fake_nozzles
 
 # E1 테스트용 제트 덮어쓰기. 근거는 모듈 docstring.
-_E1_JET_OVERRIDES = {"nozzle_diameter_m": 0.08, "halfwidth_spread_rate": 0.2}
+_E1_JET_OVERRIDES = {"nozzle_diameter_m": 0.08}
 # E1 전용 부스 배율. 폭·높이만 키우고 길이(마네킹 x 위치)는 그대로 둔다. 근거는 모듈 docstring.
 _E1_BOOTH_SCALE = 10.0
 
