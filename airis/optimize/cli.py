@@ -75,7 +75,7 @@ def resolve_nozzles() -> tuple[NozzleConfig, str]:
     try:
         return load_nozzles(), "config"
     except NotImplementedError:
-        # B 미병합: 가짜는 tests/fakes.py 한 곳에만 둔다 (00_common.md 3절).
+        # load_nozzles 가 미구현인 브랜치용 폴백. 가짜는 tests/fakes.py 한 곳에만 둔다 (00_common.md 3절).
         from tests.fakes import fake_nozzles
         return fake_nozzles(), "fake"
 

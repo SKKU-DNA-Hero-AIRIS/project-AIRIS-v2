@@ -1,7 +1,7 @@
 """평가기가 없는 동안 최적화 루프를 검증하기 위한 더미. 소유자: C.
 
 D 의 PatchEvaluator 가 병합되면 이 파일은 단위 테스트 전용으로 남는다.
-노즐 가짜는 tests/fakes.py 의 fake_nozzles 를 쓴다 (00_common.md 3절).
+노즐은 평가에 쓰지 않는다. 실행 스크립트는 configs/nozzles.yaml 의 load_nozzles() 를 넘긴다.
 docs/tracks/C_optimize.md 단계 2.
 """
 from __future__ import annotations

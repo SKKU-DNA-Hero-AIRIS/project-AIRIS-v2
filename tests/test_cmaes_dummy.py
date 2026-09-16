@@ -8,8 +8,7 @@ from airis.optimize.cmaes_runner import cma_seed, run_cmaes
 from airis.optimize.dummy import DummyEvaluator
 from airis.optimize.encoding import PoseEncoder
 from airis.sim import BodyParams, PoseParams
-from airis.sim.scenario import load_scenarios
-from tests.fakes import fake_nozzles
+from airis.sim.scenario import load_nozzles, load_scenarios
 
 pytest.importorskip("cma", reason="cma 패키지 필요 (pip install cma)")
 
@@ -27,7 +26,7 @@ def scenarios():
 def _run(scenario, **kwargs):
     evaluator = DummyEvaluator(TARGET, scenario)
     result = run_cmaes(
-        evaluator, BodyParams(), scenario, fake_nozzles(),
+        evaluator, BodyParams(), scenario, load_nozzles(),
         **{"max_evals": 1500, "popsize": 20, "seed": 0, **kwargs},
     )
     return evaluator, result
@@ -106,7 +105,8 @@ def test_run_optimize_writes_three_files(tmp_path):
     assert meta["scenario"]["name"] == "default"
     assert meta["seed"] == 0
     assert meta["n_evals"] > 0
-    assert meta["args"]["nozzle_source"] == "fake"
+    # B 병합 후에는 configs/nozzles.yaml 의 실제 배치(16개)를 쓴다.
+    assert meta["args"]["nozzle_source"] == "config"
 
     best = json.loads((run_dir / "best.json").read_text(encoding="utf-8"))
     assert set(best["best_pose"]) == {
