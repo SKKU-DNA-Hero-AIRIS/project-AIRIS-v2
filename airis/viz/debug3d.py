@@ -74,6 +74,10 @@ def plot_body(state: BodyState, values: np.ndarray | None = None,
                   length=0.25, color="#377eb8", linewidth=1.0, arrow_length_ratio=0.3)
         ax.scatter(n[:, 0], n[:, 1], n[:, 2], s=14, c="#377eb8", marker="s")
         extent.append(n)
+        # 슬롯(4.1b)은 길이 방향 선분으로 그린다
+        for a, b in _slot_segments(nozzle):
+            ax.plot([a[0], b[0]], [a[1], b[1]], [a[2], b[2]], color="#377eb8", linewidth=3.0)
+            extent.append(np.stack([a, b]))
 
     # 가림 전용 캡슐(휠체어 프레임)은 패치가 없으므로 반지름을 살린 관으로 표시한다
     if state.capsule_part is not None:
@@ -88,6 +92,18 @@ def plot_body(state: BodyState, values: np.ndarray | None = None,
     ax.set_zlabel("z up (m)")
     ax.set_title(title)
     return ax
+
+
+def _slot_segments(nozzle: NozzleConfig) -> list[tuple[np.ndarray, np.ndarray]]:
+    """슬롯 노즐의 양 끝점 (n ± e·L/2). 원형 노즐은 없다."""
+    mask = jet.slot_mask(nozzle)
+    if not mask.any():
+        return []
+    n = np.asarray(nozzle.positions, dtype=np.float64)[mask]
+    e = np.asarray(nozzle.slot_axis, dtype=np.float64)[mask]
+    e = e / np.linalg.norm(e, axis=1, keepdims=True)
+    half = 0.5 * np.asarray(nozzle.slot_length, dtype=np.float64)[mask][:, None]
+    return list(zip(n - e * half, n + e * half))
 
 
 def _plot_occluder(ax, p0: np.ndarray, p1: np.ndarray, radius: float) -> np.ndarray:
@@ -116,7 +132,7 @@ def plot_jet_slice(nozzle: NozzleConfig, cfg: dict | None = None, plane: str = "
                    title: str = "", body: BodyState | None = None, slab: float = 0.05):
     """평면 격자에서 |u| 등고선. 제트가 어디에 닿는지 확인용.
 
-    plane="xz" 이면 고정 좌표는 y, plane="xy" 이면 고정 좌표는 z (인자 `y`를 그대로 씀).
+    plane="xz" 이면 고정 좌표는 y, "xy" 이면 z, "yz" 이면 x (인자 `y`를 고정값으로 그대로 씀).
     자유 제트는 거리에 따라 1/s 로 떨어져 동적 범위가 두 자릿수를 넘으므로 로그 눈금을 쓴다.
     `body` 를 주면 평면에서 ±slab 안의 패치를 겹쳐 그려 제트가 몸에 닿는지 바로 보인다.
     """
@@ -136,8 +152,11 @@ def plot_jet_slice(nozzle: NozzleConfig, cfg: dict | None = None, plane: str = "
     elif plane == "xy":
         pts = np.stack([uu.ravel(), vv.ravel(), fixed], axis=1)
         xlabel, ylabel = "x forward (m)", "y lateral (m)"
+    elif plane == "yz":
+        pts = np.stack([fixed, uu.ravel(), vv.ravel()], axis=1)
+        xlabel, ylabel = "y lateral (m)", "z up (m)"
     else:
-        raise ValueError(f"plane 은 'xz' 또는 'xy': {plane!r}")
+        raise ValueError(f"plane 은 'xz', 'xy', 'yz': {plane!r}")
 
     speed = np.linalg.norm(jet.velocity_field(pts.astype(np.float32), nozzle, 0.0, cfg), axis=1)
     vmax = float(speed.max()) if speed.max() > 0 else 1.0
@@ -147,17 +166,19 @@ def plot_jet_slice(nozzle: NozzleConfig, cfg: dict | None = None, plane: str = "
                      cmap="magma", norm=LogNorm(vmin=vmin, vmax=vmax))
     ax.figure.colorbar(cs, ax=ax, label="|u| (m/s, log)")
 
-    iu, iv, ifix = (0, 2, 1) if plane == "xz" else (0, 1, 2)
+    iu, iv, ifix = {"xz": (0, 2, 1), "xy": (0, 1, 2), "yz": (1, 2, 0)}[plane]
     if body is not None:
         bp = np.asarray(body.patch_pos)
         m = np.abs(bp[:, ifix] - y) < slab
-        ax.scatter(bp[m, iu], bp[m, iv], s=2, c="#39ff14", label=f"body |{'yz'[plane == 'xy']}-{y}|<{slab}")
+        ax.scatter(bp[m, iu], bp[m, iv], s=2, c="#39ff14", label=f"body |{'xyz'[ifix]}-{y}|<{slab}")
         ax.legend(loc="upper right", fontsize=8, markerscale=4)
 
     npos = np.asarray(nozzle.positions)
     ndir = np.asarray(nozzle.directions)
     ax.quiver(npos[:, iu], npos[:, iv], ndir[:, iu], ndir[:, iv],
               color="#00e5ff", scale=12, width=0.004)
+    for a, b in _slot_segments(nozzle):
+        ax.plot([a[iu], b[iu]], [a[iv], b[iv]], color="#00e5ff", linewidth=2.5)
 
     ax.set_aspect("equal")
     ax.set_xlabel(xlabel)
@@ -173,6 +194,8 @@ def _slice_extent(nozzle: NozzleConfig, plane: str, extent: tuple | None):
     booth = _booth()
     if plane == "xz":
         return (0.0, 0.0), (booth["length_m"], booth["height_m"])
+    if plane == "yz":
+        return (-booth["width_m"] / 2.0, 0.0), (booth["width_m"] / 2.0, booth["height_m"])
     return (0.0, -booth["width_m"] / 2.0), (booth["length_m"], booth["width_m"] / 2.0)
 
 

@@ -9,6 +9,15 @@ jet:
   # 포텐셜 코어 길이 L_c = decay_constant × nozzle_diameter_m (00_common.md 4.1). 별도 키를 두지 않는다.
   decay_constant: 6.7             # 중심 속도 감쇠 상수 (자유 제트 실험식)
   halfwidth_spread_rate: 0.096    # 반속도 반경 확산율 r_1/2 = 0.5D + 0.096 s (원형 난류 제트 실험값)
+  slot:
+    # 슬롯(평면) 제트, 00_common.md 4.1b. 기준 장비 퓨리움 PURIUM-10000-P 의 크로스팬 토출구.
+    # NozzleConfig.slot_axis 가 있는 노즐만 이 키를 쓴다. 위 원형 노즐 키는 원형 배치 비교용으로 남긴다.
+    height_m: 0.022                 # 슬롯 높이 h. 이미지 추정, 퓨리움 확인 대기
+    # 출구 속도 = 풍량 9.2 m^3/min(공개 사양)을 슬롯 바 1개 토출로 본 계산: 9.2/60 ÷ (0.60 m × 0.022 m) = 11.6 m/s.
+    # 사양 풍량이 팬 1개 값인지 12개 합계인지, 슬롯 길이·높이가 모두 추정이라 이 값도 추정이다. 퓨리움 확인 대기.
+    exit_velocity_mps: 11.6
+    decay_constant: 5.8             # K_p. Rajaratnam 평면 제트 U_m/U0 = 2.4·sqrt(h/s) → K_p = 2.4² ≈ 5.8
+    spread_rate: 0.10               # 평면 제트 반속도 반폭 확산율 (실험값 ≈ 0.10)
   impingement:
     # 충돌 제트 보정은 B 단계 8 (2주차 옵션). 아직 구현되지 않았으므로 false 로 둔다.
     # 구현되면 true 로 되돌린다. true 인 채로 surface_normals 를 넘기면 jet.py 가 막는다.

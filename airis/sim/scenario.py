@@ -46,43 +46,101 @@ def load_nozzle_layout(path: Path | None = None) -> dict:
     return yaml.safe_load(path.read_text(encoding="utf-8"))
 
 
-def load_nozzles(path: Path | None = None) -> NozzleConfig:
-    """configs/nozzles.yaml의 layout을 전개해 NozzleConfig를 만든다. B 트랙 단계 5.
+def load_nozzles(path: Path | None = None, layout: str | None = None) -> NozzleConfig:
+    """configs/nozzles.yaml 의 배치를 전개해 NozzleConfig 를 만든다. B 트랙 단계 5.
 
-    위치: (x, wall_y, z) for x in x_positions, wall_y in wall_y, z in z_levels.
-    방향: 벽면 안쪽 법선 (0, -sign(wall_y), 0)을
-          z 축으로 yaw_deg 만큼 진행 방향(+x)으로 돌리고,
-          다시 수평축으로 pitch_deg 만큼 아래로 내린다 (양수 = 아래).
+    `layout` 이 None 이면 파일의 `active` 배치를 쓴다.
+      - "slot_bars": 기준 장비(퓨리움) 슬롯 바. 전 행이 슬롯 제트(00_common.md 4.1b)라
+        slot_axis (M,3), slot_length (M,) 를 채운다.
+      - "layout": 원형 노즐 비교 배치. slot_axis = slot_length = None (전부 원형, 4.1).
     """
-    layout = load_nozzle_layout(path)["layout"]
-    wall_ys = layout["wall_y"]
-    x_positions = layout["x_positions"]
-    z_levels = layout["z_levels"]
-    yaw = np.deg2rad(float(layout["yaw_deg"]))
-    pitch = np.deg2rad(float(layout["pitch_deg"]))
+    raw = load_nozzle_layout(path)
+    name = layout or raw.get("active", "layout")
+    if name == "slot_bars":
+        return _expand_slot_bars(raw["slot_bars"])
+    if name == "layout":
+        return _expand_round_layout(raw["layout"])
+    raise ValueError(f"알 수 없는 노즐 배치: {name!r} (slot_bars | layout)")
 
+
+def _wall_jet_axes(wall_y: float, yaw: float, pitch: float) -> tuple[np.ndarray, np.ndarray]:
+    """벽면 토출구의 분사 방향 d 와 수평 접선 e (d ⊥ e, 둘 다 단위 벡터).
+
+    d: 벽면 안쪽 법선 (0, -sign(wall_y), 0) 을 z 축으로 yaw 만큼 진행 방향(+x)으로 돌리고,
+       다시 e 축을 중심으로 pitch 만큼 아래로 내린다 (양수 = 아래).
+    e: 벽면을 따라가는 수평 방향. yaw = 0 이면 +x. pitch 회전축이므로 pitch 와 무관하게 d 에 수직이다.
+    """
+    side = np.sign(wall_y)                   # +1 = 왼쪽 벽(+y), -1 = 오른쪽 벽(-y)
+    # wall_y<0: d0=(0,+1,0) 을 R_z(-yaw) → (sin yaw,  cos yaw, 0)
+    # wall_y>0: d0=(0,-1,0) 을 R_z(+yaw) → (sin yaw, -cos yaw, 0)
+    d_h = np.array([np.sin(yaw), -side * np.cos(yaw), 0.0])
+    e = np.array([np.cos(yaw), side * np.sin(yaw), 0.0])
+    d = d_h * np.cos(pitch) + np.array([0.0, 0.0, -1.0]) * np.sin(pitch)
+    return d, e
+
+
+def _expand_round_layout(lay: dict) -> NozzleConfig:
+    """원형 노즐: (x, wall_y, z) for x in x_positions, wall_y in wall_y, z in z_levels."""
+    yaw = np.deg2rad(float(lay["yaw_deg"]))
+    pitch = np.deg2rad(float(lay["pitch_deg"]))
     positions, directions = [], []
-    for x in x_positions:
-        for wall_y in wall_ys:
-            side = np.sign(wall_y)               # +1 = 왼쪽 벽(+y), -1 = 오른쪽 벽(-y)
-            # 안쪽 법선을 +x 쪽으로 yaw 만큼. 회전 부호는 벽면에 따라 반대다.
-            # wall_y<0: d0=(0,+1,0) 을 R_z(-yaw) → (sin yaw,  cos yaw, 0)
-            # wall_y>0: d0=(0,-1,0) 을 R_z(+yaw) → (sin yaw, -cos yaw, 0)
-            d = np.array([np.sin(yaw), -side * np.cos(yaw), 0.0])
-            # 수평 방향을 유지한 채 아래로 pitch. d 는 수평이므로 결과는 이미 단위 벡터다.
-            d = d * np.cos(pitch) + np.array([0.0, 0.0, -1.0]) * np.sin(pitch)
-            for z in z_levels:
-                positions.append([x, float(wall_y), float(z)])
+    for x in lay["x_positions"]:
+        for wall_y in lay["wall_y"]:
+            d, _ = _wall_jet_axes(float(wall_y), yaw, pitch)
+            for z in lay["z_levels"]:
+                positions.append([float(x), float(wall_y), float(z)])
                 directions.append(d)
-
-    directions = np.asarray(directions, dtype=np.float32)
-    directions /= np.linalg.norm(directions, axis=1, keepdims=True)
     return NozzleConfig(
         positions=np.asarray(positions, dtype=np.float32),
-        directions=directions,
-        strengths=np.full(len(positions), float(layout["strength"]), dtype=np.float32),
+        directions=_unit_rows(directions),
+        strengths=np.full(len(positions), float(lay["strength"]), dtype=np.float32),
         pulse_phase=None,
     )
+
+
+def _expand_slot_bars(bars: dict) -> NozzleConfig:
+    """슬롯 바: 측면 (wall_y × z_levels) 다음 상단 (x_positions) 순서.
+
+    측면 바: 중심 (x_center, wall_y, z), 분사 = 벽 안쪽 법선에 yaw·pitch, 슬롯 축 = 벽면 수평 접선.
+    상단 바: 중심 (x, y_center, z), 분사 = 아래(−z)에서 +x 로 tilt, 슬롯 축 = +y (부스 폭 방향).
+    """
+    side, top = bars["side"], bars["top"]
+    positions, directions, axes, lengths, strengths = [], [], [], [], []
+
+    yaw = np.deg2rad(float(side["yaw_deg"]))
+    pitch = np.deg2rad(float(side["pitch_deg"]))
+    for wall_y in side["wall_y"]:
+        d, e = _wall_jet_axes(float(wall_y), yaw, pitch)
+        for z in side["z_levels"]:
+            positions.append([float(side["x_center"]), float(wall_y), float(z)])
+            directions.append(d)
+            axes.append(e)
+            lengths.append(float(side["length_m"]))
+            strengths.append(float(side["strength"]))
+
+    tilt = np.deg2rad(float(top["tilt_deg"]))
+    d_top = np.array([np.sin(tilt), 0.0, -np.cos(tilt)])
+    e_top = np.array([0.0, 1.0, 0.0])          # tilt 회전축이라 d_top 에 항상 수직
+    for x in top["x_positions"]:
+        positions.append([float(x), float(top["y_center"]), float(top["z"])])
+        directions.append(d_top)
+        axes.append(e_top)
+        lengths.append(float(top["length_m"]))
+        strengths.append(float(top["strength"]))
+
+    return NozzleConfig(
+        positions=np.asarray(positions, dtype=np.float32),
+        directions=_unit_rows(directions),
+        strengths=np.asarray(strengths, dtype=np.float32),
+        pulse_phase=None,
+        slot_axis=_unit_rows(axes),
+        slot_length=np.asarray(lengths, dtype=np.float32),
+    )
+
+
+def _unit_rows(vectors) -> np.ndarray:
+    v = np.asarray(vectors, dtype=np.float64)
+    return (v / np.linalg.norm(v, axis=1, keepdims=True)).astype(np.float32)
 
 
 def load_physics(path: Path | None = None) -> dict:
