@@ -2,7 +2,7 @@
 
 저장 구조:
     outputs/<exp_id>/meta.json     시나리오, 체형, 설정 해시, 커밋, 시드, 인자, 평가 횟수, 최고점
-    outputs/<exp_id>/history.csv   gen, evals, best, mean, sigma
+    outputs/<exp_id>/history.csv   gen, evals, best, mean, sigma, infeasible_frac
     outputs/<exp_id>/best.json     best_pose, removal_by_part, discomfort
     outputs/index.csv              exp_id, date, scenario, best_score, commit  (append)
 """
@@ -23,7 +23,7 @@ import numpy as np
 from airis.sim import PART_NAMES
 
 ROOT = Path(__file__).resolve().parents[2]
-HISTORY_COLUMNS = ["gen", "evals", "best", "mean", "sigma"]
+HISTORY_COLUMNS = ["gen", "evals", "best", "mean", "sigma", "infeasible_frac"]
 INDEX_COLUMNS = ["exp_id", "date", "scenario", "best_score", "commit"]
 
 
@@ -139,6 +139,7 @@ def write_run(log_dir: Path | str, exp_id: str, *, scenario, body,
         "seed": int(seed),
         "args": _jsonable(args),
         "n_evals": int(result.n_evals),
+        "n_infeasible": int(result.n_infeasible),
         "best_score": float(result.best_score),
     }
     (d / "meta.json").write_text(
