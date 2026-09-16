@@ -127,7 +127,7 @@ def test_run_optimize_reports_unmerged_track(tmp_path, capsys):
     from scripts.run_optimize import main
 
     code = main([
-        "--evaluator", "patch", "--scenario", "default",
+        "--evaluator", "particle", "--scenario", "default",
         "--max-evals", "100", "--log-dir", str(tmp_path),
     ])
     assert code == 3
