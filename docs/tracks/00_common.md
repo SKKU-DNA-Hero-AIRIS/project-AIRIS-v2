@@ -95,12 +95,13 @@ score       = Σ_부위 scoring.part_weights[부위] · R_부위  −  scoring.d
 
 ```
 Re   = air.density · |v_air − v_p| · d / air.viscosity
-f    = 1 + 0.15 · Re^0.687                     (Re < 1000)
+f    = 1 + 0.15 · Re^0.687                     (Re < 1000, Schiller–Naumann)
+f    = 0.0183 · Re                             (Re ≥ 1000, 뉴턴 영역 C_d = 0.44 → f = C_d·Re/24)
 τ_p  = particles.density_kg_m3 · d² / (18 · air.viscosity · f)
 v_p(t+dt) = v_air + (v_p(t) − v_air) · exp(−dt/τ_p) + g·dt
 ```
 
-지수 완화 형태라 `dt`가 `τ_p`보다 커도 안정하다.
+지수 완화 형태라 `dt`가 `τ_p`보다 커도 안정하다. 중앙값 20 µm 입자는 `Re ≈ 30`이라 뉴턴 영역에 들어가지 않으며, 로그 정규 꼬리의 수백 µm 입자만 해당한다. 두 식은 `Re = 1000`에서 연속이다 (`1 + 0.15·1000^0.687 ≈ 18.3 = 0.0183·1000`).
 
 ## 5. 좌표계와 부스
 
