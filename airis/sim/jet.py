@@ -89,14 +89,17 @@ def _speed_per_nozzle(points: np.ndarray, nozzle: NozzleConfig, t: float, cfg: d
                       surface_normals: np.ndarray | None) -> tuple[np.ndarray, np.ndarray]:
     """(M,P) 속도 크기와 (M,3) 방향. 4.1 의 U_c·exp(-ρ²/2σ²) 부분.
 
-    s 와 ρ² 를 (M,P,3) 중간 배열 없이 행렬곱으로 구한다 (패치 3,600 × 노즐 16 에서 ~1 ms).
+    s 와 ρ² 를 (M,P,3) 중간 배열 없이 행렬곱으로 구한다 (패치 3,600 × 노즐 16 에서 ~3 ms).
       s   = d·p - d·n
       |r|² = |p|² - 2 n·p + |n|²,   ρ² = |r|² - s²
     """
     p = jet_params(cfg)
-    pts = np.asarray(points, dtype=np.float32).reshape(-1, 3)
-    pos = np.asarray(nozzle.positions, dtype=np.float32)
-    dirs = np.asarray(nozzle.directions, dtype=np.float32)
+    # float64 로 계산한다. ρ² = |r|² - s² 는 제트 축 근처에서 뺄셈 상쇄가 커서 float32 로는
+    # 출구 근처(σ ≈ 수 mm)에서 0.6% 오차가 났다. 반환 배열만 float32 로 내린다.
+    pts = np.asarray(points, dtype=np.float64).reshape(-1, 3)
+    pos = np.asarray(nozzle.positions, dtype=np.float64)
+    dirs = np.asarray(nozzle.directions, dtype=np.float64)
+    dirs = dirs / np.linalg.norm(dirs, axis=1, keepdims=True)
 
     if surface_normals is not None and p.impingement_enabled:
         # 단계 8 (2주차 옵션). 아직 미구현이므로 조용히 자유 제트를 돌려주지 않고 명시적으로 막는다.
@@ -108,7 +111,7 @@ def _speed_per_nozzle(points: np.ndarray, nozzle: NozzleConfig, t: float, cfg: d
 
     D = p.nozzle_diameter_m
     KD = p.potential_core_length_m                       # L_c = K·D
-    u0 = p.exit_velocity_mps * np.asarray(nozzle.strengths, dtype=np.float32)   # (M,)
+    u0 = p.exit_velocity_mps * np.asarray(nozzle.strengths, dtype=np.float64)   # (M,)
 
     s = dirs @ pts.T - np.einsum("mk,mk->m", pos, dirs)[:, None]                # (M,P)
     r2 = ((pts * pts).sum(1)[None, :]
@@ -124,14 +127,14 @@ def _speed_per_nozzle(points: np.ndarray, nozzle: NozzleConfig, t: float, cfg: d
     sigma = (0.5 * D + p.halfwidth_spread_rate * s_safe) / HALFWIDTH_TO_SIGMA
     mag = u_c * np.exp(-rho2 / (2.0 * sigma * sigma))
     mag = np.where(live, mag, 0.0) * pulse_gate(t, nozzle, p)[:, None]
-    return mag.astype(np.float32), dirs
+    return mag, dirs
 
 
 def velocity_field_per_nozzle(points: np.ndarray, nozzle: NozzleConfig, t: float,
                               cfg: dict, surface_normals: np.ndarray | None = None) -> np.ndarray:
     """(P,3) → (M,P,3). 노즐별 기여. D가 가림 판정 후 합산한다. 수식: docs/tracks/00_common.md 4.1"""
     mag, dirs = _speed_per_nozzle(points, nozzle, t, cfg, surface_normals)
-    return mag[..., None] * dirs[:, None, :]
+    return (mag[..., None] * dirs[:, None, :]).astype(np.float32)
 
 
 def velocity_field(points: np.ndarray, nozzle: NozzleConfig, t: float,

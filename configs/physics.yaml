@@ -2,7 +2,9 @@
 # 민감도 실험은 이 파일의 값을 기준으로 스윕한다.
 
 jet:
-  nozzle_diameter_m: 0.004        # 3~5 mm (업계 자료)
+  # 0.004 → 0.025 (B, PR #6). 4 mm 는 노즐 16개 총 유량이 18 m^3/h 로 에어샤워 규모와 두 자릿수 이상 어긋나고,
+  # 몸 표면 전단이 모든 자세에서 제거율 0 을 만들었다. 25 mm 면 707 m^3/h. 에어샤워 볼 노즐 20~30 mm.
+  nozzle_diameter_m: 0.025
   exit_velocity_mps: 25.0         # 에어샤워 표준 풍속
   potential_core_diameters: 6.0   # 포텐셜 코어 길이 (노즐 지름 배수)
   decay_constant: 6.7             # 중심 속도 감쇠 상수 (자유 제트 실험식)
@@ -33,7 +35,10 @@ particles:
   drag_model: schiller_naumann
 
 adhesion:                         # rock'n'roll 모델 근사
-  critical_shear_pa_median: 0.5
+  # 0.5 → 0.05 (B, PR #6). 미보정 작업값. 고정 노즐 배치에서 몸 표면 전단은 p99 약 0.1 Pa 라 0.5 Pa 이면
+  # 제거율이 모든 자세에서 0 에 붙는다. 0.05 Pa = 마찰 속도 u* = sqrt(tau/rho) ≈ 0.2 m/s.
+  # R 은 friction_coeff / critical_shear 비율에만 의존하므로 Cf 는 교과서값 그대로 두고 이쪽을 옮겼다.
+  critical_shear_pa_median: 0.05
   critical_shear_sigma_log: 0.8
   fabric_roughness_factor: 1.0    # 옷감 거칠기 보정 (Keedy 2008 기준 보정 예정)
   redeposition_prob: 0.05

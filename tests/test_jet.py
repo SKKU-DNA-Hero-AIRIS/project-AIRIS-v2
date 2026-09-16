@@ -128,6 +128,21 @@ def test_velocity_is_sum_of_per_nozzle():
     np.testing.assert_allclose(velocity_field(pts, nz, 0.0, CFG), per.sum(0), atol=1e-4)
 
 
+def test_matches_reference_fake_implementation():
+    """D 의 tests/fakes.py 참고 구현(4.1 numpy)과 같은 점에서 같은 값. D 가 B 병합 후 이 함수로 교체한다."""
+    from tests.fakes import fake_nozzles, fake_velocity_field_per_nozzle
+
+    rng = np.random.default_rng(3)
+    for nz in (load_nozzles(), fake_nozzles()):
+        s = np.linspace(1e-3, 1.0, 200)[:, None]
+        near_axis = nz.positions[0] + s * nz.directions[0] + rng.normal(0.0, 2e-3, (200, 3))
+        pts = np.vstack([rng.random((2000, 3)) * [2.0, 1.2, 2.3] - [0, 0.6, 0], near_axis])
+        pts = pts.astype(np.float32)
+        ours = velocity_field_per_nozzle(pts, nz, 0.0, CFG)
+        ref = fake_velocity_field_per_nozzle(pts, nz, 0.0, CFG)
+        np.testing.assert_allclose(ours, ref, rtol=1e-5, atol=1e-5)
+
+
 def test_velocity_is_parallel_to_jet_direction():
     nz = load_nozzles()
     pts = np.array([[1.0, 0.0, 1.3], [0.9, -0.2, 0.5]], dtype=np.float32)
