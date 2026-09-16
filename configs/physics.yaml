@@ -6,7 +6,7 @@ jet:
   exit_velocity_mps: 25.0         # 에어샤워 표준 풍속
   potential_core_diameters: 6.0   # 포텐셜 코어 길이 (노즐 지름 배수)
   decay_constant: 6.7             # 중심 속도 감쇠 상수 (자유 제트 실험식)
-  spread_half_angle_deg: 12.0     # 제트 확산 반각
+  halfwidth_spread_rate: 0.096    # 반속도 반경 확산율 r_1/2 = 0.5D + 0.096 s (원형 난류 제트 실험값)
   impingement:
     enabled: true
     stagnation_radius_factor: 2.0 # 정체 영역 반경 (제트 반지름 배수)
@@ -15,6 +15,12 @@ jet:
     enabled: false
     period_s: 0.5
     duty: 0.5
+
+air:
+  density: 1.2                    # kg/m^3
+  viscosity: 1.8e-5               # Pa·s
+  friction_coeff: 0.005           # 벽면 마찰 계수 Cf. tau = 0.5·rho·Cf·|u_t|^2
+  wall_offset_m: 0.005            # 공기 속도를 조회하는 표면 위 거리
 
 particles:
   count_per_candidate: 20000
@@ -34,6 +40,7 @@ simulation:
   duration_s: 3.0
   dt_s: 0.002
   seed: 0
+  dump_every: 0                   # 프레임 덤프 간격 (스텝). 0 = 끔
 
 scoring:
   part_weights:

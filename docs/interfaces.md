@@ -17,7 +17,7 @@
 | `PoseParams` | C(최적화 변수) | B | degree. `to_vector / from_vector` 순서 고정 |
 | `NozzleConfig` | B (`configs/nozzles.yaml`) | A, D | 위치 (M,3), 방향 (M,3), 세기 (M,). 고정 입력 |
 | `Scenario` | B (`configs/scenarios.yaml`) | C, A, D | 상속 지원 |
-| `BodyState` | B (`build_body`) | A, D, E | 패치 + 캡슐 |
+| `BodyState` | B (`build_body`) | A, D, E | 패치 + 캡슐 + `capsule_part`(K,) + `patch_capsule`(N,) |
 | `EvalResult` | A, D | C, E | `score`는 최적화용, 나머지는 분석용 |
 
 ## 함수 계약
@@ -27,10 +27,12 @@
 - 시나리오의 `fixed_pose`가 있으면 해당 자세 변수를 덮어쓴다.
 - `seat_height_m`이 있으면 골반 높이를 그 값으로 둔다.
 - 패치 법선은 바깥 방향 단위 벡터.
+- `capsule_part`는 캡슐 부위(-1 = 가림 전용), `patch_capsule`은 패치의 소속 캡슐 인덱스. 둘 다 채운다.
 
-### `velocity_field(points, nozzle, t, cfg) -> (P, 3)` (B)
+### `velocity_field_per_nozzle(points, nozzle, t, cfg, surface_normals=None) -> (M, P, 3)` (B)
 
-- 자유 제트 합산 + 충돌 보정. 시각 `t`는 펄스용.
+- 노즐별 자유 제트 기여. `velocity_field`는 이것의 합. 시각 `t`는 펄스용. 수식은 `docs/tracks/00_common.md` 4.1.
+- `surface_normals`가 주어지고 충돌 보정이 켜져 있으면 정체점 보정을 적용한다 (2주차 옵션).
 - 몸에 의한 가림은 여기서 처리하지 않는다 (평가기 책임).
 
 ### `Evaluator.evaluate(pose, nozzle, body, scenario) -> EvalResult` (A, D)

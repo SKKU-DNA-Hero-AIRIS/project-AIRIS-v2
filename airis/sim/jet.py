@@ -13,6 +13,13 @@ import numpy as np
 from .types import NozzleConfig
 
 
+def velocity_field_per_nozzle(points: np.ndarray, nozzle: NozzleConfig, t: float,
+                              cfg: dict, surface_normals: np.ndarray | None = None) -> np.ndarray:
+    """(P,3) → (M,P,3). 노즐별 기여. D가 가림 판정 후 합산한다. 수식: docs/tracks/00_common.md 4.1"""
+    raise NotImplementedError("B: 1주차 구현 대상 (docs/tracks/B_body_jet.md 단계 6)")
+
+
 def velocity_field(points: np.ndarray, nozzle: NozzleConfig, t: float,
-                   cfg: dict) -> np.ndarray:
-    raise NotImplementedError("B: 1주차 구현 대상")
+                   cfg: dict, surface_normals: np.ndarray | None = None) -> np.ndarray:
+    """(P,3) → (P,3). velocity_field_per_nozzle의 합."""
+    return velocity_field_per_nozzle(points, nozzle, t, cfg, surface_normals).sum(axis=0)
