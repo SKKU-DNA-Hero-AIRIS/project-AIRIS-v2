@@ -88,7 +88,7 @@ def make_body():
 |---|---|
 | 팔 들면 겨드랑이 상승 | `shoulder_abduction` 20 vs 90. `arms`와 `torso_front` 합산 제거율이 오르는지. 가짜 몸에서는 `arms` 부위만 비교 |
 | 등지면 정면 하락 | `torso_yaw` 0 vs 180. `torso_front` 제거율이 떨어지고 `torso_back`이 오르는지 |
-| 가까우면 상승 | 노즐 y를 ±0.6 → ±0.4로 옮긴 `NozzleConfig`로 총 제거율 비교 |
+| 세기 올리면 상승 | `strengths`를 0.5, 1.0, 1.5배로 한 `NozzleConfig`에서 총 제거율이 단조 증가. ("가까우면 상승"은 가는 자유 제트 모델에서 성립하지 않아 교체. PR #11 발견 사항 1) |
 | 세기 0 | `strengths = 0` → `total_removal == 0` |
 | 결정론 | 같은 입력 두 번 → `score` 완전 일치 (`==`) |
 
@@ -109,7 +109,7 @@ def make_body():
 - [ ] `tests/fakes.py`가 있고 다른 트랙이 import해서 쓴다.
 - [ ] `scoring.py`의 네 함수가 `00_common.md` 수식과 일치하고 단위 테스트가 있다 (τ=0 → R=0, τ=τ_med → R=0.5, 불편도 기본 자세 → 0).
 - [ ] 정성 테스트 5개가 skip 없이 통과한다 (가짜 몸으로도, B 병합 후 실제 몸으로도).
-- [ ] `evaluate` 1회 5 ms 이하.
+- [ ] `evaluate` 1회 `patches_per_m2=400`(약 1,000 패치, 노즐 16)에서 15 ms 이하. `PatchEvaluator(physics_cfg, patches_per_m2=...)` 인자로 밀도를 고른다 (기본 2000은 검증용, 최적화 루프는 400).
 - [ ] `plot_body(state, values=result.extra["removal"])`로 제거율 분포가 그려지고, 팔을 든 자세에서 겨드랑이가 밝아지는 것이 보인다.
 
 ## 병합 후 알림
