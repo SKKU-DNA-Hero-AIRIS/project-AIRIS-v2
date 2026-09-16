@@ -15,7 +15,7 @@
 |---|---|---|---|
 | `BodyParams` | E(포즈 추정), C(샘플링) | B | 체형 5개 값 |
 | `PoseParams` | C(최적화 변수) | B | degree. `to_vector / from_vector` 순서 고정 |
-| `NozzleConfig` | B (`configs/nozzles.yaml`) | A, D | 위치 (M,3), 방향 (M,3), 세기 (M,). 고정 입력 |
+| `NozzleConfig` | B (`configs/nozzles.yaml`) | A, D | 위치 (M,3), 방향 (M,3), 세기 (M,). 슬롯 제트면 `slot_axis` (M,3), `slot_length` (M,) 추가 (`None`이면 원형 노즐). 고정 입력 |
 | `Scenario` | B (`configs/scenarios.yaml`) | C, A, D | 상속 지원 |
 | `BodyState` | B (`build_body`) | A, D, E | 패치 + 캡슐 + `capsule_part`(K,) + `patch_capsule`(N,) |
 | `EvalResult` | A, D | C, E | `score`는 최적화용, 나머지는 분석용 |
@@ -31,13 +31,14 @@
 
 ### `velocity_field_per_nozzle(points, nozzle, t, cfg, surface_normals=None) -> (M, P, 3)` (B)
 
-- 노즐별 자유 제트 기여. `velocity_field`는 이것의 합. 시각 `t`는 펄스용. 수식은 `docs/tracks/00_common.md` 4.1.
+- 노즐별 자유 제트 기여. `velocity_field`는 이것의 합. 시각 `t`는 펄스용. 수식은 `docs/tracks/00_common.md` 4.1 (원형) / 4.1b (슬롯, `nozzle.slot_axis`가 있는 노즐).
 - `surface_normals`가 주어지고 충돌 보정이 켜져 있으면 정체점 보정을 적용한다 (2주차 옵션).
 - 몸에 의한 가림은 여기서 처리하지 않는다 (평가기 책임).
 
 ### `Evaluator.evaluate(pose, nozzle, body, scenario) -> EvalResult` (A, D)
 
 - 결정론: 같은 입력이면 같은 `score`. 난수는 `cfg.simulation.seed`로 고정.
+- 부스 밖 자세(패치가 `|y| > width/2` 또는 `z > height`)는 불가: `score = −1.0`, 제거율 0, `extra["infeasible"] = True` (`00_common.md` 5절).
 - `score = Σ part_weights · removal_by_part − discomfort_weight · discomfort`
 - `discomfort = Σ discomfort_weights[k] · |pose[k] − pose_default[k]| / range[k]`
 
