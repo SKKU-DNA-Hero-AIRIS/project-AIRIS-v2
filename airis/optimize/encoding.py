@@ -16,14 +16,6 @@ from airis.sim import PoseParams, Scenario
 # PoseParams 필드 순서가 곧 벡터 순서다. types.py 가 단일 소스.
 POSE_FIELDS: list[str] = [f.name for f in fields(PoseParams)]
 
-# configs/scenarios.yaml 의 default 에 pose_bounds 항목이 없는 자세 변수의 대체 범위.
-# 현재 knee_flexion 하나가 해당한다. configs/ 는 B 소유라 C 가 고칠 수 없어 코드에 둔다.
-# TODO(B): configs/scenarios.yaml 의 default.pose_bounds 에 knee_flexion 을 추가하면 이 표를 지운다.
-FALLBACK_BOUNDS: dict[str, tuple[float, float]] = {
-    "knee_flexion": (0.0, 30.0),
-}
-
-
 class PoseEncoder:
     """시나리오 하나에 대한 자세 ↔ 정규화 벡터 변환기."""
 
@@ -45,13 +37,11 @@ class PoseEncoder:
         return len(self.free_keys)
 
     def bounds_for(self, key: str) -> tuple[float, float]:
-        """자세 변수 하나의 (lo, hi). 시나리오에 없으면 FALLBACK_BOUNDS."""
-        if key in self.scenario.pose_bounds:
-            lo, hi = self.scenario.pose_bounds[key]
-            return float(lo), float(hi)
-        if key in FALLBACK_BOUNDS:
-            return FALLBACK_BOUNDS[key]
-        raise KeyError(f"{key} 의 pose_bounds 가 시나리오에도 대체 표에도 없다")
+        """자세 변수 하나의 (lo, hi). load_scenarios 가 default 상속을 처리하므로 항상 있다."""
+        if key not in self.scenario.pose_bounds:
+            raise KeyError(f"{key} 의 pose_bounds 가 시나리오 {self.scenario.name} 에 없다")
+        lo, hi = self.scenario.pose_bounds[key]
+        return float(lo), float(hi)
 
     def encode(self, pose: PoseParams) -> np.ndarray:
         """PoseParams → [-1, 1]^dim. 범위 밖 자세는 경계로 clip 된다."""

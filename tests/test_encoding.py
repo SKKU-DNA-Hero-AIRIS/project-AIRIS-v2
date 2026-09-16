@@ -77,3 +77,12 @@ def test_default_x_matches_default_pose(scenarios):
     base = PoseParams()
     for key in POSE_FIELDS:
         assert getattr(back, key) == pytest.approx(getattr(base, key), abs=1e-6)
+
+
+@pytest.mark.parametrize("name", ["default", "pregnant"])
+def test_all_free_keys_bounded_by_config(scenarios, name):
+    # B #10 병합 후 knee_flexion 범위도 configs/scenarios.yaml 에서 온다 (코드 대체 표 없음).
+    scenario = scenarios[name]
+    enc = PoseEncoder(scenario)
+    assert set(enc.free_keys) <= set(scenario.pose_bounds)
+    assert enc.bounds_for("knee_flexion") == (0.0, 30.0)
