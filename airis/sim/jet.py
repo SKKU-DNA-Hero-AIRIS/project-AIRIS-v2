@@ -33,7 +33,6 @@ class JetParams:
     """configs/physics.yaml 의 jet 섹션 전체. 안 쓰는 키가 없는지 여기서 확인한다."""
     nozzle_diameter_m: float
     exit_velocity_mps: float
-    potential_core_diameters: float
     decay_constant: float
     halfwidth_spread_rate: float
     impingement_enabled: bool
@@ -47,9 +46,7 @@ class JetParams:
     def potential_core_length_m(self) -> float:
         """L_c = K·D. 00_common.md 4.1 이 포텐셜 코어 길이를 감쇠 상수로 정의한다.
 
-        `potential_core_diameters`(=6.0)와는 다른 값이다. 4.1 의 U_c 가 s = L_c 에서
-        연속이려면 (U0 = U0·K·D/L_c) 반드시 L_c = K·D 여야 하므로 4.1 을 따른다.
-        두 키의 정합은 PR 에 공용 설정 변경 제안으로 남긴다.
+        U_c 가 s = L_c 에서 연속이려면 (U0 = U0·K·D/L_c) L_c = K·D 여야 한다.
         """
         return self.decay_constant * self.nozzle_diameter_m
 
@@ -62,7 +59,6 @@ def jet_params(cfg: dict) -> JetParams:
     return JetParams(
         nozzle_diameter_m=float(j["nozzle_diameter_m"]),
         exit_velocity_mps=float(j["exit_velocity_mps"]),
-        potential_core_diameters=float(j["potential_core_diameters"]),
         decay_constant=float(j["decay_constant"]),
         halfwidth_spread_rate=float(j["halfwidth_spread_rate"]),
         impingement_enabled=bool(imp["enabled"]),

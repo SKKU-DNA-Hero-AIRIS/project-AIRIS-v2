@@ -6,7 +6,7 @@ jet:
   # 몸 표면 전단이 모든 자세에서 제거율 0 을 만들었다. 25 mm 면 707 m^3/h. 에어샤워 볼 노즐 20~30 mm.
   nozzle_diameter_m: 0.025
   exit_velocity_mps: 25.0         # 에어샤워 표준 풍속
-  potential_core_diameters: 6.0   # 포텐셜 코어 길이 (노즐 지름 배수)
+  # 포텐셜 코어 길이 L_c = decay_constant × nozzle_diameter_m (00_common.md 4.1). 별도 키를 두지 않는다.
   decay_constant: 6.7             # 중심 속도 감쇠 상수 (자유 제트 실험식)
   halfwidth_spread_rate: 0.096    # 반속도 반경 확산율 r_1/2 = 0.5D + 0.096 s (원형 난류 제트 실험값)
   impingement:
