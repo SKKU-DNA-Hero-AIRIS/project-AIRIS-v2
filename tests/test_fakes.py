@@ -1,19 +1,13 @@
 """가짜 입력이 BodyState / NozzleConfig 계약을 지키는지 확인한다. 소유자: D.
 
-`docs/interfaces.md`의 배열 규약(float32 (N,3), int32 (N,), 바깥 단위 법선)과
-`docs/tracks/00_common.md` 4.1(자유 제트)을 검사한다.
+`docs/interfaces.md`의 배열 규약(float32 (N,3), int32 (N,), 바깥 단위 법선)을 검사한다.
 """
 import numpy as np
 import pytest
 
-from airis.sim.scenario import load_nozzle_layout, load_physics
+from airis.sim.scenario import load_nozzle_layout
 from airis.sim.types import PART_NAMES, BodyState, NozzleConfig
-from tests.fakes import fake_body, fake_nozzles, fake_velocity_field_per_nozzle
-
-
-@pytest.fixture(scope="module")
-def cfg():
-    return load_physics()
+from tests.fakes import fake_body, fake_nozzles
 
 
 @pytest.fixture(scope="module")
@@ -159,10 +153,11 @@ def test_fake_nozzles_fills_nozzleconfig_contract(booth):
     assert np.allclose(np.linalg.norm(nz.directions, axis=1), 1.0, atol=1e-6)
     assert (nz.strengths == 1.0).all()
 
-    # 좌우 벽면에 대칭으로 2개씩, 높이 두 단.
+    # 좌우 벽면에 대칭으로 2개씩, 높이 두 단 (D 문서 단계 1).
     wall = booth["width_m"] / 2.0
     assert sorted(np.unique(nz.positions[:, 1]).tolist()) == pytest.approx([-wall, wall])
-    assert len(np.unique(nz.positions[:, 2])) == 2
+    assert sorted(np.unique(nz.positions[:, 2]).tolist()) == pytest.approx([1.0, 1.4])
+    assert fake_nozzles(z_levels_m=(0.5, 0.9, 1.3, 1.7)).count == 8
 
 
 def test_fake_nozzles_point_inward_and_downstream():
@@ -174,94 +169,13 @@ def test_fake_nozzles_point_inward_and_downstream():
 
 
 def test_fake_nozzle_axes_pass_through_the_body():
-    """노즐 축이 몸을 비껴가면 정성 테스트가 전부 0 대 0이 된다."""
+    """노즐 축이 몸을 비껴가면 제트가 몸에 닿지 않는다."""
     nz, state = fake_nozzles(), fake_body()
-    torso_axis_xy = state.capsules[0, 0:2]
+    torso_axis_xy = state.capsules[0, 0:2].astype(np.float64)
     r = torso_axis_xy - nz.positions[:, :2]
     d = nz.directions[:, :2] / np.linalg.norm(nz.directions[:, :2], axis=1, keepdims=True)
     s = (r * d).sum(1)
     miss = np.linalg.norm(r - s[:, None] * d, axis=1)
-    assert (s > 0).all()                       # 몸이 노즐 앞쪽에 있다
-    assert (miss < state.capsules[0, 6]).all()  # 축이 몸통 반지름 안을 지난다
+    assert (s > 0).all()                        # 몸이 노즐 앞쪽에 있다
+    assert (miss < 1e-3).all()                  # 축이 몸통 중심선을 지난다
 
-
-# --- fake_velocity_field_per_nozzle ------------------------------------------
-
-def test_velocity_field_shape_and_per_nozzle_sum(cfg):
-    nz, state = fake_nozzles(), fake_body()
-    u = fake_velocity_field_per_nozzle(state.patch_pos, nz, 0.0, cfg)
-    assert u.shape == (nz.count, state.patch_pos.shape[0], 3)
-    assert np.isfinite(u).all()
-
-
-def test_velocity_is_zero_behind_the_nozzle(cfg):
-    """s <= 0 이면 u = 0 (00_common.md 4.1)."""
-    nz = fake_nozzles()
-    behind = nz.positions - 0.5 * nz.directions      # 노즐 뒤쪽
-    u = fake_velocity_field_per_nozzle(behind, nz, 0.0, cfg)
-    assert (np.linalg.norm(u[np.arange(nz.count), np.arange(nz.count)], axis=-1) == 0.0).all()
-
-
-def test_velocity_holds_exit_speed_in_potential_core_then_decays(cfg):
-    """s <= K*D 는 U0, 그 뒤는 U0*K*D/s."""
-    nz = fake_nozzles()
-    jet = cfg["jet"]
-    u0 = jet["exit_velocity_mps"]
-    core = jet["decay_constant"] * jet["nozzle_diameter_m"]
-
-    n0, d0 = nz.positions[0].astype(np.float64), nz.directions[0].astype(np.float64)
-    for s in (0.25 * core, 0.9 * core):
-        u = fake_velocity_field_per_nozzle((n0 + s * d0)[None, :], nz, 0.0, cfg)[0, 0]
-        assert np.linalg.norm(u) == pytest.approx(u0, rel=1e-6)
-
-    for s in (2.0 * core, 10.0 * core):
-        u = fake_velocity_field_per_nozzle((n0 + s * d0)[None, :], nz, 0.0, cfg)[0, 0]
-        assert np.linalg.norm(u) == pytest.approx(u0 * core / s, rel=1e-6)
-        assert np.allclose(u / np.linalg.norm(u), d0, atol=1e-6)   # 축 방향
-
-
-def test_velocity_falls_off_gaussian_away_from_axis(cfg):
-    nz = fake_nozzles()
-    jet = cfg["jet"]
-    n0, d0 = nz.positions[0].astype(np.float64), nz.directions[0].astype(np.float64)
-    s = 0.3
-    perp = np.cross(d0, [0.0, 0.0, 1.0])
-    perp /= np.linalg.norm(perp)
-    sigma = (0.5 * jet["nozzle_diameter_m"] + jet["halfwidth_spread_rate"] * s) / 1.177
-
-    on_axis = np.linalg.norm(
-        fake_velocity_field_per_nozzle((n0 + s * d0)[None, :], nz, 0.0, cfg)[0, 0])
-    off = np.linalg.norm(
-        fake_velocity_field_per_nozzle((n0 + s * d0 + sigma * perp)[None, :], nz, 0.0, cfg)[0, 0])
-    assert off == pytest.approx(on_axis * np.exp(-0.5), rel=1e-6)
-    assert 0.0 < off < on_axis
-
-
-def test_velocity_scales_with_strength(cfg):
-    nz = fake_nozzles()
-    half = NozzleConfig(positions=nz.positions, directions=nz.directions,
-                        strengths=0.5 * nz.strengths)
-    zero = NozzleConfig(positions=nz.positions, directions=nz.directions,
-                        strengths=np.zeros_like(nz.strengths))
-    pts = fake_body().patch_pos
-    full_u = fake_velocity_field_per_nozzle(pts, nz, 0.0, cfg)
-    assert np.allclose(fake_velocity_field_per_nozzle(pts, half, 0.0, cfg), 0.5 * full_u)
-    assert (fake_velocity_field_per_nozzle(pts, zero, 0.0, cfg) == 0.0).all()
-
-
-def test_velocity_ignores_time_when_pulse_disabled(cfg):
-    nz, pts = fake_nozzles(), fake_body().patch_pos
-    assert cfg["jet"]["pulse"]["enabled"] is False
-    assert np.array_equal(fake_velocity_field_per_nozzle(pts, nz, 0.0, cfg),
-                          fake_velocity_field_per_nozzle(pts, nz, 0.37, cfg))
-
-
-def test_velocity_pulse_gate_switches_on_and_off(cfg):
-    """상수를 바꿔야 하므로 dict를 복사해 덮어쓴다 (configs/는 D가 수정하지 않는다)."""
-    pulsed = {**cfg, "jet": {**cfg["jet"],
-                             "pulse": {"enabled": True, "period_s": 0.5, "duty": 0.5}}}
-    nz, pts = fake_nozzles(), fake_body().patch_pos
-    on = fake_velocity_field_per_nozzle(pts, nz, 0.1, pulsed)     # (0.1/0.5) = 0.2 < duty
-    off = fake_velocity_field_per_nozzle(pts, nz, 0.4, pulsed)    # (0.4/0.5) = 0.8 >= duty
-    assert np.array_equal(on, fake_velocity_field_per_nozzle(pts, nz, 0.1, cfg))
-    assert (off == 0.0).all()

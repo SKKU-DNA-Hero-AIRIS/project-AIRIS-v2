@@ -123,12 +123,32 @@ def test_run_optimize_writes_three_files(tmp_path):
     assert len(index) == 2
 
 
-def test_run_optimize_reports_unmerged_track(tmp_path, capsys):
+class _NotImplementedEvaluator:
+    """클래스는 있지만 evaluate 가 미구현인 평가기 (트랙 병합 전 스텁을 흉내 낸다)."""
+
+    def __init__(self, physics_cfg):
+        self.cfg = physics_cfg
+
+    def evaluate(self, pose, nozzle, body, scenario):
+        raise NotImplementedError("테스트용 미구현 평가기")
+
+
+# 실제 트랙 병합 상태와 무관하게 두 실패 경로를 모두 검사한다.
+@pytest.mark.parametrize("dotted, cause", [
+    ("airis.sim.nonexistent_module.Nope", "ModuleNotFoundError"),
+    (f"{__name__}._NotImplementedEvaluator", "NotImplementedError"),
+])
+def test_run_optimize_reports_unmerged_track(tmp_path, capsys, monkeypatch, dotted, cause):
+    from airis.optimize import cli
     from scripts.run_optimize import main
 
+    monkeypatch.setitem(cli._OWNER, "patch", ("D", dotted, "docs/tracks/D_patch_baseline.md"))
     code = main([
         "--evaluator", "patch", "--scenario", "default",
         "--max-evals", "100", "--log-dir", str(tmp_path),
     ])
     assert code == 3
-    assert "해당 트랙 미병합" in capsys.readouterr().err
+    err = capsys.readouterr().err
+    assert "해당 트랙 미병합" in err
+    assert cause in err
+    assert not any(p.is_dir() for p in tmp_path.iterdir()), "실패 시 실험 폴더를 만들면 안 된다"
