@@ -61,7 +61,7 @@ u(p)   = U_c(s) · exp(−ρ² / (2σ²)) · d
 
 #### 4.1b 슬롯(평면) 제트 — 크로스팬 토출구 (B가 numpy로, A가 Taichi로 구현)
 
-기준 장비(퓨리움 PURIUM-10000-P)는 원형 노즐이 아니라 길이 `L`, 높이 `h`의 가로 슬롯에서 나오는 크로스팬 제트다. `NozzleConfig.slot_axis`가 `None`이 아닌 노즐은 아래 식을 쓴다 (`None`이면 4.1 원형 제트). 두 모델은 같은 배치 안에 섞일 수 있다.
+기준 장비(퓨리움 PURIUM-10000-P)는 원형 노즐이 아니라 길이 `L`, 높이 `h`의 가로 슬롯에서 나오는 크로스팬 제트다. 노즐별 판정: `NozzleConfig.slot_axis`가 `None`이면 전부 원형(4.1). 배열이면 **행 단위**로, `slot_length[m] > 0`이고 `slot_axis[m]`이 0벡터가 아니면 슬롯(4.1b), `slot_length[m] == 0` 또는 `slot_axis[m] == 0`이면 그 노즐은 원형(4.1)이다. 두 모델은 같은 배치 안에 섞일 수 있다. B의 `load_nozzles`가 이 규약대로 채우고, D·A는 같은 규약으로 읽는다.
 
 슬롯 중심 `n`, 분사 단위 방향 `d`, 슬롯 길이 방향 단위 벡터 `e` (`e ⊥ d`), 길이 `L = NozzleConfig.slot_length[m]`, 높이 `h = jet.slot.height_m`, 출구 속도 `U0 = jet.slot.exit_velocity_mps × strength`.
 점 `p`에 대해 `r = p − n`, `s = r·d`, 슬롯 방향 거리 `ρ_e = r·e`, 슬롯 두께 방향 거리 `ρ_n = |r − s·d − ρ_e·e|`.

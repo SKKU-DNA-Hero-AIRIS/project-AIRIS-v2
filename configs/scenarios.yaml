@@ -10,6 +10,7 @@ default:
     torso_pitch: [-20, 45]
     torso_yaw: [-180, 180]
     hip_flexion: [0, 30]
+    knee_flexion: [0, 30]   # 선 자세 무릎 굽힘. PoseParams 7개와 맞춤 (C 요청)
   discomfort_weights:
     shoulder_abduction: 0.3
     torso_pitch: 0.5
