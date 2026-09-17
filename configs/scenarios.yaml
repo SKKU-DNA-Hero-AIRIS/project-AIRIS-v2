@@ -4,7 +4,7 @@
 
 default:
   pose_bounds:
-    shoulder_abduction: [0, 150]
+    shoulder_abduction: [0, 180]   # 150 → 180 (총괄: E4 기준 자세 B1 을 만세로). 휠체어·임산부는 상속
     shoulder_flexion: [-30, 150]
     elbow_flexion: [0, 140]
     torso_pitch: [-20, 45]
