@@ -207,12 +207,12 @@ def test_slot_axis_without_length_is_rejected():
 # 노즐 배치 (configs/nozzles.yaml)
 # ---------------------------------------------------------------------------
 def test_load_nozzles_default_is_slot_bars():
-    """기본 배치는 기준 장비 슬롯 바: 측면 2벽 × 4단 + 상단 2개 = 10개, 전 행 슬롯."""
+    """기본 배치는 기준 장비 슬롯 바: 측면 2벽 × 4단 + 상단 2 × 2 = 12개 (크로스팬 12개), 전 행 슬롯."""
     assert RAW["active"] == "slot_bars"
     nz = load_nozzles()
     side, top = RAW["slot_bars"]["side"], RAW["slot_bars"]["top"]
-    m = len(side["wall_y"]) * len(side["z_levels"]) + len(top["x_positions"])
-    assert nz.count == m == 10
+    m = len(side["wall_y"]) * len(side["z_levels"]) + len(top["x_positions"]) * len(top["y_positions"])
+    assert nz.count == m == 12
     assert nz.positions.shape == (m, 3) and nz.directions.shape == (m, 3) and nz.strengths.shape == (m,)
     assert nz.slot_axis.shape == (m, 3) and nz.slot_length.shape == (m,)
     for arr in (nz.positions, nz.directions, nz.strengths, nz.slot_axis, nz.slot_length):
@@ -241,7 +241,8 @@ def test_slot_bars_match_yaml():
     np.testing.assert_allclose(nz.directions[:ns], np.stack([zeros, inward, zeros], 1), atol=1e-6)
     np.testing.assert_allclose(np.abs(nz.slot_axis[:ns]), [[1, 0, 0]] * ns, atol=1e-6)
 
-    np.testing.assert_allclose(t_pos, [[x, top["y_center"], top["z"]] for x in top["x_positions"]], atol=1e-6)
+    np.testing.assert_allclose(
+        t_pos, [[x, y, top["z"]] for x in top["x_positions"] for y in top["y_positions"]], atol=1e-6)
     np.testing.assert_allclose(nz.strengths[ns:], top["strength"])
     np.testing.assert_allclose(nz.slot_length[ns:], top["length_m"])
     # 상단: 수직 아래로 분사, 슬롯 축은 부스 폭 y
@@ -484,13 +485,19 @@ def test_impingement_not_silently_ignored():
 # ---------------------------------------------------------------------------
 # 완료 기준: 제트가 마네킹에 닿는다
 # ---------------------------------------------------------------------------
+def _slot_centre_speed(s: float) -> float:
+    """4.1b 중심 속도 U_c(s), strength 1."""
+    return U0S * min(1.0, float(np.sqrt(LCS / s)))
+
+
 @pytest.mark.parametrize("scenario", ["default", "pregnant", "wheelchair"])
 def test_slot_bars_reach_mannequin(scenario):
-    """완료 기준: 기준 배치(슬롯 바 10개)의 제트가 마네킹에 닿는다. 앉은 자세 포함.
+    """완료 기준: 기준 배치(슬롯 바 12개)의 제트가 마네킹에 닿는다. 앉은 자세 포함.
 
-    측면 바는 부스 중앙(마네킹 x)에 걸친 수평 슬롯이라 슬롯 길이가 몸 중심 x 를 덮고,
-    몸 위 최대 속도가 출구 속도의 절반을 넘는다. 상단 에어커튼 바(x 0.10, 0.79)는 몸 앞뒤로
-    떨어져 있어 퍼진 가장자리만 닿는다 (서 있는 자세 약 1.6 m/s). 모든 바가 0.5 m/s 를 넘어야 한다.
+    측면 바는 부스 중앙(마네킹 x)에 걸친 수평 슬롯이라 슬롯 길이가 몸 중심 x 를 덮는다.
+    몸 높이 안의 측면 바는 몸이 벽과 중심선 사이에 있으므로 몸 위 최대 속도가 중심선 거리
+    |wall_y| 에서의 중심 속도 U_c(|wall_y|) 이상이어야 한다. 휠체어에서 앉은 머리보다 높은 측면 바와
+    상단 에어커튼 바(x 0.10, 0.79)는 퍼진 가장자리만 닿으므로 0.5 m/s 초과만 요구한다.
     """
     nz = load_nozzles()
     side = RAW["slot_bars"]["side"]
@@ -498,7 +505,13 @@ def test_slot_bars_reach_mannequin(scenario):
     state = build_body(BodyParams(), PoseParams(), load_scenarios()[scenario])
     per = np.linalg.norm(velocity_field_per_nozzle(state.patch_pos, nz, 0.0, CFG), axis=-1).max(axis=1)
     assert (per > 0.5).all(), per
-    assert (per[:ns] > 0.5 * U0S).all(), per[:ns]
+
+    within = nz.positions[:ns, 2] <= state.patch_pos[:, 2].max()
+    floor = _slot_centre_speed(abs(float(side["wall_y"][1])))
+    assert within.sum() >= 6
+    assert (per[:ns][within] >= floor).all(), (per[:ns], floor)
+    if scenario != "wheelchair":
+        assert within.all()
 
     centre_x = float(state.capsules[1, 0])
     half = 0.5 * nz.slot_length[:ns]
