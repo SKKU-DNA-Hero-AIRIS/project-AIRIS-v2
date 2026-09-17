@@ -99,10 +99,10 @@ def _expand_round_layout(lay: dict) -> NozzleConfig:
 
 
 def _expand_slot_bars(bars: dict) -> NozzleConfig:
-    """슬롯 바: 측면 (wall_y × z_levels) 다음 상단 (x_positions) 순서.
+    """슬롯 바: 측면 (wall_y × z_levels) 다음 상단 (x_positions × y_positions) 순서.
 
     측면 바: 중심 (x_center, wall_y, z), 분사 = 벽 안쪽 법선에 yaw·pitch, 슬롯 축 = 벽면 수평 접선.
-    상단 바: 중심 (x, y_center, z), 분사 = 아래(−z)에서 +x 로 tilt, 슬롯 축 = +y (부스 폭 방향).
+    상단 바: 중심 (x, y, z), 분사 = 아래(−z)에서 +x 로 tilt, 슬롯 축 = +y (부스 폭 방향).
     """
     side, top = bars["side"], bars["top"]
     positions, directions, axes, lengths, strengths = [], [], [], [], []
@@ -122,11 +122,12 @@ def _expand_slot_bars(bars: dict) -> NozzleConfig:
     d_top = np.array([np.sin(tilt), 0.0, -np.cos(tilt)])
     e_top = np.array([0.0, 1.0, 0.0])          # tilt 회전축이라 d_top 에 항상 수직
     for x in top["x_positions"]:
-        positions.append([float(x), float(top["y_center"]), float(top["z"])])
-        directions.append(d_top)
-        axes.append(e_top)
-        lengths.append(float(top["length_m"]))
-        strengths.append(float(top["strength"]))
+        for y in top["y_positions"]:
+            positions.append([float(x), float(y), float(top["z"])])
+            directions.append(d_top)
+            axes.append(e_top)
+            lengths.append(float(top["length_m"]))
+            strengths.append(float(top["strength"]))
 
     return NozzleConfig(
         positions=np.asarray(positions, dtype=np.float32),
