@@ -21,6 +21,7 @@ import numpy as np
 from . import scoring
 from .body import build_body
 from .interface import Evaluator
+from .jet import slot_mask
 from .kernels import ParticleFields, init_taichi, pack_constants
 from .kernels.particle_kernels import PART_TORSO_BACK, PART_TORSO_FRONT
 from .scenario import load_nozzle_layout
@@ -267,6 +268,12 @@ class ParticleEvaluator(Evaluator):
 
     def _upload_nozzles(self, nozzle: NozzleConfig) -> None:
         m = nozzle.count
+        # TODO(A, ⑤b): 4.1b 슬롯 제트 커널이 들어오면 이 검사를 지운다. 그 전에는 슬롯 노즐을
+        # 원형(4.1)으로 조용히 계산해 틀린 점수를 내지 않도록 막는다.
+        if slot_mask(nozzle).any():
+            raise NotImplementedError(
+                "A 4.1b 커널(⑤b) 미구현: 입자판은 아직 슬롯(평면) 제트를 계산하지 못한다. "
+                "원형 배치는 load_nozzles(layout='layout')로 쓸 수 있다.")
         if m > self.f.M:
             raise ValueError(f"노즐 {m}개 > max_nozzles {self.f.M}")
         pos = np.zeros((self.f.M, 3), np.float32)

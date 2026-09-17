@@ -6,8 +6,11 @@
 입력
 - 격리 테스트: 기하를 완전히 통제하려고 원통 캡슐 BodyState를 여기서 만든다
   (`cylinder_body`, 후보마다 캡슐 수가 다르게). 노즐은 원통을 스치는 4개.
-- 실제 경로: B의 `build_body` + `load_nozzles`(16개)로 `evaluate`/`batch_evaluate`를
-  C가 부르는 그대로 호출한다. D의 `fake_body`/`fake_nozzles`도 한 번 돌린다.
+- 실제 경로: B의 `build_body` + `load_nozzles(layout="layout")`(원형 16개)로
+  `evaluate`/`batch_evaluate`를 C가 부르는 그대로 호출한다. D의 `fake_body`/`fake_nozzles`도
+  한 번 돌린다.
+- 슬롯(4.1b) 노즐: A의 Taichi 커널(⑤b)이 아직 없어 제트 테스트는 전부 4.1 원형 검증이다.
+  기준 배치(`load_nozzles()` = 퓨리움 슬롯 바)는 입자판이 NotImplementedError로 막는지만 본다.
 
 물리 상수 오버라이드 (`_sim_physics`)
 - configs/physics.yaml 그대로(노즐 지름 4 mm)면 몸 위치(노즐에서 0.45 m)의 중심 속도가
@@ -110,12 +113,24 @@ def grazing_nozzles(strength: float = 1.0) -> NozzleConfig:
     return NozzleConfig(pos, dirs, np.full(4, strength, dtype=np.float32))
 
 
+def round_nozzles() -> NozzleConfig:
+    """B의 원형 비교 배치 (16개, 전부 4.1). 기준 배치(`active`)는 슬롯이라 명시해서 부른다."""
+    nz = load_nozzles(layout="layout")
+    assert nz.slot_axis is None
+    return nz
+
+
 def layout_nozzles(rng: np.random.Generator) -> NozzleConfig:
-    """B의 load_nozzles (16개)에 무작위 세기와 펄스 위상을 입힌 것."""
-    nz = load_nozzles()
+    """원형 비교 배치에 무작위 세기와 펄스 위상을 입힌 것.
+
+    TODO(A, ⑤b): 4.1b 커널이 들어오면 슬롯 배치(slot_axis/slot_length 포함)로도 돌린다.
+    지금은 slot_axis=None을 명시해 "4.1 원형 검증"임을 드러낸다.
+    """
+    nz = round_nozzles()
     return NozzleConfig(nz.positions, nz.directions,
                         rng.uniform(0.3, 1.0, nz.count).astype(np.float32),
-                        pulse_phase=rng.random(nz.count).astype(np.float32))
+                        pulse_phase=rng.random(nz.count).astype(np.float32),
+                        slot_axis=None, slot_length=None)
 
 
 def _sim_physics() -> dict:
@@ -305,13 +320,43 @@ def test_jet_matches_numpy_reference(pulse_t):
     u_np = _jet_velocity_numpy(points, nozzle, cfg, t)
 
     speed = np.linalg.norm(u_np, axis=1)
-    # 4 mm 제트는 0.4 m만 가도 1 m/s 아래로 떨어지므로 기준은 0.1 m/s. 펄스는 절반이 꺼진다.
     assert (speed > 0.1).sum() >= 150, f"의미 있는 속도의 점 {(speed > 0.1).sum()}개: 공허한 비교"
-    if pulse_t is not None:
-        assert (speed == 0).sum() > (np.linalg.norm(_jet_velocity_numpy(
-            points, nozzle, load_physics(), 0.0), axis=1) == 0).sum(), "게이트가 꺼진 노즐이 없다"
     rel = _relative_error(u_ti, u_np)
     assert rel.max() < 1e-4, f"최대 상대 오차 {rel.max():.3e} (점 {int(rel.argmax())})"
+
+    if pulse_t is not None:
+        _assert_pulse_gate(points, nozzle, cfg, t, u_ti)
+
+
+def _subset(nozzle: NozzleConfig, rows: np.ndarray) -> NozzleConfig:
+    return NozzleConfig(nozzle.positions[rows], nozzle.directions[rows], nozzle.strengths[rows],
+                        pulse_phase=nozzle.pulse_phase[rows])
+
+
+def _assert_pulse_gate(points, nozzle, cfg, t, u_ti_all):
+    """게이트 확인: 꺼진 노즐의 기여는 정확히 0이고, 전체 결과는 켜진 노즐만의 합과 1e-4.
+
+    "속도가 정확히 0인 점이 생긴다"로 확인하면 다른 노즐이 부스를 덮는 배치에서 공허하게
+    깨진다. 게이트를 노즐 단위로 직접 본다.
+    """
+    pulse = cfg["jet"]["pulse"]
+    on = np.mod(t / pulse["period_s"] + nozzle.pulse_phase.astype(np.float64), 1.0) < pulse["duty"]
+    assert on.any() and (~on).any(), "켜진 노즐과 꺼진 노즐이 둘 다 있어야 게이트를 검증한다"
+
+    ev = ParticleEvaluator(cfg, max_candidates=1, particles_per_candidate=1, duration_s=0.0)
+    try:
+        u_off = ev.probe_velocity(points, _subset(nozzle, ~on), t)
+    finally:
+        ev.destroy()
+    np.testing.assert_array_equal(u_off, 0.0)
+
+    steady = copy.deepcopy(cfg)
+    steady["jet"]["pulse"]["enabled"] = False
+    u_on_ref = _jet_velocity_numpy(points, _subset(nozzle, on), steady)
+    off_ref = _jet_velocity_numpy(points, _subset(nozzle, ~on), steady)
+    assert (np.linalg.norm(off_ref, axis=1) > 0.1).sum() > 0, "꺼진 노즐이 켜져 있었다면 기여가 있었어야 한다"
+    rel = _relative_error(u_ti_all, u_on_ref)
+    assert rel.max() < 1e-4, f"켜진 노즐 합 대비 최대 상대 오차 {rel.max():.3e}"
 
 
 def test_jet_matches_b_velocity_field():
@@ -496,7 +541,7 @@ def test_batch_evaluate_with_build_body_matches_evaluate(ev_batch, scenario):
     """C가 부르는 그대로: batch_evaluate([(PoseParams, NozzleConfig)], body, scenario)
     -> (B,) float32, 입력 순서 유지, 각 원소 == evaluate(...).score."""
     body = BodyParams()
-    nozzle = load_nozzles()
+    nozzle = round_nozzles()
     poses = [PoseParams(shoulder_abduction=120.0, torso_yaw=30.0), PoseParams()]
     scores = ev_batch.batch_evaluate([(p, nozzle) for p in poses], body, scenario)
     assert scores.dtype == np.float32 and scores.shape == (2,)
@@ -519,3 +564,26 @@ def test_fake_body_batch_isolation(ev_batch, scenario):
     _assert_same(solo, batch[1])
     for res in batch:
         assert 0.0 <= res.total_removal <= 1.0
+
+
+# ---------------------------------------------- 슬롯(4.1b) 노즐 방어 (⑤b 전까지)
+def test_slot_nozzles_raise_until_kernel_exists(ev_batch, scenario):
+    """기준 배치(퓨리움 슬롯 바)를 받으면 원형으로 조용히 계산하지 않고 막는다.
+
+    TODO(A, ⑤b): 4.1b 커널이 들어오면 이 테스트를 슬롯 제트 일치 테스트로 바꾼다.
+    """
+    slot = load_nozzles()
+    assert slot.slot_axis is not None and slot.slot_length is not None
+    with pytest.raises(NotImplementedError, match="4.1b"):
+        ev_batch.batch_evaluate([(PoseParams(), slot)], BodyParams(), scenario)
+    with pytest.raises(NotImplementedError, match="4.1b"):
+        ev_batch.probe_velocity(np.zeros((1, 3), np.float32), slot)
+
+    # 행 단위 규약: slot_length = 0 또는 slot_axis = 0벡터인 행은 원형이라 통과해야 한다.
+    rnd = round_nozzles()
+    mixed = NozzleConfig(rnd.positions, rnd.directions, rnd.strengths,
+                         slot_axis=np.zeros((rnd.count, 3), np.float32),
+                         slot_length=np.ones(rnd.count, np.float32))
+    np.testing.assert_array_equal(
+        ev_batch.probe_velocity(rnd.positions + rnd.directions * 0.3, mixed),
+        ev_batch.probe_velocity(rnd.positions + rnd.directions * 0.3, rnd))
