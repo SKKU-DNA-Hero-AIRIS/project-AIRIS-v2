@@ -79,6 +79,26 @@ def select_body_fn(build=build_body, scenario: Scenario | None = None):
     return real
 
 
+def mesh_body_fn(build=build_body, scenario: Scenario | None = None):
+    """(pose, scenario) -> 메시 BodyState. B의 메시 `build_body`가 없으면 None.
+
+    체형은 `body=None`으로 넘겨 메시 기본 체형(`human_mesh.MESH_DEFAULT_BODY`)을 쓴다. 전역
+    `BodyParams()`는 아직 캡슐 시절 값이라 메시에 넣으면 팔이 길어진다 (docs/mesh_transition.md).
+    """
+    scenario = scenario or load_scenarios()["default"]
+    try:
+        state = build(None, PoseParams(), scenario, model="mesh")
+    except (TypeError, NotImplementedError, ImportError):
+        return None
+    if state.mesh_vertices is None:
+        return None
+
+    def mesh(pose, scen):
+        return build(None, pose, scen, model="mesh")
+    mesh.uses_fake = False
+    return mesh
+
+
 def select_nozzles(load=load_nozzles) -> NozzleConfig:
     try:
         return load()
@@ -99,9 +119,15 @@ def scenarios() -> dict[str, Scenario]:
     return load_scenarios()
 
 
-@pytest.fixture(scope="module")
-def sim(physics, scenarios):
-    make_body = select_body_fn(scenario=scenarios["default"])
+@pytest.fixture(scope="module", params=["capsule", "mesh"])
+def sim(request, physics, scenarios):
+    """E1용 평가기. 캡슐 몸과 메시 몸(B 메시 병합 후) 두 모델로 같은 테스트를 돌린다."""
+    if request.param == "mesh":
+        make_body = mesh_body_fn(scenario=scenarios["default"])
+        if make_body is None:
+            pytest.skip("B의 메시 build_body(model='mesh') 미병합")
+    else:
+        make_body = select_body_fn(scenario=scenarios["default"])
     booth = dict(load_nozzle_layout()["booth"])
     booth["width_m"] *= _E1_BOOTH_SCALE
     booth["height_m"] *= _E1_BOOTH_SCALE
@@ -114,7 +140,7 @@ def sim(physics, scenarios):
     return SimpleNamespace(evaluator=evaluator,
                            nozzles=select_nozzles(partial(load_nozzles, layout=_E1_LAYOUT)),
                            scenario=scenarios["default"], uses_fake_body=make_body.uses_fake,
-                           cfg=physics)
+                           cfg=physics, model=request.param)
 
 
 def _eval(sim, pose: PoseParams, nozzle: NozzleConfig | None = None):
@@ -292,13 +318,14 @@ def test_slot_occlusion_does_not_kill_flank_under_raised_arm(sim, slot_nozzles):
     assert _flank_removal(sim, PoseParams(shoulder_abduction=90.0), slot_nozzles) > 0.0
 
 
-@pytest.mark.parametrize("pose", [PoseParams(), PoseParams(shoulder_abduction=90.0, torso_yaw=30.0),
+@pytest.mark.parametrize("pose", [PoseParams(), PoseParams(shoulder_abduction=60.0, torso_yaw=30.0),
                                   PoseParams(shoulder_abduction=160.0, elbow_flexion=0.0)])
 def test_slot_occlusion_converges_in_point_count(sim, slot_nozzles, pose):
     """슬롯 점 수를 늘리면 총 제거율이 K=9 결과로 수렴한다.
 
-    기본 K=3은 10% 안, 검증용 K=5는 5% 안. 무작위 자세 60개(400/m², 충돌 보정 켬)에서 K=9 대비
-    최대 상대 차가 K=3 8.9%, K=5 5.2%, 여기 세 자세에서는 K=3 6.3%, K=5 2.5%였다 (PR 본문).
+    기본 K=3은 15% 안, 검증용 K=5는 5% 안. 부스 안 무작위 자세 200개(400/m², 충돌 보정 켬)에서
+    K=9 대비 상대 차: K=3 최대 캡슐 9.2%·메시 11.6%(p99 8.8%·8.3%, 순위 상관 0.995),
+    K=5 최대 3.4%·4.4%. 팔 45~60°에 yaw 30° 부근이 메시 K=3에서 가장 크다(10~12%).
     """
     assert SLOT_OCCLUSION_POINTS == 3
 
@@ -310,7 +337,7 @@ def test_slot_occlusion_converges_in_point_count(sim, slot_nozzles, pose):
 
     r3, r5, r9 = removal_with(3), removal_with(5), removal_with(9)
     assert r9 > 0.0
-    assert abs(r3 - r9) / r9 < 0.10
+    assert abs(r3 - r9) / r9 < 0.15
     assert abs(r5 - r9) / r9 < 0.05
 
 
