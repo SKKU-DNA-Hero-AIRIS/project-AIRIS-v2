@@ -250,10 +250,22 @@ class _Segment:
     split_front_back: bool = False   # 법선의 e1 성분 부호로 torso_front/back 을 나눈다
 
 
+# torso_front/back 판정에서 "정확히 옆"으로 보는 법선 전방 성분의 허용치 (부동소수 잡음 흡수, 무차원).
+_FRONT_BACK_TOL = 1e-9
+
+
 def _perp_basis(axis: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-    """축에 수직인 결정론적 정규 직교 기저. 축이 +x 에 가까우면 +z 를, 아니면 +x 를 참조로 쓴다."""
+    """축에 수직인 결정론적 정규 직교 기저. 축이 +x 에 가까우면 +z 를, 아니면 +x 를 참조로 쓴다.
+
+    e1 = 참조축을 축에 수직인 평면으로 투영한 것, e2 = axis × e1.
+    참조축(+x, +z)은 y 거울 M = diag(1, −1, 1) 에 대해 불변이라 e1(M·axis) = M·e1 이고
+    e2(M·axis) = −M·e2 다. 몸통 단면(e1 = 전방, e2 = 좌)과 같은 변환이라, 둘레 격자
+    θ_k = 2π(k + 0.5)/n 이 거울에서 θ → −θ 로 자기 자신에 겹친다 → 좌우 캡슐의 패치가 정확히
+    거울 대칭이다. (이전 e1 = ref × axis 는 거울에서 −M·e1 이 되어 θ → π − θ 가 되고, n 이
+    홀수면 격자가 반 칸 어긋났다. C 발견, 400/m² 에서 최대 2.6 cm.)
+    """
     ref = _UP if abs(float(axis @ _FORWARD)) > 0.9 else _FORWARD
-    e1 = np.cross(ref, axis)
+    e1 = ref - float(ref @ axis) * axis
     n = np.linalg.norm(e1)
     if n < 1e-9:                     # 축과 참조가 평행 (길이 0 캡슐 등)
         e1 = _FORWARD.copy()
@@ -407,8 +419,10 @@ def _sample_segment(seg: _Segment, patches_per_m2: float) -> tuple[np.ndarray, .
     area = np.concatenate(area_parts)
 
     if seg.split_front_back:
-        # 몸 전방 성분이 양이면 torso_front, 아니면 torso_back
-        part = np.where(nrm @ seg.e1 > 0.0, PART_TORSO_FRONT, PART_TORSO_BACK)
+        # 몸 전방 성분이 양이면 torso_front, 아니면 torso_back. 정확히 옆(θ = ±90°)을 보는 패치는
+        # 전방 성분이 부동소수 잡음(cos(π/2) ≈ +6e−17, cos(3π/2) ≈ −2e−16)이라 좌우에서 부호가 갈렸다.
+        # 허용치 이하를 둘 다 back 으로 보내 좌우 거울 대칭을 지킨다.
+        part = np.where(nrm @ seg.e1 > _FRONT_BACK_TOL, PART_TORSO_FRONT, PART_TORSO_BACK)
     else:
         part = np.full(pos.shape[0], seg.part)
     return pos, nrm, area, part.astype(np.int32)

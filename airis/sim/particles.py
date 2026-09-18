@@ -6,8 +6,8 @@
   결정론이 깨진다 (`docs/tracks/A_particles.md` 단계 3)
 - 스텝: 이탈 판정 -> 부유 입자 적분 -> 캡슐 충돌/재부착 -> 부스 이탈 제거
 - 제트: 원형 노즐은 00_common.md 4.1, 슬롯 노즐은 4.1b (노즐별 판정은 `jet.slot_mask`)
-- 부착 입자의 이탈 판정에는 4.2b 충돌 제트 보정을 더한다 (`jet.impingement.enabled`).
-  부유 입자는 자유 제트 그대로
+- 부착 입자의 이탈 판정에는 4.2b 충돌 제트 보정을 더하고, 노즐별 기여에 D의
+  `patch_baseline.occlusion` 가시 비율(몸에 가린 정도)을 곱한다. 부유 입자는 자유 제트 그대로
 - 부스 밖 자세(00_common.md 5절)는 시뮬레이션하지 않고 score = -1 - 10·d_out (벽 초과 거리 벌점)
 
 구현 상태 (A_particles.md 기준)
@@ -31,6 +31,7 @@ from .interface import Evaluator
 from .jet import SLOT_AXIS_PERP_TOL, slot_mask
 from .kernels import ParticleFields, init_taichi, pack_constants
 from .kernels.particle_kernels import PART_TORSO_BACK, PART_TORSO_FRONT
+from .patch_baseline import occlusion as patch_occlusion
 from .scenario import load_nozzle_layout
 from .types import (
     PART_NAMES, BodyParams, BodyState, EvalResult, NozzleConfig, PoseParams, Scenario,
@@ -57,14 +58,19 @@ class ParticleEvaluator(Evaluator):
     def __init__(self, physics_cfg: dict, arch: str = "gpu", *,
                  max_candidates: int = 100,
                  particles_per_candidate: int | None = None,
-                 max_capsules: int = 64, max_nozzles: int = 64,
+                 max_capsules: int = 64, max_nozzles: int = 32, max_patches: int = 8192,
                  booth: dict | None = None,
                  duration_s: float | None = None,
                  dump_every: int | None = None,
                  dump_dir: str | Path | None = None,
-                 steps_per_launch: int = 100):
+                 steps_per_launch: int = 100,
+                 occlusion: bool = True):
         """`dump_every`(스텝, None이면 `simulation.dump_every`)가 0보다 크면 매 평가마다
-        `dump_dir/frames/<step>.npz`에 입자 상태를 저장한다 (단계 12). 최적화 중에는 0."""
+        `dump_dir/frames/<step>.npz`에 입자 상태를 저장한다 (단계 12). 최적화 중에는 0.
+
+        `occlusion`이 False면 가림을 끈다 (모든 노즐이 모든 패치를 봄). 비교·디버그용.
+        `max_patches`는 후보당 패치 수 상한 (가림 표 크기). 기본 체형 약 5,200, 키 1.95 m 약 6,600.
+        """
         self.cfg = physics_cfg
         self.arch = init_taichi(arch)          # 프로세스당 1회. 이미 되어 있으면 건너뜀
 
@@ -84,8 +90,10 @@ class ParticleEvaluator(Evaluator):
         if self.dump_every < 0:
             raise ValueError("dump_every는 0 이상이어야 한다")
         self.booth = booth if booth is not None else load_nozzle_layout()["booth"]
+        self.occlusion = bool(occlusion)
 
-        self.f = ParticleFields(self.max_candidates, self.N, max_capsules, max_nozzles)
+        self.f = ParticleFields(self.max_candidates, self.N, max_capsules, max_nozzles,
+                                max_patches)
         self.f.cst.from_numpy(pack_constants(physics_cfg, self.booth))
 
         # 호스트 스테이징 버퍼. from_numpy는 필드 전체 형상을 요구하므로 최대 크기로 둔다.
@@ -101,12 +109,14 @@ class ParticleEvaluator(Evaluator):
             "state": np.zeros(bn, np.int32),
             "part": np.zeros(bn, np.int32),
             "part_init": np.zeros(bn, np.int32),
+            "patch_idx": np.zeros(bn, np.int32),
         }
         self._h_caps = np.zeros((self.max_candidates, self.f.K, 7), np.float32)
         self._h_cap_part = np.full((self.max_candidates, self.f.K), -1, np.int32)
         self._h_n_caps = np.zeros(self.max_candidates, np.int32)
         self._h_body_fwd = np.zeros((self.max_candidates, 3), np.float32)
         self._h_count_init = np.zeros((self.max_candidates, N_PARTS), np.int32)
+        self._h_vis = np.ones((self.max_candidates, self.f.P, self.f.M), np.float32)
 
     def destroy(self) -> None:
         self.f.destroy()
@@ -290,6 +300,20 @@ class ParticleEvaluator(Evaluator):
         self.f.k_probe_surface_velocity(pts, nrm, out, pts.shape[0], float(t))
         return out
 
+    def probe_attached_velocity(self, states: Sequence[BodyState], poses: Sequence[PoseParams],
+                                nozzle: NozzleConfig, t: float = 0.0
+                                ) -> tuple[np.ndarray, np.ndarray]:
+        """초기화 직후 각 입자가 이탈 판정에 쓰는 속도 (가림·4.2b 포함)와 소속 패치 번호.
+
+        반환: (n·N, 3) 속도, (n·N,) 패치 번호. 가림 검증용 (시뮬레이션은 돌리지 않는다).
+        """
+        n_act = len(states)
+        self._init_candidates(states, poses, nozzle, n_act)
+        self._upload_nozzles(nozzle)
+        out = np.zeros((n_act * self.N, 3), np.float32)
+        self.f.k_probe_attached(out, n_act, float(t))
+        return out, self._h["patch_idx"][:n_act * self.N].copy()
+
     def probe_velocity(self, points: np.ndarray, nozzle: NozzleConfig,
                        t: float = 0.0) -> np.ndarray:
         """Taichi `jet_velocity`를 임의의 점 (P,3)에서 평가 -> (P,3). 4.1/4.1b 검증용."""
@@ -323,7 +347,7 @@ class ParticleEvaluator(Evaluator):
 
         def init_one(b: int) -> None:
             rng = np.random.default_rng(self._candidate_seed(poses[b], nozzle))
-            self._init_candidate(b, states[b], poses[b], rng)
+            self._init_candidate(b, states[b], poses[b], nozzle, rng)
 
         if n_act >= INIT_PARALLEL_MIN and INIT_WORKERS > 1:
             with ThreadPoolExecutor(max_workers=INIT_WORKERS) as pool:
@@ -336,6 +360,7 @@ class ParticleEvaluator(Evaluator):
         for name, arr in self._h.items():
             getattr(f, name).from_numpy(arr)
         f.capsules.from_numpy(self._h_caps)
+        f.vis.from_numpy(self._h_vis)
         f.cap_part.from_numpy(self._h_cap_part)
         f.n_caps.from_numpy(self._h_n_caps)
         f.body_fwd.from_numpy(self._h_body_fwd)
@@ -343,7 +368,7 @@ class ParticleEvaluator(Evaluator):
         f.k_zero_removed(n_act)
 
     def _init_candidate(self, b: int, state: BodyState, pose: PoseParams,
-                        rng: np.random.Generator) -> None:
+                        nozzle: NozzleConfig, rng: np.random.Generator) -> None:
         """A_particles.md 단계 3을 그대로. 난수 호출 순서가 결정론의 일부다."""
         n = self.N
         sl = slice(b * n, (b + 1) * n)
@@ -366,6 +391,18 @@ class ParticleEvaluator(Evaluator):
         part = np.asarray(state.patch_part, dtype=np.int32)[idx]
         self._h["part"][sl] = part
         self._h["part_init"][sl] = part
+        self._h["patch_idx"][sl] = idx
+
+        # 가림: D의 occlusion (M, 패치)를 그대로 쓴다. 입자는 패치 번호로 찾아 읽는다.
+        n_patch, m = area.size, nozzle.count
+        if n_patch > self.f.P:
+            raise ValueError(f"후보 {b}: 패치 {n_patch}개 > max_patches {self.f.P}")
+        if m > self.f.M:
+            raise ValueError(f"노즐 {m}개 > max_nozzles {self.f.M}")
+        if self.occlusion:
+            self._h_vis[b, :n_patch, :m] = patch_occlusion(state, nozzle, cfg).T
+        else:
+            self._h_vis[b, :n_patch, :m] = 1.0
 
         # 3. 지름, 임계 전단 (로그 정규). respawn과 재부착 난수도 여기서 미리 뽑는다.
         size = cfg["particles"]["size_distribution_um"]
