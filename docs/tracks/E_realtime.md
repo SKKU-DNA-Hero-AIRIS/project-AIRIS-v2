@@ -76,3 +76,9 @@ A의 프레임 덤프(`docs/interfaces.md` "시각화용 상태 덤프": `output
 ## 병합 후 알림
 
 병합되면 C 세션에 "`recommend_pose` 스텁을 회귀 모델로 교체할 인터페이스(`predict_pose`)를 확인하라", A 세션에 "프레임 덤프를 `airis/viz/anim.py`가 읽으니 스키마를 바꾸면 알려라"고 전달한다.
+
+## 메시 몸 전환 후 (③, 2026-09-18 총괄 확정, `docs/mesh_transition.md`)
+
+1. `airis/viz/human_mesh.py`는 MakeHuman 렌더 비교용으로 시작했고, B가 `airis/sim/human_mesh.py`로 이관·확장한 뒤에는 sim 모듈을 import하는 얇은 시각화로 줄인다.
+2. `pose_view`·`anim`: 캡슐 대신 `BodyState.mesh_vertices/mesh_faces`(또는 원본 메시)를 그린다. 부위별 제거율 색은 `mesh_face_part`로 칠한다.
+3. 포즈 추정의 `BodyParams` 추정을 재정의된 5개 필드(관절 중심 기준)에 맞춘다.
