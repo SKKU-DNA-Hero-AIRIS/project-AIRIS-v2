@@ -2,7 +2,8 @@
 
 시뮬레이션 몸을 캡슐 마네킹에서 사람 메시로 바꾸는 작업(③)의 첫 부품이다. 메시를 불러와 우리 자세
 변수(`PoseParams` 7개)를 뼈 회전으로 바꾸고 정점을 움직인다. numpy 만 쓴다 (Taichi·torch 없음).
-B가 체형 맞춤·패치 샘플링에서, E가 3D 안내 뷰에서 같이 쓴다.
+다음 단계에서 B가 `airis/sim/human_mesh.py`로 옮겨 소유한다(체형 매핑·패치 샘플링 추가). 그 뒤 E의
+시각화 코드는 sim 쪽을 import 한다. 그때까지는 이 위치에 둔다.
 
 공개 API
 --------
@@ -16,7 +17,8 @@ B가 체형 맞춤·패치 샘플링에서, E가 3D 안내 뷰에서 같이 쓴�
 
     M = bone_transforms(mesh, pose)           # (B,4,4) 뼈별 월드 변환: 기본 자세 점 x → M_b·x
     v = pose_vertices(mesh, pose)             # (V,3) 기본 자세 좌표계에서 자세를 입힌 정점
-    v = posed_in_booth(mesh, body, pose, scenario)   # (V,3) 부스 좌표 (아래 규약). 시뮬레이션은 이것을 쓴다
+    v = posed_in_booth(mesh, body, pose, scenario)   # (V,3) 부스 좌표 (아래 규약)
+    v = pose_mesh(pose, scenario, body)              # 같은 것, 캐시한 기본 메시 사용 (body 생략 = 키 1.70)
 
 좌표 규약 (`docs/tracks/00_common.md` 5절, B의 `build_body`와 같음)
 - x = 게이트 진행 방향(사람이 보는 앞), y = 왼쪽(+), z = 위. 단위 m.
@@ -36,11 +38,15 @@ B가 체형 맞춤·패치 샘플링에서, E가 3D 안내 뷰에서 같이 쓴�
   뼈에 기본 방향을 목표 방향으로 옮기는 최소 회전을 넣는다 (뼈 축 비틀림은 맞추지 않는다).
 - 다리: `upperleg01`에 R_y(−고관절 굴곡), `lowerleg01`에 R_y(+무릎 굴곡). 기본 자세의 다리 벌림은 그대로.
 
-성능 (Windows, CPU, 다른 트랙 계산 8 프로세스가 도는 상태): 로드 약 0.2 s (1회), 자세 한 번
-(`posed_in_booth`) 약 16 ms. 가중치로 뼈 변환을 정점별 3×4 행렬로 먼저 섞은 뒤 한 번 곱한다.
-처음 비교 렌더 때 쓴 "뼈마다 전 정점 변환 후 가중합"은 0.3 s였고 결과는 1e-15 안에서 같다.
+성능 (Windows, CPU): 로드 약 0.2 s (1회). 자세 한 번(`pose_mesh`)은 뼈 변환 계산 + 희소 블렌드로
+수 ms다. 정확한 값은 PR 본문 표 참고 (다른 트랙 계산 부하에 따라 달라진다).
+- 스키닝: 가중치를 CSR 희소 행렬(정점당 뼈 최대 9개, 평균 3개, nnz 약 4만)로 두고 W (V,B) × 뼈 변환
+  (B,12) 한 번으로 정점별 3×4 행렬을 만든 뒤 곱한다. 가중치를 자르지 않아 조밀 계산과 결과가 같다(1e-15).
+  "정점당 상위 4개 뼈"로 자르면 일부 정점에서 가중치 최대 30%가 사라져 쓰지 않았다.
+- 처음 비교 렌더 때의 "뼈마다 전 정점 변환 후 가중합"은 0.3 s였다.
 
-자산 (git 밖 `data/meshes/makehuman/`, CC0 1.0. 저장소 LICENSE.md "C. The license for the bundled assets")
+자산 (`data/meshes/makehuman/`에 커밋, CC0 1.0. 출처·커밋·blob 해시·라이선스 전문은 같은 폴더 LICENSE.txt.
+upstream 과 바이트 단위로 같게 두려고 폴더 .gitattributes 에서 줄바꿈 변환을 끈다)
     https://raw.githubusercontent.com/makehumancommunity/makehuman/master/makehuman/data/
         3dobjs/base.obj              1,749,303 B   기본 메시 hm08 (y 위, z 앞, +x = 캐릭터 왼쪽, 단위 dm)
         rigs/default.mhskel            117,790 B   기본 뼈대 (관절 = 정점 묶음의 평균)
@@ -87,8 +93,11 @@ class HumanMesh:
     source: str = ""
 
     def __post_init__(self) -> None:
+        from scipy.sparse import csr_matrix
+
         self._index = {n: i for i, n in enumerate(self.bone_names)}
-        self._used = np.flatnonzero(self.weights.any(axis=0))      # 가중치가 있는 뼈만 섞는다
+        # 희소 가중치 (CSR). 정점당 가중치가 있는 뼈는 최대 9개, 평균 3개 (nnz 약 4만).
+        self._weights_csr = csr_matrix(np.asarray(self.weights, dtype=np.float64))
 
     def bone(self, name: str) -> int:
         return self._index[name]
@@ -295,10 +304,10 @@ def bone_transforms(mesh: HumanMesh, pose: PoseParams) -> np.ndarray:
 def pose_vertices(mesh: HumanMesh, pose: PoseParams) -> np.ndarray:
     """선형 블렌드 스키닝 v' = (Σ_b w_vb · M_b) · v → (V,3), 기본 자세 좌표계.
 
-    뼈 변환 (U,3,4)를 가중치로 정점별 (V,3,4)로 먼저 섞은 뒤 한 번 곱한다 (행렬곱 1번).
+    희소 가중치 행렬 (V,B) × 뼈 변환 (B,12) 으로 정점별 3×4 행렬을 만든 뒤 한 번 곱한다.
     """
-    M = bone_transforms(mesh, pose)[mesh._used, :3, :]            # (U,3,4)
-    A = (mesh.weights[:, mesh._used] @ M.reshape(len(mesh._used), 12)).reshape(-1, 3, 4)
+    M = bone_transforms(mesh, pose)[:, :3, :].reshape(-1, 12)     # (B,12)
+    A = np.asarray(mesh._weights_csr @ M).reshape(-1, 3, 4)       # (V,3,4)
     return np.einsum("vij,vj->vi", A[:, :, :3], mesh.vertices) + A[:, :, 3]
 
 
@@ -322,14 +331,27 @@ def place_in_booth(verts: np.ndarray, mesh: HumanMesh, body: BodyParams, booth: 
     return out
 
 
+@lru_cache(maxsize=1)
+def _default_booth() -> dict:
+    from ..sim.scenario import load_nozzle_layout
+    return load_nozzle_layout()["booth"]
+
+
 def posed_in_booth(mesh: HumanMesh, body: BodyParams, pose: PoseParams,
                    scenario: Scenario | None = None, booth: Mapping | None = None) -> np.ndarray:
     """자세를 입힌 정점 (V,3), 부스 좌표. 면은 `mesh.faces` 그대로. 시뮬레이션·안내 뷰의 진입점."""
     if booth is None:
-        from ..sim.scenario import load_nozzle_layout
-        booth = load_nozzle_layout()["booth"]
+        booth = _default_booth()
     return place_in_booth(pose_vertices(mesh, resolve_pose(pose, scenario)), mesh, body, booth,
                           scenario)
+
+
+def pose_mesh(pose: PoseParams, scenario: Scenario | None = None, body: BodyParams | None = None,
+              *, mesh: HumanMesh | None = None, booth: Mapping | None = None) -> np.ndarray:
+    """자세를 입힌 정점 (V,3), 부스 좌표. `body` 생략 시 `BodyParams()`(키 1.70 m 균일 축척),
+    `mesh` 생략 시 캐시한 MakeHuman 기본 메시. 면은 `load_makehuman().faces` (`cached_makehuman().faces`)."""
+    return posed_in_booth(mesh if mesh is not None else cached_makehuman(),
+                          body if body is not None else BodyParams(), pose, scenario, booth)
 
 
 # ---------------------------------------------------------------------------

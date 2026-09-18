@@ -381,17 +381,12 @@ def test_resolve_pose_applies_wheelchair_fixed_pose():
     assert hm.resolve_pose(PoseParams(hip_flexion=10.0), SCENARIOS["default"]).hip_flexion == 10.0
 
 
-# 아래는 실제 MakeHuman 자산(git 밖 data/meshes/makehuman/, CC0)이 있을 때만 돈다.
-_HAS_MH = all((hm.MAKEHUMAN_DIR / n).exists() for n in hm.MAKEHUMAN_FILES)
-needs_mh = pytest.mark.skipif(not _HAS_MH, reason="MakeHuman 자산 없음 (human_mesh.py 머리말 주소에서 받기)")
-
-
+# 아래는 저장소에 커밋한 MakeHuman 자산(data/meshes/makehuman/, CC0)을 쓴다.
 @pytest.fixture(scope="module")
 def mh():
     return hm.cached_makehuman()
 
 
-@needs_mh
 def test_makehuman_load(mh):
     assert mh.vertices.shape == (13380, 3) and mh.faces.shape == (26756, 3)
     assert len(mh.bone_names) == 163
@@ -402,7 +397,6 @@ def test_makehuman_load(mh):
     assert mh.bone_head[mh.bone("upperarm01.L"), 1] > 0 > mh.bone_head[mh.bone("upperarm01.R"), 1]
 
 
-@needs_mh
 @pytest.mark.parametrize("scenario", ["default", "pregnant", "wheelchair"])
 @pytest.mark.parametrize("pose", MESH_POSES[:3])
 def test_makehuman_posed_in_booth(mh, scenario, pose):
@@ -422,17 +416,82 @@ def test_makehuman_posed_in_booth(mh, scenario, pose):
     assert v[:, 2].max() < BOOTH["height_m"]
 
 
-@needs_mh
+def _posed_joint(mh, pose, bone: str) -> np.ndarray:
+    """뼈 머리(관절)의 자세 적용 후 위치, 기본 자세 좌표계."""
+    M = hm.bone_transforms(mh, pose)[mh.bone(bone)]
+    return M[:3, :3] @ mh.bone_head[mh.bone(bone)] + M[:3, 3]
+
+
+def test_makehuman_hands_up_raises_hands(mh):
+    """만세면 손끝(손가락 뼈에 주로 붙은 정점)이 머리 위로 올라간다."""
+    sc = SCENARIOS["default"]
+    hand_bones = [i for i, n in enumerate(mh.bone_names) if n.startswith(("finger", "metacarpal", "wrist"))]
+    hand = mh.weights[:, hand_bones].sum(axis=1) > 0.5
+    down = hm.pose_mesh(PoseParams(), sc)
+    up = hm.pose_mesh(PoseParams(shoulder_abduction=180.0, elbow_flexion=0.0), sc)
+    assert up[hand, 2].max() > down[hand, 2].max() + 0.9            # 손끝이 1 m 가까이 올라간다
+    assert up[hand, 2].max() > 1.9 > down[:, 2].max()                # 머리(1.70) 위, 천장(2.15) 아래
+    assert up[:, 2].max() < BOOTH["height_m"]
+
+
+@pytest.mark.parametrize("yaw", [90.0, -90.0])
+def test_makehuman_yaw90_shoulder_line_along_x(mh, yaw):
+    """yaw ±90 이면 어깨선(좌→우 어깨 관절)이 진행 방향 x 축과 나란하다. B: R_z(yaw) 이라 +90 이면 왼쪽 어깨가 −x."""
+    pose = PoseParams(torso_yaw=yaw)
+    line = _posed_joint(mh, pose, "upperarm01.L") - _posed_joint(mh, pose, "upperarm01.R")
+    u = line / np.linalg.norm(line)
+    assert abs(u[0]) > 0.99
+    assert np.sign(u[0]) == -np.sign(yaw)
+    rest = _posed_joint(mh, PoseParams(), "upperarm01.L") - _posed_joint(mh, PoseParams(), "upperarm01.R")
+    assert abs(rest[1] / np.linalg.norm(rest)) > 0.99                # 기본 자세는 y 축 (좌우)
+
+
+def test_pose_mesh_defaults(mh):
+    """pose_mesh 는 캐시 메시·키 1.70·부스 좌표를 기본으로 쓴다 (posed_in_booth 와 같은 값)."""
+    sc = SCENARIOS["default"]
+    v = hm.pose_mesh(PoseParams(torso_yaw=30.0), sc)
+    np.testing.assert_allclose(v, hm.posed_in_booth(mh, BodyParams(), PoseParams(torso_yaw=30.0), sc, BOOTH))
+    tall = hm.pose_mesh(PoseParams(), sc, BodyParams(height_m=1.85))
+    assert tall[:, 2].max() == pytest.approx(1.85, abs=0.02)
+
+
+def test_sparse_skinning_matches_dense(mh):
+    """희소 블렌드 = 조밀 가중합 (가중치를 자르지 않는다)."""
+    pose = PoseParams(40.0, 30.0, 60.0, 15.0, 90.0, 20.0, 25.0)
+    M = hm.bone_transforms(mh, pose)
+    per_bone = np.einsum("bij,vj->bvi", M[:, :3, :3], mh.vertices) + M[:, :3, 3][:, None, :]
+    dense = np.einsum("vb,bvi->vi", mh.weights, per_bone)
+    np.testing.assert_allclose(hm.pose_vertices(mh, pose), dense, atol=1e-12)
+
+
+# 성능: 절대 시간 우선, 넘으면 같은 순간의 기준 numpy 연산 대비 비율로 본다 (B tests/test_body.py 방식).
+_REF = np.random.default_rng(12345)
+_REF_A, _REF_D, _REF_X = _REF.random((16, 3600)), _REF.random((16, 3)), _REF.random((3600, 3))
+
+
+def _reference_workload() -> float:
+    s = _REF_D @ _REF_X.T
+    return float(np.exp(-(_REF_A * _REF_A) / (1.0 + s * s)).sum())
+
+
 def test_makehuman_pose_speed(mh):
+    """자세 1회 50 ms 이하 (실측 약 2 ms). CPU 부하로 넘으면 기준 연산 대비 40배 이하 (실측 약 2~3배)."""
     import time
-    hm.posed_in_booth(mh, BodyParams(), PoseParams(), SCENARIOS["default"], BOOTH)
-    t = time.perf_counter()
-    for _ in range(5):
-        hm.posed_in_booth(mh, BodyParams(), PoseParams(torso_yaw=90.0), SCENARIOS["default"], BOOTH)
-    assert (time.perf_counter() - t) / 5 < 0.2                        # 여유 있게 (실측 약 16 ms)
+    sc = SCENARIOS["default"]
+    fn = lambda: hm.pose_mesh(PoseParams(torso_yaw=90.0, shoulder_abduction=180.0), sc)   # noqa: E731
+    fn()
+    best = best_ref = float("inf")
+    for _ in range(15):
+        t0 = time.perf_counter()
+        _reference_workload()
+        best_ref = min(best_ref, time.perf_counter() - t0)
+        t0 = time.perf_counter()
+        fn()
+        best = min(best, time.perf_counter() - t0)
+    if best >= 0.050:
+        assert best / best_ref < 40.0, f"pose_mesh {best * 1e3:.1f} ms, 기준 대비 {best / best_ref:.1f}배"
 
 
-@needs_mh
 def test_figure_from_mesh(mh):
     v = hm.posed_in_booth(mh, BodyParams(), PoseParams(), SCENARIOS["default"], BOOTH)
     state = build_body(BodyParams(), PoseParams(), SCENARIOS["default"], patches_per_m2=400)

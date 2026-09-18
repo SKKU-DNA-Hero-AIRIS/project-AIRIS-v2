@@ -19,5 +19,5 @@ data/datasets/*
 data/models/*
 !data/models/.gitkeep
 
-# 사람 메시 후보 (MakeHuman CC0 자산, SMPL-X 모델 파일은 재배포 금지) (E)
-data/meshes/*
+# SMPL-X 모델 파일은 재배포 금지라 저장소에 두지 않는다. MakeHuman(CC0) 자산은 data/meshes/makehuman/ 에 커밋 (E)
+data/meshes/smplx/
