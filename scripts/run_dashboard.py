@@ -291,6 +291,7 @@ def main() -> None:
             st.markdown(f"- {line}")
         st.caption(f"자세 값: {pose_label(rec.pose)}")
         st.caption(f"출처: {rec.source}" + (" (회귀 모델이 준비되기 전의 임시 표)" if rec.source.startswith("stub") else ""))
+        st.caption("팔 자세(만세 / 팔 내림)는 불편도 설정에 민감합니다. 임산부 시나리오는 팔 불편도 가중이 커서 팔 내림이 최적입니다.")
         for note in rec.notes:
             st.info(note)
     with metrics:
