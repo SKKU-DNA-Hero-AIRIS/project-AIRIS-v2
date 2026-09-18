@@ -9,8 +9,15 @@ import pytest
 from airis.sim import body as body_mod
 from airis.sim.body import (
     PART_ARMS, PART_OCCLUDER, PART_TORSO_BACK, PART_TORSO_FRONT,
-    SHANK_RADIUS_M, build_body, joint_positions, surface_area,
+    SHANK_RADIUS_M, joint_positions, surface_area,
 )
+from airis.sim.body import build_body as _build_body
+
+
+def build_body(*args, **kwargs):
+    """이 파일은 캡슐 마네킹 테스트다. 기본 모델(physics.yaml body.model)이 mesh 여도 캡슐 폴백을 검사한다."""
+    kwargs.setdefault("model", "capsule")
+    return _build_body(*args, **kwargs)
 from airis.sim.scenario import load_scenarios
 from airis.sim.types import PART_NAMES, BodyParams, BodyState, PoseParams
 

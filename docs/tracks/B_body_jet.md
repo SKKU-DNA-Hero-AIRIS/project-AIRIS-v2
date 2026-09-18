@@ -153,13 +153,27 @@ pelvis
 
 병합되면 D, C, A 세션에 "B 병합됨. `tests/fakes.py`의 `fake_body`, `fake_nozzles`를 `build_body`, `load_nozzles`로 교체하라"고 전달한다.
 
-## 단계 10. 사람 메시 몸 (③, 2026-09-18 총괄 확정, `docs/mesh_transition.md`)
+## 단계 10. 사람 메시 몸 (③, 2026-09-18 총괄 확정, `docs/mesh_transition.md`) — **완료** (PR #53, 5단계 전환 PR)
 
 E의 `airis/viz/human_mesh.py`(MakeHuman 로드·스키닝)를 `airis/sim/human_mesh.py`로 이관해 소유하고 확장한다.
-1. `BodyParams` 5개(키·어깨 관절 간격·가슴 두께·어깨→손목·고관절 높이) → 뼈 길이별 축척. 임산부는 `stomach-pregnant` 타깃(추가 다운로드는 사용자 승인).
+1. `BodyParams` 5개(키·어깨 관절 간격·가슴 두께·상완+전완 구간 합·고관절 높이) → 뼈 길이별 축척. 임산부는 `stomach-pregnant` 타깃(추가 다운로드는 사용자 승인).
 2. sim 메시: 원본을 약 5~6k 삼각형으로 1회 데시메이션(정점별 뼈 가중치 보존), 좌우 대칭 면 맵·면 → 부위 맵과 함께 `data/meshes/makehuman/`에 커밋. 생성 스크립트 포함.
 3. 패치 샘플링: 면적 비례, 면 법선, y → −y 대칭 쌍, 부위는 뼈 가중치 최댓값 기준(torso front/back은 기존 법선 규칙).
-4. 뼈에 맞춘 근사 캡슐(약 30개) + 휠체어 프레임 → `capsules`/`capsule_part`.
-5. `build_body(..., model=None)`: `physics.yaml body.model` (`capsule` 기본 → E5 기록 후 `mesh`). 캡슐 경로는 유지.
+4. 뼈에 맞춘 근사 캡슐(19개) + 휠체어 프레임(4개) → `capsules`/`capsule_part`.
+5. `build_body(..., model=None)`: `physics.yaml body.model` (E5 기록 후 `mesh` 로 전환 완료). 캡슐 경로는 `model="capsule"` 폴백으로 유지.
 6. `tests/test_human_mesh.py`: 자산 로드, 체형 축척 정확도(측정값 ±1 cm), 대칭, 부위 비율, 부스 밖 판정, 시간(자세+패치 20 ms 이하, 부하 대비 비율 판정).
 완료 후 D·A·E에 알린다. BodyParams 기본값 교체는 통합이 types.py PR로 처리한다.
+
+최종 수치 (2026-09-18, 기본 체형 1.70 / 0.342 / 0.194 / 0.463 / 0.883, 다른 세션 부하 있는 상태의 중앙값):
+
+| 항목 | 값 |
+|---|---|
+| sim 메시 | 정점 2,802, 삼각형 5,600, 닫힌 다양체, 좌우 완전 대칭, 121 KiB (`scripts/build_sim_mesh.py`) |
+| 원본 대비 형상 | 표면 거리 중앙 0.8 mm·최대 6.7 mm, 면적비 1.006, 부위 면적 비율 차 0.003 이하, 가중치 무손실 |
+| 체형 축척 정확도 | 5개 측정값 0.4 mm 이하 (체형 4개) |
+| 패치 수 400/m² (기본·휠체어 / 임산부) | 688 / 700, 키 1.95 체형은 904 / 934 |
+| 패치 수 2000/m² (기본·휠체어 / 임산부) | 3,446 / 3,522, 키 1.95 체형은 4,644 / 4,764 |
+| 메시 `build_body` 1회 | 400/m² 9.6 ms, 2000/m² 10.2 ms (캡슐 4.6 / 6.1 ms) |
+| D `PatchEvaluator` 1회 (메시, 400/m²) | 22.8 ms (기준 100 ms) |
+| 근사 캡슐 | 몸 19개 (몸통 띠 5개 = torso_front), 휠체어 +4 (−1) |
+| 임산부 배 | `stomach-pregnant-incr.target` (CC0), 몸 앞쪽 끝 +4.2 cm, 체형 측정값 불변 |
