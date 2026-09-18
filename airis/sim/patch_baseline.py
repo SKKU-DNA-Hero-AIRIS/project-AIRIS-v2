@@ -8,7 +8,8 @@
 흐름 (`docs/tracks/D_patch_baseline.md` 단계 4)
 
     state   = build_body(body, pose, scenario)
-    u_mn    = velocity_field_per_nozzle(patch_pos + d·n, nozzle, t=0, cfg)   # (M,N,3)
+    u_mn    = velocity_field_per_nozzle(patch_pos + d·n, nozzle, t=0, cfg,
+                                        surface_normals=patch_normal)        # (M,N,3), 4.2b 보정
     visible = occlusion(state, nozzle, cfg)                                  # (M,N)
     u       = sum_m u_mn · visible[m]                                        # (N,3)
     tau     = scoring.wall_shear(u, patch_normal, cfg)                       # (N,)
@@ -250,7 +251,9 @@ class PatchEvaluator(Evaluator):
         probe = np.asarray(state.patch_pos, dtype=np.float64) + delta * normal
 
         # 정상 상태 평가라 t = 0. 펄스는 무시한다 (00_common.md 4.1).
-        u_mn = np.asarray(self._velocity_field_per_nozzle(probe, nozzle, 0.0, self.cfg))  # (M,N,3)
+        # 법선을 넘겨 충돌 제트 -> 벽면 제트 보정(00_common.md 4.2b)을 받는다.
+        u_mn = np.asarray(self._velocity_field_per_nozzle(
+            probe, nozzle, 0.0, self.cfg, surface_normals=normal))                       # (M,N,3)
         visible = occlusion(state, nozzle, self.cfg)                                      # (M,N)
         # 가려진 노즐의 기여를 빼고 합산한다. (M,N,3) 마스크 곱 대신 축약 합으로 한 번에.
         u = np.einsum("mnk,mn->nk", u_mn, visible.astype(u_mn.dtype)).astype(np.float64)

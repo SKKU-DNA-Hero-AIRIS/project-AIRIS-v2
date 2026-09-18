@@ -13,8 +13,8 @@ E1 노즐 배치와 물리 상수
   원형 노즐 비교 배치(`load_nozzles(layout="layout")`, 벽면 2열 × 4단, 25도 경사)로 한다.
 - 물리 상수는 `configs/physics.yaml` 그대로다. 이전의 제트 덮어쓰기(노즐 지름 0.08 m 등)는
   퓨리움 부스(길이 0.886 m)로 바뀐 비교 배치에서 필요 없어져 지웠다.
-- 슬롯 배치에서는 배치와 무관한 항목(세기 단조, 세기 0)을 따로 본다. "팔 들면 겨드랑이 상승"은
-  슬롯 배치에서 성립하지 않는다 (xfail, 사유는 해당 테스트).
+- 슬롯 배치에서는 배치와 무관한 항목(세기 단조, 세기 0)과 "팔 들면 겨드랑이 상승"을 따로 본다.
+  마지막 항목은 충돌 제트 보정(4.2b)이 켜져야 성립한다.
 
 테스트용 부스 (E1 전용)
 - 부스 밖 자세 불가 규칙(00_common.md 5절)은 팔 90도 같은 자세를 벌점으로 끊는다. E1은
@@ -245,11 +245,13 @@ def test_slot_layout_strength_monotone_and_zero(sim, slot_nozzles):
     assert off.total_removal == 0.0
 
 
-@pytest.mark.xfail(strict=False, reason=(
-    "발견 사항: 퓨리움 슬롯 바에서는 팔을 수평(90도)으로 들면 겨드랑이·옆구리 제거율이 0이 된다 "
-    "(20도 0.034 -> 90도 0.000, 만세 150도 0.023). 측면 바(z 0.72~1.42 m)가 수평으로 쏘므로 든 팔이 "
-    "옆구리 위쪽을 가린다. 충돌 제트 보정(4.2b) 병합 후 다시 확인한다."))
 def test_slot_layout_raising_arms_increases_armpit_removal(sim, slot_nozzles):
+    """기준 장비(슬롯 바)에서도 팔을 들면 겨드랑이·옆구리 제거율이 오른다.
+
+    충돌 제트 보정(4.2b) 전에는 성립하지 않았다: 측면 바가 수평으로 쏘아 든 팔이 옆구리를
+    가렸고(20도 0.005 -> 90도 0.000), 보정을 켜면 팔에 부딪힌 제트가 벽면 제트로 퍼져
+    20도 0.032 -> 90도 0.315가 된다 (PR 본문).
+    """
     def flank_removal(abduction):
         pose = PoseParams(shoulder_abduction=abduction)
         state = sim.evaluator._build_body(BodyParams(), pose, sim.scenario)
