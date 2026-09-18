@@ -3,6 +3,7 @@ numpy>=1.26,<3
 scipy>=1.11
 taichi>=1.7
 pyyaml>=6.0
+open3d>=0.19          # 메시 몸 가림 판정 (D, RaycastingScene). docs/mesh_transition.md 5
 
 # 최적화 / 회귀
 cma>=3.3

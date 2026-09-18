@@ -8,7 +8,7 @@
 |---|---|---|
 | B | `airis/sim/body.py`, `human_mesh.py`, `jet.py`, `scenario.py`, `airis/viz/debug3d.py`, `configs/*.yaml`, `data/meshes/*`, `scripts/build_sim_mesh.py`, `tests/test_body.py`, `tests/test_jet.py`, `tests/test_human_mesh.py` | |
 | D | `airis/sim/patch_baseline.py`, `airis/sim/scoring.py`, `tests/test_sanity_physics.py`, `tests/fakes.py`, `scripts/compare_evaluators.py`, `scripts/compare_bodies.py` | `configs/` |
-| C | `airis/optimize/*`, `scripts/run_optimize.py`, `scripts/run_baselines.py`, `scripts/run_e4.py`, `tests/test_encoding.py`, `tests/test_cmaes_dummy.py` | `configs/` |
+| C | `airis/optimize/*`, `scripts/run_optimize.py`, `scripts/run_baselines.py`, `scripts/run_e4.py`, `scripts/run_e3.py`, `scripts/run_dataset.py`, `docs/experiments.md`, `tests/test_encoding.py`, `tests/test_cmaes_dummy.py` | `configs/` |
 | A | `airis/sim/particles.py`, `airis/sim/kernels/*`, `tests/test_particles.py` | `configs/` |
 | E | `airis/realtime/*`, `airis/viz/*`(단 `debug3d.py`는 B), `scripts/run_dashboard.py`, `scripts/render_frames.py`, `tests/test_realtime.py`, `tests/test_viz.py`, `docs/figures/*` | `configs/`, `airis/sim/*` |
 | 전원 | | `airis/sim/types.py`, `airis/sim/interface.py`, `docs/interfaces.md` |
@@ -111,6 +111,8 @@ u_corr = u + w · e_r,   e_r = r / |r|        ξ < 1e-6이면 w = 0
 - 정체점(ξ = 0)에서 0, 그 둘레 고리에서 최대, 바깥은 원형 1/ξ · 슬롯 1/√ξ로 감쇠한다 (방사상 / 평면 벽면 제트). 봉우리 위치는 Beltaos & Rajaratnam 1974(r/H ≈ 0.14)와 같은 함수족이지만 원문 계수는 미확인이라 `k`를 문헌값으로 고정하지 않는다.
 - 설정: `jet.impingement.enabled` (기본 true), `jet.impingement.wall_jet_gain` (기본 1.0). `stagnation_radius_factor`, `wall_jet_start_factor`는 삭제. E3에서 `enabled` 켬/끔과 `k ∈ {0.5, 1, 2}`를 스윕한다.
 - 계약: D는 `velocity_field_per_nozzle(probe, nozzle, 0, cfg, surface_normals=state.patch_normal)`로 법선을 넘긴다. A는 부착 입자(패치 법선 있음)에만 적용하고 부유 입자는 자유 제트 그대로. 보정을 켜면 τ가 커지므로 `adhesion.fabric_roughness_factor`를 B가 같은 PR에서 다시 잡는다 (기준 자세 전신 R 5~10% 유지).
+
+**패치판 등가 관계 (C, 2026-09-18, 테스트로 고정)**: 4.2 τ = ½ρ·Cf·|u_t|² 이고 4.3 제거율이 τ/τ_med 에만 의존하며 u 가 출구 속도 U0 에 선형이므로, 패치판에서는 `air.friction_coeff × k ≡ fabric_roughness_factor × 1/k`, `jet.slot.exit_velocity × k ≡ fabric_roughness_factor × 1/k²` 가 수치적으로 같다(차이 1e−8). 따라서 민감도 스윕(E3)은 세 상수 중 거칠기 하나만 돌린다. 입자판은 속도가 입자 수송·항력에도 들어가므로 이 등가가 성립하지 않는다.
 
 ### 4.3 제거율 (D는 닫힌 식, A는 입자 통계)
 

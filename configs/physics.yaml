@@ -31,6 +31,11 @@ jet:
     period_s: 0.5
     duty: 0.5
 
+body:
+  # 몸 모델 (docs/mesh_transition.md). capsule = 캡슐 마네킹, mesh = MakeHuman 사람 메시 (airis/sim/human_mesh.py).
+  # B·D·A 메시 PR 이 모두 병합되고 E5(캡슐판 vs 메시판) 가 기록되면 mesh 로 바꾼다 (B PR).
+  model: capsule
+
 air:
   density: 1.2                    # kg/m^3
   viscosity: 1.8e-5               # Pa·s

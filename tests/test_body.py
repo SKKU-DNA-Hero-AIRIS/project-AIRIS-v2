@@ -133,7 +133,8 @@ def test_torso_front_back_split_by_body_forward(default_state):
     """torso_front 는 몸 전방(+x) 쪽 법선, torso_back 은 반대."""
     s = default_state
     assert (s.patch_normal[s.patch_part == PART_TORSO_FRONT, 0] > 0).all()
-    assert (s.patch_normal[s.patch_part == PART_TORSO_BACK, 0] <= 0).all()
+    # 정확히 옆(θ = ±90°)인 패치는 전방 성분이 부동소수 잡음(±1e−16)이라 back 으로 둔다 (body._FRONT_BACK_TOL)
+    assert (s.patch_normal[s.patch_part == PART_TORSO_BACK, 0] <= body_mod._FRONT_BACK_TOL).all()
 
 
 def test_default_mannequin_stands_upright():
