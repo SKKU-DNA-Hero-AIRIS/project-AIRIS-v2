@@ -9,7 +9,7 @@
 
     state   = build_body(body, pose, scenario)
     u_mn    = velocity_field_per_nozzle(patch_pos + d·n, nozzle, t=0, cfg)   # (M,N,3)
-    visible = occlusion(state, nozzle, cfg)                                  # (M,N)
+    visible = occlusion(state, nozzle, cfg)                                  # (M,N) 0~1
     u       = sum_m u_mn · visible[m]                                        # (N,3)
     tau     = scoring.wall_shear(u, patch_normal, cfg)                       # (N,)
     R       = scoring.removal_fraction(tau, cfg)                             # (N,)
@@ -30,6 +30,7 @@ import numpy as np
 from . import scoring
 from .body import build_body as _default_build_body
 from .interface import Evaluator
+from .jet import slot_mask
 from .jet import velocity_field_per_nozzle as _default_velocity_field_per_nozzle
 from .scenario import load_nozzle_layout
 from .types import PART_NAMES, BodyParams, BodyState, EvalResult, NozzleConfig, PoseParams, Scenario
@@ -37,6 +38,8 @@ from .types import PART_NAMES, BodyParams, BodyState, EvalResult, NozzleConfig, 
 _EPS = 1e-12
 # 후보 거르기 여유. float32 반올림보다 충분히 커서 거르기가 항상 보수적이 되게 한다.
 _CONE_SLACK = 1e-4
+# 슬롯 노즐 가림을 볼 때 슬롯을 따라 찍는 점 수 (양 끝 포함, 등간격).
+SLOT_OCCLUSION_POINTS = 5
 # 부스 밖 자세의 벌점 (00_common.md 5절): score = INFEASIBLE_BASE - INFEASIBLE_SLOPE_PER_M · d_out.
 INFEASIBLE_BASE = -1.0
 INFEASIBLE_SLOPE_PER_M = 10.0
@@ -81,17 +84,63 @@ def _segment_segment_dist_sq(s1: np.ndarray, d1: np.ndarray,
     return np.einsum("ij,ij->i", w, w)
 
 
-def occlusion(state: BodyState, nozzle: NozzleConfig, physics_cfg: dict) -> np.ndarray:
-    """(M, N) bool. 노즐 m이 패치 n을 볼 수 있으면 True.
+def occlusion_sources(nozzle: NozzleConfig,
+                      slot_points: int = SLOT_OCCLUSION_POINTS) -> tuple[np.ndarray, np.ndarray]:
+    """가림 판정에 쓰는 광원 점 (S,3)과 각 점의 노즐 번호 (S,).
+
+    원형 노즐은 노즐 위치 한 점. 슬롯 노즐(`jet.slot_mask`)은 슬롯 중심에서 `slot_axis`를 따라
+    `slot_length`에 걸쳐 양 끝을 포함한 등간격 `slot_points`개 점이다.
+    """
+    if slot_points < 1:
+        raise ValueError("slot_points 는 1 이상")
+    npos = np.asarray(nozzle.positions, dtype=np.float64).reshape(-1, 3)
+    is_slot = slot_mask(nozzle)
+    if not is_slot.any():
+        return npos, np.arange(npos.shape[0])
+
+    axis = np.asarray(nozzle.slot_axis, dtype=np.float64).reshape(-1, 3)
+    axis = axis / np.maximum(np.linalg.norm(axis, axis=1, keepdims=True), _EPS)
+    length = np.asarray(nozzle.slot_length, dtype=np.float64).reshape(-1)
+    frac = np.linspace(-0.5, 0.5, slot_points) if slot_points > 1 else np.zeros(1)
+
+    points, owner = [], []
+    for m in range(npos.shape[0]):
+        if is_slot[m]:
+            points.append(npos[m] + (frac * length[m])[:, None] * axis[m])
+            owner.append(np.full(frac.size, m))
+        else:
+            points.append(npos[m][None, :])
+            owner.append(np.array([m]))
+    return np.concatenate(points), np.concatenate(owner)
+
+
+def occlusion(state: BodyState, nozzle: NozzleConfig, physics_cfg: dict,
+              slot_points: int = SLOT_OCCLUSION_POINTS) -> np.ndarray:
+    """(M, N) float 0~1. 노즐 m에서 패치 n이 보이는 비율.
+
+    원형 노즐은 0 또는 1. 슬롯 노즐은 슬롯을 따라 찍은 `slot_points`개 점 중 패치를 볼 수 있는
+    점의 비율이다 (길이 0.6 m 슬롯을 중심 한 점으로 보면 팔 하나가 슬롯 전체를 가린 것으로
+    잘못 판정된다). 점 하나의 판정은 `_visible_from_points`.
+    """
+    src, owner = occlusion_sources(nozzle, slot_points)
+    vis = _visible_from_points(state, src, physics_cfg).astype(np.float64)    # (S,N)
+    m_count = np.asarray(nozzle.positions).reshape(-1, 3).shape[0]
+    total = np.zeros((m_count, vis.shape[1]))
+    np.add.at(total, owner, vis)
+    return total / np.bincount(owner, minlength=m_count)[:, None]
+
+
+def _visible_from_points(state: BodyState, sources: np.ndarray, physics_cfg: dict) -> np.ndarray:
+    """(S, N) bool. 광원 점 s에서 패치 n이 보이면 True.
 
     `docs/tracks/D_patch_baseline.md` 단계 3.
 
-    1. 뒷면: `normal · (nozzle_pos - patch_pos) <= 0` 이면 노즐이 패치 뒤에 있으므로
+    1. 뒷면: `normal · (source - patch_pos) <= 0` 이면 광원이 패치 뒤에 있으므로
        거리 계산 없이 가림.
-    2. 후보 거르기 (보수적, float32): 노즐에서 본 캡슐 경계 구의 원뿔 밖에 있거나,
-       경계 구가 패치보다 멀리 있으면 그 캡슐은 이 광선을 가릴 수 없다. 노즐마다
+    2. 후보 거르기 (보수적, float32): 광원에서 본 캡슐 경계 구의 원뿔 밖에 있거나,
+       경계 구가 패치보다 멀리 있으면 그 캡슐은 이 광선을 가릴 수 없다. 광원마다
        행렬곱 한 번으로 (N, K)를 판정한다. 여유를 두어 남기기만 하고 버리지는 않는다.
-    3. 정확 판정 (float64, 후보만): 선분(패치 표면 `patch_pos + d·normal` -> 노즐)과
+    3. 정확 판정 (float64, 후보만): 선분(패치 표면 `patch_pos + d·normal` -> 광원)과
        캡슐 축의 최단 거리가 반지름보다 작으면 가림. 자기 캡슐은 제외한다.
 
     2단계는 결과를 바꾸지 않고 계산량만 줄인다 (전수 판정과 결과가 같음을 테스트로 확인).
@@ -100,10 +149,10 @@ def occlusion(state: BodyState, nozzle: NozzleConfig, physics_cfg: dict) -> np.n
 
     pos = np.asarray(state.patch_pos, dtype=np.float64)          # (N,3)
     normal = np.asarray(state.patch_normal, dtype=np.float64)    # (N,3)
-    npos = np.asarray(nozzle.positions, dtype=np.float64)        # (M,3)
+    npos = np.asarray(sources, dtype=np.float64).reshape(-1, 3)  # (S,3) 광원 점
     caps = np.asarray(state.capsules, dtype=np.float64)          # (K,7)
 
-    # 1. 뒷면 노즐.
+    # 1. 뒷면 광원.
     facing = npos @ normal.T - np.einsum("ij,ij->i", normal, pos)[None, :] > 0.0   # (M,N)
     visible = facing.copy()
     if caps.shape[0] == 0 or not facing.any():
@@ -117,42 +166,31 @@ def occlusion(state: BodyState, nozzle: NozzleConfig, physics_cfg: dict) -> np.n
     bound = 0.5 * np.sqrt(np.einsum("ij,ij->i", d2, d2)) + radius   # 경계 구 반지름
     own = (None if state.patch_capsule is None
            else np.asarray(state.patch_capsule, dtype=np.int64))
-    start32 = start.astype(np.float32)
+    # 2. 원뿔·깊이로 후보 (s, n, k)를 거른다. 모든 광원을 (S, N, K) float32 배열 한 번으로
+    #    판정한다 (슬롯 점까지 광원이 수십 개라 광원별 루프보다 빠르다).
+    ray = start.astype(np.float32)[None, :, :] - npos.astype(np.float32)[:, None, :]   # (S,N,3)
+    ray_len = np.sqrt((ray * ray).sum(axis=2))                                         # (S,N)
 
-    # 2. 노즐마다 원뿔·깊이로 후보 (m, n, k)를 거른다.
-    cand_m, cand_n, cand_k = [], [], []
-    for m in range(npos.shape[0]):
-        n_sel = np.flatnonzero(facing[m])
-        if n_sel.size == 0:
-            continue
-        ray = start32[n_sel] - npos[m].astype(np.float32)                    # (Nm,3)
-        ray_len = np.sqrt(np.einsum("ij,ij->i", ray, ray))                   # (Nm,)
+    to_center = center[None, :, :] - npos[:, None, :]                                  # (S,K,3)
+    center_dist = np.sqrt((to_center * to_center).sum(axis=2))                         # (S,K)
+    inside = center_dist <= bound[None, :]          # 원뿔이 정의되지 않음 -> 항상 후보
+    sin_half = np.where(inside, 1.0, bound[None, :] / np.maximum(center_dist, _EPS))
+    cos_half = np.sqrt(np.maximum(0.0, 1.0 - sin_half * sin_half))
+    axis = (to_center / np.maximum(center_dist, _EPS)[:, :, None]).astype(np.float32)
 
-        to_center = center - npos[m]                                         # (K,3)
-        center_dist = np.sqrt(np.einsum("ij,ij->i", to_center, to_center))   # (K,)
-        nozzle_inside = center_dist <= bound       # 원뿔이 정의되지 않음 -> 항상 후보
-        sin_half = np.where(nozzle_inside, 1.0, bound / np.maximum(center_dist, _EPS))
-        cos_half = np.sqrt(np.maximum(0.0, 1.0 - sin_half * sin_half))
-        axis = to_center / np.maximum(center_dist, _EPS)[:, None]
+    cand = np.matmul(ray, axis.transpose(0, 2, 1))                                     # (S,N,K)
+    cand -= ray_len[:, :, None] * (cos_half - _CONE_SLACK).astype(np.float32)[:, None, :]
+    cand = cand >= 0.0
+    cand &= ((center_dist - bound[None, :]).astype(np.float32)[:, None, :]
+             <= ray_len[:, :, None] + np.float32(_CONE_SLACK))
+    cand |= inside[:, None, :]
+    cand &= facing[:, :, None]
+    if own is not None:
+        cand[:, np.arange(pos.shape[0]), own] = False
 
-        in_cone = (ray @ axis.T.astype(np.float32)
-                   >= ray_len[:, None] * (cos_half - _CONE_SLACK).astype(np.float32)[None, :])
-        in_reach = ((center_dist - bound).astype(np.float32)[None, :]
-                    <= ray_len[:, None] + np.float32(_CONE_SLACK))
-        cand = (in_cone & in_reach) | nozzle_inside[None, :]
-        if own is not None:
-            cand[np.arange(n_sel.size), own[n_sel]] = False
-
-        qi, kk = np.nonzero(cand)
-        cand_m.append(np.full(qi.size, m))
-        cand_n.append(n_sel[qi])
-        cand_k.append(kk)
-
-    cm = np.concatenate(cand_m)
+    cm, cn, ck = np.nonzero(cand)
     if cm.size == 0:
         return visible
-    cn = np.concatenate(cand_n)
-    ck = np.concatenate(cand_k)
 
     # 3. 후보만 정확히 판정한다.
     s1 = start[cn]
@@ -206,19 +244,22 @@ class PatchEvaluator(Evaluator):
       (2000, 검증용). 최적화 루프는 400을 쓴다 (D 문서 완료 기준).
     - `booth`: 부스 밖 판정에 쓰는 `{"width_m", "height_m", ...}`. `None`이면
       `configs/nozzles.yaml`의 `booth`.
+    - `slot_points`: 슬롯 노즐 가림을 볼 때 슬롯을 따라 찍는 점 수 (`occlusion`).
     """
 
     def __init__(self, physics_cfg: dict,
                  build_body: Callable[..., BodyState] | None = None,
                  velocity_field_per_nozzle: Callable[..., np.ndarray] | None = None,
                  *, patches_per_m2: float | None = None,
-                 booth: dict | None = None):
+                 booth: dict | None = None,
+                 slot_points: int = SLOT_OCCLUSION_POINTS):
         self.cfg = physics_cfg
         self._build_body = build_body or _default_build_body
         self._velocity_field_per_nozzle = (
             velocity_field_per_nozzle or _default_velocity_field_per_nozzle)
         self.patches_per_m2 = patches_per_m2
         self.booth = booth if booth is not None else load_nozzle_layout()["booth"]
+        self.slot_points = int(slot_points)
 
     def build_state(self, body: BodyParams, pose: PoseParams, scenario: Scenario) -> BodyState:
         """`evaluate`가 쓰는 것과 같은 밀도로 몸을 만든다."""
@@ -251,8 +292,8 @@ class PatchEvaluator(Evaluator):
 
         # 정상 상태 평가라 t = 0. 펄스는 무시한다 (00_common.md 4.1).
         u_mn = np.asarray(self._velocity_field_per_nozzle(probe, nozzle, 0.0, self.cfg))  # (M,N,3)
-        visible = occlusion(state, nozzle, self.cfg)                                      # (M,N)
-        # 가려진 노즐의 기여를 빼고 합산한다. (M,N,3) 마스크 곱 대신 축약 합으로 한 번에.
+        visible = occlusion(state, nozzle, self.cfg, self.slot_points)                    # (M,N) 0~1
+        # 보이는 비율을 곱해 합산한다. (M,N,3) 마스크 곱 대신 축약 합으로 한 번에.
         u = np.einsum("mnk,mn->nk", u_mn, visible.astype(u_mn.dtype)).astype(np.float64)
 
         tau = scoring.wall_shear(u, normal, self.cfg)
