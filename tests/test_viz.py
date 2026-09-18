@@ -116,7 +116,7 @@ def test_slot_bars_drawn_at_nozzle_positions():
 def test_patch_values_color_mesh():
     """values 를 주면 부위 색 대신 intensity 메시 하나로 그리고, 길이가 다르면 ValueError."""
     sc = SCENARIOS["default"]
-    state = build_body(BodyParams(), PoseParams(), sc, patches_per_m2=400)
+    state = build_body(BodyParams(), PoseParams(), sc, patches_per_m2=400, model="capsule")
     values = state.patch_pos[:, 2] / state.patch_pos[:, 2].max()
     fig = figure_from_state(state, values, load_nozzles())
     meshes = [tr for tr in fig.data if tr.type == "mesh3d" and tr.intensity is not None]
@@ -128,9 +128,9 @@ def test_patch_values_color_mesh():
 
 
 def test_torso_mesh_flattened_to_patch_ellipse():
-    """몸통 메시는 패치 타원 단면(앞뒤 반축 = torso_depth/2)까지 눌린다."""
+    """캡슐 몸통 메시는 패치 타원 단면(앞뒤 반축 = torso_depth/2)까지 눌린다."""
     body = BodyParams()
-    state = build_body(body, PoseParams(), SCENARIOS["default"], patches_per_m2=400)
+    state = build_body(body, PoseParams(), SCENARIOS["default"], patches_per_m2=400, model="capsule")
     fig = figure_from_state(state)
     torso = next(tr for tr in fig.data if tr.name == "torso_front")
     x = np.asarray(torso.x) - BOOTH["length_m"] / 2.0
@@ -166,7 +166,7 @@ def test_figure_compare_marks_infeasible():
 # ---------------------------------------------------------------------------
 @pytest.fixture(scope="module")
 def state_default():
-    return build_body(BodyParams(), PoseParams(), SCENARIOS["default"], patches_per_m2=400)
+    return build_body(BodyParams(), PoseParams(), SCENARIOS["default"], patches_per_m2=400, model="capsule")
 
 
 def test_synthetic_frames_roundtrip_and_animation(state_default, tmp_path):
@@ -191,11 +191,14 @@ def test_synthetic_frames_roundtrip_and_animation(state_default, tmp_path):
     fig.to_dict()
 
 
-def test_particle_status_inferred_without_state_key(state_default):
-    """A의 `state` 키가 없어도 부착·부유·제거를 나누고, 있으면 그대로 쓴다."""
-    fr = anim.synthetic_frames(state_default, BOOTH, n_particles=800, n_frames=31)
-    fr_st = anim.synthetic_frames(state_default, BOOTH, n_particles=800, n_frames=31,
-                                  include_state=True)
+@pytest.mark.parametrize("model", ["capsule", "mesh"])
+def test_particle_status_inferred_without_state_key(model):
+    """A의 `state` 키가 없어도 부착·부유·제거를 나누고, 있으면 그대로 쓴다.
+
+    메시 몸은 패치가 앞쪽까지 있어 합성 입자가 옆벽보다 먼저 출입구(x)로 나가기도 한다."""
+    state = build_body(None, PoseParams(), SCENARIOS["default"], patches_per_m2=400, model=model)
+    fr = anim.synthetic_frames(state, BOOTH, n_particles=800, n_frames=31)
+    fr_st = anim.synthetic_frames(state, BOOTH, n_particles=800, n_frames=31, include_state=True)
     first = anim.particle_status(fr[0][1], BOOTH)
     last = anim.particle_status(fr[-1][1], BOOTH)
     assert np.all(first == anim.ATTACHED)
@@ -279,7 +282,8 @@ def test_render_frames_script_synthetic(tmp_path):
 # ---------------------------------------------------------------------------
 # 사람 메시 (MakeHuman + 선형 블렌드 스키닝)
 # ---------------------------------------------------------------------------
-from airis.viz import human_mesh as hm  # noqa: E402
+from airis.sim import human_mesh as hm  # noqa: E402  (계산: B 소유 sim 모듈)
+from airis.viz import human_mesh as hmv  # noqa: E402  (그림)
 
 MESH_POSES = [
     PoseParams(),
@@ -506,6 +510,118 @@ def test_makehuman_pose_speed(mh):
 def test_figure_from_mesh(mh):
     v = hm.posed_in_booth(mh, MESH_BODY, PoseParams(), SCENARIOS["default"], BOOTH)
     state = build_body(BodyParams(), PoseParams(), SCENARIOS["default"], patches_per_m2=400)   # 캡슐 겹침
-    fig = hm.figure_from_mesh(v, mh.faces, overlay_state=state, booth=BOOTH)
+    fig = hmv.figure_from_mesh(v, mh.faces, overlay_state=state, booth=BOOTH)
     assert {"사람 메시", "캡슐 마네킹 (반투명)", "부스", "슬롯 바 12개"} <= _names(fig)
     fig.to_dict()
+
+
+# ---------------------------------------------------------------------------
+# 안내 뷰·애니메이션의 메시 몸 (build_body(..., model="mesh"))
+# ---------------------------------------------------------------------------
+from airis.viz.pose_view import body_traces, mesh_face_values, mesh_vertex_values  # noqa: E402
+
+
+@pytest.fixture(scope="module")
+def mesh_state():
+    return build_body(None, PoseParams(torso_yaw=30.0), SCENARIOS["default"], patches_per_m2=400,
+                      model="mesh")
+
+
+@pytest.mark.parametrize("scenario", ["default", "pregnant", "wheelchair"])
+@pytest.mark.parametrize("pose_name", list(REPRESENTATIVE_POSES))
+def test_figure_from_pose_mesh_all_scenarios(scenario, pose_name):
+    """메시 몸: 세 시나리오 × 대표 자세 5개가 부위 색·부스·슬롯 바와 함께 그려진다."""
+    fig = figure_from_pose(None, REPRESENTATIVE_POSES[pose_name], SCENARIOS[scenario], model="mesh")
+    names = _names(fig)
+    assert {"head", "torso_front", "torso_back", "arms", "legs", "부스", "슬롯 바 12개"} <= names
+    assert ("휠체어 프레임" in names) == (scenario == "wheelchair")
+    meshes = [tr for tr in fig.data if tr.type == "mesh3d" and tr.name in PART_COLORS_NAMES]
+    n_faces = sum(len(tr.i) for tr in meshes)
+    state = build_body(None, REPRESENTATIVE_POSES[pose_name], SCENARIOS[scenario], patches_per_m2=400,
+                       model="mesh")
+    assert n_faces == state.mesh_faces.shape[0]                    # 모든 면을 부위별로 한 번씩
+    fig.to_dict()
+
+
+PART_COLORS_NAMES = {"head", "torso_front", "torso_back", "arms", "legs"}
+
+
+def test_mesh_face_values_interpolate_within_range(mesh_state):
+    rng = np.random.default_rng(0)
+    values = rng.random(mesh_state.patch_pos.shape[0])
+    fv = mesh_face_values(mesh_state, values)
+    assert fv.shape == (mesh_state.mesh_faces.shape[0],) and np.isfinite(fv).all()
+    assert values.min() - 1e-12 <= fv.min() and fv.max() <= values.max() + 1e-12
+    vv = mesh_vertex_values(mesh_state, fv)
+    assert vv.shape == (mesh_state.mesh_vertices.shape[0],)
+    assert values.min() - 1e-12 <= vv.min() and vv.max() <= values.max() + 1e-12
+    np.testing.assert_allclose(mesh_face_values(mesh_state, np.full(values.shape, 0.3)), 0.3)
+    # 부위마다 값을 다르게 주면 면도 그 부위 값 (다른 부위 패치를 섞지 않는다)
+    by_part = mesh_state.patch_part.astype(float)
+    np.testing.assert_allclose(mesh_face_values(mesh_state, by_part), mesh_state.mesh_face_part)
+    with pytest.raises(ValueError):
+        mesh_face_values(mesh_state, values[:-1])
+
+
+def test_mesh_removal_colors_from_patch_evaluator():
+    """D의 PatchEvaluator(메시 몸) 결과로 칠하면 정점 intensity 메시 하나가 된다."""
+    import functools
+
+    from airis.sim.patch_baseline import PatchEvaluator
+    from airis.sim.scenario import load_physics
+    sc = SCENARIOS["default"]
+    ev = PatchEvaluator(load_physics(), functools.partial(build_body, model="mesh"), patches_per_m2=400)
+    pose = PoseParams(shoulder_abduction=180.0, elbow_flexion=0.0, torso_yaw=90.0)
+    res = ev.evaluate(pose, load_nozzles(), None, sc)
+    fig = figure_from_pose(None, pose, sc, result=res, model="mesh")
+    colored = [tr for tr in fig.data if tr.type == "mesh3d" and tr.intensity is not None]
+    assert len(colored) == 1
+    state = build_body(None, pose, sc, patches_per_m2=400, model="mesh")
+    assert len(colored[0].intensity) == state.mesh_vertices.shape[0]
+    removal = res.extra["removal"]
+    assert min(colored[0].intensity) >= removal.min() - 1e-9
+    assert max(colored[0].intensity) <= removal.max() + 1e-9
+
+
+def test_body_traces_capsule_path_unchanged():
+    """캡슐 몸(model="capsule")은 지금까지처럼 캡슐 메시로 그린다 (메시 필드 없음)."""
+    state = build_body(BodyParams(), PoseParams(), SCENARIOS["default"], patches_per_m2=400, model="capsule")
+    assert state.mesh_vertices is None
+    traces = body_traces(state)
+    assert {tr.name for tr in traces} == {"head", "torso_front", "arms", "legs"}
+
+
+def test_figure_compare_mesh():
+    sc = SCENARIOS["default"]
+    poses = {"B0": PoseParams(), "추천": PoseParams(torso_yaw=90.0)}
+    n = {k: build_body(None, p, sc, patches_per_m2=400, model="mesh").patch_pos.shape[0]
+         for k, p in poses.items()}
+    results = {k: EvalResult(0.2 + 0.3 * i, np.zeros(5), 0.1, 0.0, {"removal": np.full(n[k], 0.1 * (i + 1))})
+               for i, k in enumerate(poses)}
+    fig = figure_compare(None, poses, sc, results=results, model="mesh")
+    assert any("+150%" in a.text for a in fig.layout.annotations)
+    assert sum(tr.type == "mesh3d" and tr.intensity is not None for tr in fig.data) == 2
+
+
+def test_animation_with_mesh_body(mesh_state):
+    frames = anim.synthetic_frames(mesh_state, BOOTH, n_particles=300, n_frames=6)
+    fig = anim.animation(frames, mesh_state, BOOTH, nozzle=load_nozzles())
+    assert len(fig.frames) == 6
+    assert {"head", "arms", "legs"} <= _names(fig)
+    fig.to_dict()
+
+
+def test_render_frames_script_mesh_model(tmp_path):
+    import importlib.util
+    from pathlib import Path
+    path = Path(__file__).resolve().parents[1] / "scripts" / "render_frames.py"
+    spec = importlib.util.spec_from_file_location("render_frames", path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    assert mod.main(["--exp", "m", "--outputs", str(tmp_path), "--synthetic", "--model", "mesh",
+                     "--particles", "300"]) == 0
+    meta = json.loads((tmp_path / "m" / "render_meta.json").read_text(encoding="utf-8"))
+    assert meta["model"] == "mesh" and meta["body"] is None
+    assert (tmp_path / "m" / "anim.html").stat().st_size > 10_000
+    # render_meta 의 몸 모델을 다시 읽는다 (--model 없이)
+    assert mod.main(["--exp", "m", "--outputs", str(tmp_path)]) == 0
