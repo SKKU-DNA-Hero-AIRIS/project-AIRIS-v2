@@ -13,11 +13,11 @@
 
 | 타입 | 생산자 | 소비자 | 비고 |
 |---|---|---|---|
-| `BodyParams` | E(포즈 추정), C(샘플링) | B | 체형 5개 값 |
+| `BodyParams` | E(포즈 추정), C(샘플링) | B | 체형 5개 값. 메시 몸 기준 정의(관절 중심): 키, 어깨 관절 간격, 가슴 두께, 어깨→손목, 고관절 높이 (`docs/mesh_transition.md` 8) |
 | `PoseParams` | C(최적화 변수) | B | degree. `to_vector / from_vector` 순서 고정 |
 | `NozzleConfig` | B (`configs/nozzles.yaml`) | A, D | 위치 (M,3), 방향 (M,3), 세기 (M,). 슬롯 제트면 `slot_axis` (M,3), `slot_length` (M,) 추가 (`None`이면 전부 원형; 배열이면 행 단위로 `slot_length[m] > 0`이고 `slot_axis[m] ≠ 0`인 노즐만 슬롯). 고정 입력 |
 | `Scenario` | B (`configs/scenarios.yaml`) | C, A, D | 상속 지원 |
-| `BodyState` | B (`build_body`) | A, D, E | 패치 + 캡슐 + `capsule_part`(K,) + `patch_capsule`(N,) |
+| `BodyState` | B (`build_body`) | A, D, E | 패치 + 캡슐 + `capsule_part`(K,) + `patch_capsule`(N,). 메시 모델이면 `mesh_vertices`(V,3)·`mesh_faces`(F,3)·`mesh_face_part`(F,)·`patch_face`(N,) 추가, `capsules`는 뼈 근사 캡슐 |
 | `EvalResult` | A, D | C, E | `score`는 최적화용, 나머지는 분석용 |
 
 ## 함수 계약
@@ -28,12 +28,24 @@
 - `seat_height_m`이 있으면 골반 높이를 그 값으로 둔다.
 - 패치 법선은 바깥 방향 단위 벡터.
 - `capsule_part`는 캡슐 부위(-1 = 가림 전용), `patch_capsule`은 패치의 소속 캡슐 인덱스. 둘 다 채운다.
+- `configs/physics.yaml` `body.model`이 `mesh`면 MakeHuman sim 메시(약 5~6k 삼각형)에 자세·체형을 적용해 `mesh_vertices`(부스 좌표, float32)·`mesh_faces`(바깥 방향 반시계)·`mesh_face_part`·`patch_face`를 채우고, `capsules`/`capsule_part`에는 뼈에 맞춘 근사 캡슐(휠체어 프레임 포함)을 담는다. 패치 샘플링 규약은 `docs/mesh_transition.md`.
+- 메시 모델의 패치 격자도 y → −y 대칭 쌍이어야 한다 (#42 규칙).
+
+### `airis/sim/human_mesh.py` (B, 메시 몸)
+
+- `load_makehuman(path=None) -> MeshAsset`: 기본 자세 정점 (V,3), 면 (F,3), 뼈(이름·부모·기본 변환), 정점별 뼈 가중치(희소). 자산은 `data/meshes/makehuman/`.
+- `pose_mesh(asset, body: BodyParams, pose: PoseParams, scenario) -> (V,3)`: 체형(뼈 축척·타깃) + 자세(선형 블렌드 스키닝) 적용, 부스 좌표(발바닥 z=0, 부스 중앙, `seat_height_m` 반영). 1회 수 ms.
+- 좌우 대칭 면 인덱스 맵과 면 → 부위 맵은 자산과 함께 저장한다.
 
 ### `velocity_field_per_nozzle(points, nozzle, t, cfg, surface_normals=None) -> (M, P, 3)` (B)
 
 - 노즐별 자유 제트 기여. `velocity_field`는 이것의 합. 시각 `t`는 펄스용. 수식은 `docs/tracks/00_common.md` 4.1 (원형) / 4.1b (슬롯, `nozzle.slot_axis`가 있는 노즐).
 - `surface_normals`가 주어지고 `jet.impingement.enabled`면 충돌 제트 → 벽면 제트 보정(`00_common.md` 4.2b)을 적용한 값을 돌려준다. D는 항상 `state.patch_normal`을 넘긴다.
 - 몸에 의한 가림은 여기서 처리하지 않는다 (평가기 책임).
+
+### `occlusion(state, nozzle, physics_cfg) -> (M, N)` (D)
+
+- 노즐 m의 가림점(슬롯은 축 위 K점)에서 패치 n이 보이는 비율. 캡슐 모델은 선분-캡슐 교차, 메시 모델은 `mesh_vertices`/`mesh_faces` 광선-삼각형 교차(Open3D `RaycastingScene`)로 판정하고 `patch_face`의 자기 면은 제외한다. A는 이 함수를 그대로 재사용한다.
 
 ### `Evaluator.evaluate(pose, nozzle, body, scenario) -> EvalResult` (A, D)
 
