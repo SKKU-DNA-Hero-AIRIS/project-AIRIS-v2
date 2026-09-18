@@ -670,15 +670,16 @@ def _moved_patch(state: BodyState, index: int, xyz) -> BodyState:
 def test_outside_booth_is_infeasible_per_slot(ev_batch, ev_single, scenario):
     """패치가 하나라도 옆벽(|y| > W/2)이나 천장(z > H) 밖이면 그 후보만 불가.
 
-    - 불가 후보: score = -1.0, removal 0, total 0, extra["infeasible"] = True, 시뮬레이션 안 함
+    - 불가 후보: score = -1 - 10·d_out, removal 0, total 0, extra["infeasible"] = True,
+      시뮬레이션 안 함 (d_out = 벽/천장 초과 거리 m)
     - 가능 후보: 불가 후보가 섞여도 단독 평가와 결과가 같다 (슬롯이 밀려도 격리 유지)
     - x 방향은 열린 문이라 패치가 x < 0이어도 가능
     """
     nz = grazing_nozzles()
     half_w, height = BOOTH["width_m"] / 2, BOOTH["height_m"]
     body_a, body_b = cylinder_body(POSE_A), cylinder_body(POSE_B)
-    out_y = _moved_patch(body_a, 0, [CENTER_X, half_w + 0.01, 1.0])
-    out_z = _moved_patch(body_a, 0, [CENTER_X, 0.0, height + 0.01])
+    out_y = _moved_patch(body_a, 0, [CENTER_X, -(half_w + 0.02), 1.0])      # d_out = 0.02
+    out_z = _moved_patch(body_a, 0, [CENTER_X, 0.0, height + 0.05])         # d_out = 0.05
     out_x = _moved_patch(body_a, 0, [-0.05, 0.0, 1.0])
     pose_y, pose_z = PoseParams(shoulder_abduction=30.0), PoseParams(torso_pitch=10.0)
 
@@ -692,8 +693,9 @@ def test_outside_booth_is_infeasible_per_slot(ev_batch, ev_single, scenario):
     assert set(calls) == {2}, "가능 후보 2개만 시뮬레이션해야 한다"
     _assert_same(solo_a, mixed[1])
     _assert_same(solo_b, mixed[3])
-    for res, pose in ((mixed[0], pose_y), (mixed[2], pose_z)):
-        assert res.score == -1.0
+    for res, pose, d_out in ((mixed[0], pose_y, 0.02), (mixed[2], pose_z, 0.05)):
+        assert res.score == pytest.approx(-1.0 - 10.0 * d_out, abs=1e-5)
+        assert res.extra["d_out_m"] == pytest.approx(d_out, abs=1e-6)
         assert res.total_removal == 0.0
         np.testing.assert_array_equal(res.removal_by_part, 0.0)
         assert res.extra["infeasible"] is True
@@ -706,19 +708,26 @@ def test_outside_booth_is_infeasible_per_slot(ev_batch, ev_single, scenario):
     calls.clear()
     all_out = ev_batch.batch_evaluate_states([out_y, out_z], [pose_y, pose_z], nz, scenario,
                                              step_callback=lambda step, ev, n: calls.append(n))
-    assert calls == [] and [r.score for r in all_out] == [-1.0, -1.0]
+    assert calls == [] and all(r.score <= -1.0 for r in all_out)
+
+    # 벽 바로 안쪽은 가능. (patch_pos가 float32라 벽과 "같은" 값은 반올림으로 밖이 될 수 있어
+    # 0.1 mm 안쪽으로 둔다. D의 outside_booth도 같은 float32 패치를 받는다.)
+    near_wall = _moved_patch(body_a, 0, [CENTER_X, half_w - 1e-4, height - 1e-4])
+    assert ev_batch.batch_evaluate_states([near_wall], [POSE_A], nz, scenario)[0].extra[
+        "infeasible"] is False
 
 
 def test_outside_booth_matches_patch_evaluator(ev_batch, scenario):
-    """실제 몸: 어깨 벌림 90도는 팔이 옆벽 밖 -> 불가. 판정이 D의 패치판과 같다."""
+    """실제 몸: 어깨 벌림 90도는 팔이 옆벽 밖 -> 불가. 불가 여부가 D의 패치판과 같다.
+    (점수 값은 D가 등급제 벌점(PR #25)을 반영하기 전이라 비교하지 않는다.)"""
     from airis.sim.patch_baseline import PatchEvaluator
 
     body, nozzle = BodyParams(), load_nozzles()
     poses = [PoseParams(shoulder_abduction=90.0), PoseParams()]
     scores = ev_batch.batch_evaluate([(p, nozzle) for p in poses], body, scenario)
-    assert scores[0] == -1.0 and scores[1] > -1.0
+    assert scores[0] < -1.0 and scores[1] > -1.0         # 팔 끝이 벽을 0.13 m 넘는다
 
     patch = PatchEvaluator(load_physics())
     for pose, score in zip(poses, scores):
         infeasible = patch.evaluate(pose, nozzle, body, scenario).extra["infeasible"]
-        assert infeasible == (score == -1.0)
+        assert infeasible == (score <= -1.0)

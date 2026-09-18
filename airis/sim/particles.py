@@ -6,7 +6,7 @@
   결정론이 깨진다 (`docs/tracks/A_particles.md` 단계 3)
 - 스텝: 이탈 판정 -> 부유 입자 적분 -> 캡슐 충돌/재부착 -> 부스 이탈 제거
 - 제트: 원형 노즐은 00_common.md 4.1, 슬롯 노즐은 4.1b (노즐별 판정은 `jet.slot_mask`)
-- 부스 밖 자세(00_common.md 5절)는 시뮬레이션하지 않고 score = -1.0 (D와 같은 판정 함수)
+- 부스 밖 자세(00_common.md 5절)는 시뮬레이션하지 않고 score = -1 - 10·d_out (벽 초과 거리 벌점)
 
 구현 상태 (A_particles.md 기준)
 - 단계 1~10 완료. 단계 11(성능: 커널 병합), 12(프레임 덤프)는 미구현.
@@ -26,7 +26,6 @@ from .interface import Evaluator
 from .jet import SLOT_AXIS_PERP_TOL, slot_mask
 from .kernels import ParticleFields, init_taichi, pack_constants
 from .kernels.particle_kernels import PART_TORSO_BACK, PART_TORSO_FRONT
-from .patch_baseline import INFEASIBLE_SCORE, outside_booth
 from .scenario import load_nozzle_layout
 from .types import (
     PART_NAMES, BodyParams, BodyState, EvalResult, NozzleConfig, PoseParams, Scenario,
@@ -35,6 +34,8 @@ from .types import (
 N_PARTS = len(PART_NAMES)
 assert PART_NAMES[PART_TORSO_FRONT] == "torso_front" and PART_NAMES[PART_TORSO_BACK] == "torso_back"
 SURFACE_LIFT_M = 1e-4          # 입자를 패치 표면에서 띄우는 거리 (단계 3)
+INFEASIBLE_BASE = -1.0         # 부스 밖 자세 점수의 시작값 (00_common.md 5절)
+INFEASIBLE_SLOPE_PER_M = 10.0  # 벽 초과 거리 1 m당 벌점. 문서가 고정한 값
 
 
 class ParticleEvaluator(Evaluator):
@@ -110,7 +111,7 @@ class ParticleEvaluator(Evaluator):
                               *, step_callback=None) -> list[EvalResult]:
         """BodyState를 직접 받는 배치 평가. `batch_evaluate`의 본체.
 
-        부스 밖 자세(00_common.md 5절)는 시뮬레이션하지 않고 score = -1.0,
+        부스 밖 자세(00_common.md 5절)는 시뮬레이션하지 않고 score = -1 - 10·d_out,
         removal 0, extra["infeasible"] = True를 돌려준다. 나머지 후보만 앞쪽 슬롯에
         채워 시뮬레이션하므로, 불가 후보가 섞여도 가능 후보의 결과는 그대로다
         (시드가 슬롯이 아니라 후보 내용으로 정해진다).
@@ -124,8 +125,8 @@ class ParticleEvaluator(Evaluator):
         if n_cand == 0:
             raise ValueError("후보가 없다")
 
-        feasible = [b for b in range(n_cand)
-                    if not outside_booth(states[b].patch_pos, self.booth)]
+        d_out = [booth_overshoot(st.patch_pos, self.booth) for st in states]
+        feasible = [b for b in range(n_cand) if d_out[b] == 0.0]
         # 불가 후보는 슬롯을 차지하지 않으므로 한도는 시뮬레이션할 가능 후보 수에만 건다.
         if len(feasible) > self.max_candidates:
             raise ValueError(f"가능 후보 {len(feasible)}개 > max_candidates {self.max_candidates}")
@@ -134,11 +135,11 @@ class ParticleEvaluator(Evaluator):
         for b in range(n_cand):
             if b not in feasible_set:
                 results[b] = EvalResult(
-                    score=INFEASIBLE_SCORE,
+                    score=INFEASIBLE_BASE - INFEASIBLE_SLOPE_PER_M * d_out[b],
                     removal_by_part=np.zeros(N_PARTS, dtype=np.float32),
                     total_removal=0.0,
                     discomfort=scoring.discomfort(poses[b], scenario),
-                    extra={"evaluator": "particle", "infeasible": True},
+                    extra={"evaluator": "particle", "infeasible": True, "d_out_m": d_out[b]},
                 )
         if feasible:
             simulated = self._simulate([states[b] for b in feasible],
@@ -345,6 +346,18 @@ class ParticleEvaluator(Evaluator):
         self.f.noz_axis.from_numpy(axis)
         self.f.noz_len.from_numpy(length)
         self.f.n_noz[None] = m
+
+
+def booth_overshoot(patch_pos: np.ndarray, booth: dict) -> float:
+    """00_common.md 5절 d_out (m): 패치가 옆벽(|y| > width/2)이나 천장(z > height)을 넘은
+    최대 거리. 0이면 부스 안(경계와 같은 값은 안쪽). x 방향은 열린 문이라 보지 않는다.
+    d_out > 0 판정은 D의 `patch_baseline.outside_booth`와 같다."""
+    pos = np.asarray(patch_pos, dtype=np.float64)
+    if pos.size == 0:
+        return 0.0
+    over_y = np.abs(pos[:, 1]).max() - 0.5 * float(booth["width_m"])
+    over_z = pos[:, 2].max() - float(booth["height_m"])
+    return float(max(0.0, over_y, over_z))
 
 
 def body_forward(pose: PoseParams) -> np.ndarray:
