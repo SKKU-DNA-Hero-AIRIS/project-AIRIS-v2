@@ -249,19 +249,31 @@ def test_slot_layout_strength_monotone_and_zero(sim, slot_nozzles):
 def test_slot_layout_raising_arms_increases_armpit_removal(sim, slot_nozzles):
     """기준 장비(슬롯 바)에서도 팔을 들면 겨드랑이·옆구리 제거율이 오른다.
 
-    충돌 제트 보정(4.2b) 전에는 성립하지 않았다: 측면 바가 수평으로 쏘아 든 팔이 옆구리를
-    가렸고(20도 0.005 -> 90도 0.000), 보정을 켜면 팔에 부딪힌 제트가 벽면 제트로 퍼져
-    20도 0.032 -> 90도 0.315가 된다 (PR 본문).
+    비교 자세는 20도 vs 150도(만세 쪽)다. 팔 수평(90도)은 퓨리움 부스(폭 1.46 m)에서 벽 밖이라
+    실제로는 평가되지 않는다. 충돌 제트 보정(4.2b) 전에는 성립하지 않았다: 측면 바가 수평으로
+    쏘아 든 팔이 옆구리를 가렸다. 보정을 켜면 20도 0.021 -> 150도 0.083 (K=3, PR 본문).
     """
-    def flank_removal(abduction):
-        pose = PoseParams(shoulder_abduction=abduction)
-        state = sim.evaluator._build_body(BodyParams(), pose, sim.scenario)
-        mask = _armpit_flank_mask(state)
-        area = state.patch_area[mask].astype(np.float64)
-        removal = _eval(sim, pose, slot_nozzles).extra["removal"][mask]
-        return float((removal * area).sum() / area.sum())
+    real_booth = load_nozzle_layout()["booth"]
+    raised = PoseParams(shoulder_abduction=150.0)
+    assert not outside_booth(sim.evaluator._build_body(BodyParams(), raised, sim.scenario).patch_pos,
+                             real_booth), "만세 자세가 실제 부스 밖이면 비교 자세를 다시 골라야 한다"
+    down = _flank_removal(sim, PoseParams(shoulder_abduction=20.0), slot_nozzles)
+    up = _flank_removal(sim, raised, slot_nozzles)
+    assert down > 0.0
+    assert up > down
 
-    assert flank_removal(90.0) > flank_removal(20.0)
+
+@pytest.mark.parametrize("wall_yaw", [90.0, -90.0])
+def test_slot_layout_front_facing_wall_increases_front_removal(sim, slot_nozzles, wall_yaw):
+    """슬롯 배치의 "마주 봄" 항목: 정면이 측면 바(벽)를 보면(yaw ±90) 정면 제거율이 yaw 0보다 크다.
+
+    측면 바가 몸과 같은 x에 좌우 대칭이라 원형 배치의 "등지면 하락"은 정의되지 않는다. 통합 관리
+    결정으로 이 항목을 슬롯 배치의 E1으로 둔다. 충돌 보정 후 약 2.7배 (0.047 -> 0.126).
+    """
+    along = _eval(sim, PoseParams(torso_yaw=0.0), slot_nozzles)
+    facing_wall = _eval(sim, PoseParams(torso_yaw=wall_yaw), slot_nozzles)
+    assert along.removal_by_part[_FRONT] > 0.0
+    assert facing_wall.removal_by_part[_FRONT] > along.removal_by_part[_FRONT]
 
 
 def _flank_removal(sim, pose: PoseParams, nozzle: NozzleConfig) -> float:
