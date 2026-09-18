@@ -7,25 +7,26 @@ B 병합 전후 자동 전환 (`docs/tracks/D_patch_baseline.md` 단계 5)
   바꾼다. B가 병합된 지금은 실제 몸과 실제 노즐 배치로 돈다. 제트는 B의
   `velocity_field_per_nozzle`이다 (가짜 제트는 B 병합 후 삭제).
 
-테스트용 물리 상수 (E1 전용 덮어쓰기)
-- `configs/physics.yaml` 그대로(노즐 지름 4 mm)면 몸 표면 풍속이 1 m/s 안팎이라 벽면
-  전단이 임계값의 1/100 수준이고, 제거율이 모든 자세에서 사실상 0이다. 이 영역에서는
-  부위별 대소 비교가 Φ(-6) 꼬리의 반올림 수준 차이로 정해져 방향 검증이 안 된다.
-- 충돌 제트 보정(B 단계 8, 미구현)이 들어오기 전까지, 몸 표면에서 제거율이 의미 있는
-  범위(총 제거율 ~15%)가 되도록 제트를 굵고 넓게 덮어쓴다. dict를 복사해 덮어쓰며
-  `configs/`는 수정하지 않는다 (00_common.md 1절).
-- 값은 격자 탐색으로 고르고, 두 값 각각 ±20% 이웃 9곳 중 8곳에서 E1 방향이 유지됨을
-  확인했다 (PR 본문 참고).
+E1 노즐 배치와 물리 상수
+- 기준 장비는 퓨리움 슬롯 바(`nozzles.yaml`의 `active: slot_bars`)다. 측면 바가 몸과 같은 x에
+  좌우 대칭으로 있어 "노즐을 마주 본다/등진다"가 정의되지 않는다. 그래서 E1 방향 검증은
+  원형 노즐 비교 배치(`load_nozzles(layout="layout")`, 벽면 2열 × 4단, 25도 경사)로 한다.
+- 물리 상수는 `configs/physics.yaml` 그대로다. 이전의 제트 덮어쓰기(노즐 지름 0.08 m 등)는
+  퓨리움 부스(길이 0.886 m)로 바뀐 비교 배치에서 필요 없어져 지웠다.
+- 슬롯 배치에서는 배치와 무관한 항목(세기 단조, 세기 0)을 따로 본다. "팔 들면 겨드랑이 상승"은
+  슬롯 배치에서 성립하지 않는다 (xfail, 사유는 해당 테스트).
 
 테스트용 부스 (E1 전용)
-- 부스 밖 자세 불가 규칙(00_common.md 5절)은 팔 90도 같은 자세를 score -1로 끊는다. E1은
+- 부스 밖 자세 불가 규칙(00_common.md 5절)은 팔 90도 같은 자세를 벌점으로 끊는다. E1은
   제트·가림·제거율의 **방향**을 보는 테스트라 규칙과 섞이지 않게, E1 평가기에는 벽과 천장을
-  충분히 넓힌 부스를 준다. 규칙 자체는 아래 "부스 밖 자세 불가" 절에서 실제 부스로 따로 본다.
+  충분히 넓힌 부스를 준다. 규칙 자체는 아래 "부스 밖 자세 불가" 절에서 따로 본다.
 """
 from __future__ import annotations
 
 import copy
+import dataclasses
 import math
+from functools import partial
 from types import SimpleNamespace
 
 import numpy as np
@@ -35,13 +36,15 @@ from scipy.stats import norm
 from airis.sim import scoring
 from airis.sim.body import build_body
 from airis.sim.jet import velocity_field_per_nozzle
-from airis.sim.patch_baseline import INFEASIBLE_SCORE, PatchEvaluator, occlusion, outside_booth
+from airis.sim.patch_baseline import (
+    PatchEvaluator, booth_excess, infeasible_score, occlusion, outside_booth,
+)
 from airis.sim.scenario import load_nozzle_layout, load_nozzles, load_physics, load_scenarios
 from airis.sim.types import PART_NAMES, BodyParams, BodyState, NozzleConfig, PoseParams, Scenario
 from tests.fakes import fake_body, fake_nozzles
 
-# E1 테스트용 제트 덮어쓰기. 근거는 모듈 docstring.
-_E1_JET_OVERRIDES = {"nozzle_diameter_m": 0.08, "halfwidth_spread_rate": 0.2}
+# E1 방향 검증용 원형 노즐 비교 배치. 근거는 모듈 docstring.
+_E1_LAYOUT = "layout"
 # E1 전용 부스 배율. 폭·높이만 키우고 길이(마네킹 x 위치)는 그대로 둔다. 근거는 모듈 docstring.
 _E1_BOOTH_SCALE = 10.0
 
@@ -91,32 +94,26 @@ def physics() -> dict:
 
 
 @pytest.fixture(scope="module")
-def e1_physics(physics) -> dict:
-    cfg = copy.deepcopy(physics)
-    cfg["jet"].update(_E1_JET_OVERRIDES)
-    return cfg
-
-
-@pytest.fixture(scope="module")
 def scenarios() -> dict[str, Scenario]:
     return load_scenarios()
 
 
 @pytest.fixture(scope="module")
-def sim(e1_physics, scenarios):
+def sim(physics, scenarios):
     make_body = select_body_fn(scenario=scenarios["default"])
     booth = dict(load_nozzle_layout()["booth"])
     booth["width_m"] *= _E1_BOOTH_SCALE
     booth["height_m"] *= _E1_BOOTH_SCALE
     evaluator = PatchEvaluator(
-        e1_physics,
+        physics,
         build_body=lambda body, pose, scen: make_body(pose, scen),
         velocity_field_per_nozzle=velocity_field_per_nozzle,
         booth=booth,
     )
-    return SimpleNamespace(evaluator=evaluator, nozzles=select_nozzles(),
+    return SimpleNamespace(evaluator=evaluator,
+                           nozzles=select_nozzles(partial(load_nozzles, layout=_E1_LAYOUT)),
                            scenario=scenarios["default"], uses_fake_body=make_body.uses_fake,
-                           cfg=e1_physics)
+                           cfg=physics)
 
 
 def _eval(sim, pose: PoseParams, nozzle: NozzleConfig | None = None):
@@ -124,8 +121,8 @@ def _eval(sim, pose: PoseParams, nozzle: NozzleConfig | None = None):
 
 
 def _with_strengths(nozzle: NozzleConfig, strengths: np.ndarray) -> NozzleConfig:
-    return NozzleConfig(positions=nozzle.positions, directions=nozzle.directions,
-                        strengths=strengths.astype(np.float32), pulse_phase=nozzle.pulse_phase)
+    """세기만 바꾼 사본. 슬롯 필드(slot_axis, slot_length) 등 나머지는 그대로 둔다."""
+    return dataclasses.replace(nozzle, strengths=np.asarray(strengths, dtype=np.float32))
 
 
 def _wrap_deg(angle: float) -> float:
@@ -230,6 +227,40 @@ def test_stronger_nozzles_increase_removal(sim, pose):
     assert removals[0] < removals[1] < removals[2]
 
 
+@pytest.fixture(scope="module")
+def slot_nozzles() -> NozzleConfig:
+    nz = load_nozzles(layout="slot_bars")
+    assert nz.slot_axis is not None
+    return nz
+
+
+def test_slot_layout_strength_monotone_and_zero(sim, slot_nozzles):
+    """기준 장비(슬롯 바)에서도 세기 단조 증가와 세기 0 -> 0이 성립한다."""
+    pose = PoseParams()
+    removals = [_eval(sim, pose, _with_strengths(slot_nozzles, slot_nozzles.strengths * k)).total_removal
+                for k in (0.5, 1.0, 1.5)]
+    assert removals[0] > 0.0
+    assert removals[0] < removals[1] < removals[2]
+    off = _eval(sim, pose, _with_strengths(slot_nozzles, np.zeros(slot_nozzles.count)))
+    assert off.total_removal == 0.0
+
+
+@pytest.mark.xfail(strict=False, reason=(
+    "발견 사항: 퓨리움 슬롯 바에서는 팔을 수평(90도)으로 들면 겨드랑이·옆구리 제거율이 0이 된다 "
+    "(20도 0.034 -> 90도 0.000, 만세 150도 0.023). 측면 바(z 0.72~1.42 m)가 수평으로 쏘므로 든 팔이 "
+    "옆구리 위쪽을 가린다. 충돌 제트 보정(4.2b) 병합 후 다시 확인한다."))
+def test_slot_layout_raising_arms_increases_armpit_removal(sim, slot_nozzles):
+    def flank_removal(abduction):
+        pose = PoseParams(shoulder_abduction=abduction)
+        state = sim.evaluator._build_body(BodyParams(), pose, sim.scenario)
+        mask = _armpit_flank_mask(state)
+        area = state.patch_area[mask].astype(np.float64)
+        removal = _eval(sim, pose, slot_nozzles).extra["removal"][mask]
+        return float((removal * area).sum() / area.sum())
+
+    assert flank_removal(90.0) > flank_removal(20.0)
+
+
 def test_zero_strength_removes_nothing(sim):
     """노즐 세기 0이면 제거율 0."""
     off = _with_strengths(sim.nozzles, np.zeros(sim.nozzles.count))
@@ -312,9 +343,9 @@ def test_batch_evaluate_matches_evaluate_in_order(sim):
     assert np.allclose(batch, single)
 
 
-def test_evaluator_uses_config_constants_not_literals(sim, e1_physics):
+def test_evaluator_uses_config_constants_not_literals(sim, physics):
     """상수를 덮어쓰면 결과가 따라 바뀐다 -> 코드에 숫자가 박혀 있지 않다."""
-    rough = copy.deepcopy(e1_physics)
+    rough = copy.deepcopy(physics)
     rough["adhesion"]["fabric_roughness_factor"] *= 4.0     # 임계 전단 상승 -> 제거율 하락
     ev = PatchEvaluator(rough, build_body=sim.evaluator._build_body,
                         velocity_field_per_nozzle=sim.evaluator._velocity_field_per_nozzle)
@@ -342,6 +373,9 @@ def _never_called(*args, **kwargs):
 def test_outside_booth_checks_side_walls_and_ceiling_but_not_x():
     booth = {"length_m": 2.0, "width_m": 1.0, "height_m": 2.0}
     inside = np.array([[1.0, 0.0, 1.0]])
+    assert booth_excess(inside, booth) == 0.0
+    assert booth_excess(np.array([[1.0, -0.8, 2.1]]), booth) == pytest.approx(0.3)   # 벽 0.3 > 천장 0.1
+    assert booth_excess(np.array([[1.0, 0.55, 2.4]]), booth) == pytest.approx(0.4)   # 천장 0.4 > 벽 0.05
     assert not outside_booth(inside, booth)
     assert not outside_booth(np.array([[1.0, 0.5, 2.0], [1.0, -0.5, 0.0]]), booth)   # 경계는 안쪽
     assert outside_booth(np.vstack([inside, [[1.0, 0.5001, 1.0]]]), booth)
@@ -370,7 +404,10 @@ def test_arms_out_is_infeasible_hands_up_is_feasible(physics, scenarios):
     ev = PatchEvaluator(physics, velocity_field_per_nozzle=_never_called, booth=booth)
     out = ev.evaluate(_ARMS_OUT, nozzle, BodyParams(), scen)
     assert out.extra["infeasible"] is True
-    assert out.score == INFEASIBLE_SCORE == -1.0
+    d_out = y_out - booth["width_m"] / 2.0
+    assert out.extra["d_out"] == pytest.approx(d_out, rel=1e-6)
+    assert out.score == pytest.approx(-1.0 - 10.0 * d_out, rel=1e-6)
+    assert out.score < -1.0
     assert out.total_removal == 0.0
     assert out.removal_by_part.shape == (len(PART_NAMES),)
     assert (out.removal_by_part == 0.0).all()
@@ -393,7 +430,29 @@ def test_infeasible_flag_matches_configured_booth(physics, scenarios, pose):
     result = ev.evaluate(pose, load_nozzles(), BodyParams(), scen)
     assert result.extra["infeasible"] is expected
     if expected:
-        assert result.score == -1.0
+        d_out = max(y_max - booth["width_m"] / 2.0, z_max - booth["height_m"])
+        assert result.score == pytest.approx(-1.0 - 10.0 * d_out, rel=1e-6)
+
+
+def test_infeasible_penalty_grows_with_distance_outside(physics, scenarios):
+    """벽을 많이 넘을수록 점수가 낮다 (00_common.md 5절 등급 벌점)."""
+    scen, nozzle = scenarios["default"], load_nozzles()
+    probe = PatchEvaluator(physics, velocity_field_per_nozzle=_never_called)
+    poses = [PoseParams(shoulder_abduction=a, elbow_flexion=0.0) for a in (60.0, 75.0, 90.0)]
+    reach = [_extent(probe.build_state(BodyParams(), p, scen))[0] for p in poses]
+    assert reach[0] < reach[1] < reach[2]
+
+    booth = dict(load_nozzle_layout()["booth"], width_m=2.0 * (reach[0] - 0.01))   # 셋 다 벽 밖
+    ev = PatchEvaluator(physics, velocity_field_per_nozzle=_never_called, booth=booth)
+    scores = [ev.evaluate(p, nozzle, BodyParams(), scen).score for p in poses]
+    assert scores[0] < -1.0
+    assert scores[0] > scores[1] > scores[2]
+
+
+def test_infeasible_score_formula():
+    assert infeasible_score(0.0) == -1.0
+    assert infeasible_score(0.05) == pytest.approx(-1.5)
+    assert infeasible_score(0.2) == pytest.approx(-3.0)
 
 
 # --- patches_per_m2 -----------------------------------------------------------
@@ -500,8 +559,10 @@ def test_discomfort_matches_formula(scenarios):
     # elbow_flexion은 가중치가 없어 기여 0.
     assert "elbow_flexion" not in scen.discomfort_weights
     assert scoring.discomfort(pose, scen) == pytest.approx(expected)
-    # 손 계산: 0.6·|80-20|/150 + 2.0·|10-0|/25
-    assert scoring.discomfort(pose, scen) == pytest.approx(0.6 * 60 / 150 + 2.0 * 10 / 25)
+    # 손 계산: 0.6·|80-20|/(abduction 범위) + 2.0·|10-0|/(pitch 범위)
+    span = {k: hi - lo for k, (lo, hi) in scen.pose_bounds.items()}
+    assert scoring.discomfort(pose, scen) == pytest.approx(
+        0.6 * 60 / span["shoulder_abduction"] + 2.0 * 10 / span["torso_pitch"])
 
 
 def test_discomfort_is_symmetric_around_default(scenarios):
