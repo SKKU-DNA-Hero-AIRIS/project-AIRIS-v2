@@ -37,7 +37,8 @@ from airis.sim import scoring
 from airis.sim.body import build_body
 from airis.sim.jet import velocity_field_per_nozzle
 from airis.sim.patch_baseline import (
-    PatchEvaluator, booth_excess, infeasible_score, occlusion, outside_booth,
+    SLOT_OCCLUSION_POINTS, PatchEvaluator, booth_excess, infeasible_score, occlusion,
+    occlusion_sources, outside_booth,
 )
 from airis.sim.scenario import load_nozzle_layout, load_nozzles, load_physics, load_scenarios
 from airis.sim.types import PART_NAMES, BodyParams, BodyState, NozzleConfig, PoseParams, Scenario
@@ -248,19 +249,69 @@ def test_slot_layout_strength_monotone_and_zero(sim, slot_nozzles):
 def test_slot_layout_raising_arms_increases_armpit_removal(sim, slot_nozzles):
     """기준 장비(슬롯 바)에서도 팔을 들면 겨드랑이·옆구리 제거율이 오른다.
 
-    충돌 제트 보정(4.2b) 전에는 성립하지 않았다: 측면 바가 수평으로 쏘아 든 팔이 옆구리를
-    가렸고(20도 0.005 -> 90도 0.000), 보정을 켜면 팔에 부딪힌 제트가 벽면 제트로 퍼져
-    20도 0.032 -> 90도 0.315가 된다 (PR 본문).
+    비교 자세는 20도 vs 150도(만세 쪽)다. 팔 수평(90도)은 퓨리움 부스(폭 1.46 m)에서 벽 밖이라
+    실제로는 평가되지 않는다. 충돌 제트 보정(4.2b) 전에는 성립하지 않았다: 측면 바가 수평으로
+    쏘아 든 팔이 옆구리를 가렸다. 보정을 켜면 20도 0.021 -> 150도 0.083 (K=3, PR 본문).
     """
-    def flank_removal(abduction):
-        pose = PoseParams(shoulder_abduction=abduction)
-        state = sim.evaluator._build_body(BodyParams(), pose, sim.scenario)
-        mask = _armpit_flank_mask(state)
-        area = state.patch_area[mask].astype(np.float64)
-        removal = _eval(sim, pose, slot_nozzles).extra["removal"][mask]
-        return float((removal * area).sum() / area.sum())
+    real_booth = load_nozzle_layout()["booth"]
+    raised = PoseParams(shoulder_abduction=150.0)
+    assert not outside_booth(sim.evaluator._build_body(BodyParams(), raised, sim.scenario).patch_pos,
+                             real_booth), "만세 자세가 실제 부스 밖이면 비교 자세를 다시 골라야 한다"
+    down = _flank_removal(sim, PoseParams(shoulder_abduction=20.0), slot_nozzles)
+    up = _flank_removal(sim, raised, slot_nozzles)
+    assert down > 0.0
+    assert up > down
 
-    assert flank_removal(90.0) > flank_removal(20.0)
+
+@pytest.mark.parametrize("wall_yaw", [90.0, -90.0])
+def test_slot_layout_front_facing_wall_increases_front_removal(sim, slot_nozzles, wall_yaw):
+    """슬롯 배치의 "마주 봄" 항목: 정면이 측면 바(벽)를 보면(yaw ±90) 정면 제거율이 yaw 0보다 크다.
+
+    측면 바가 몸과 같은 x에 좌우 대칭이라 원형 배치의 "등지면 하락"은 정의되지 않는다. 통합 관리
+    결정으로 이 항목을 슬롯 배치의 E1으로 둔다. 충돌 보정 후 약 2.7배 (0.047 -> 0.126).
+    """
+    along = _eval(sim, PoseParams(torso_yaw=0.0), slot_nozzles)
+    facing_wall = _eval(sim, PoseParams(torso_yaw=wall_yaw), slot_nozzles)
+    assert along.removal_by_part[_FRONT] > 0.0
+    assert facing_wall.removal_by_part[_FRONT] > along.removal_by_part[_FRONT]
+
+
+def _flank_removal(sim, pose: PoseParams, nozzle: NozzleConfig) -> float:
+    state = sim.evaluator._build_body(BodyParams(), pose, sim.scenario)
+    mask = _armpit_flank_mask(state)
+    area = state.patch_area[mask].astype(np.float64)
+    removal = _eval(sim, pose, nozzle).extra["removal"][mask]
+    return float((removal * area).sum() / area.sum())
+
+
+def test_slot_occlusion_does_not_kill_flank_under_raised_arm(sim, slot_nozzles):
+    """팔 90도에서도 슬롯 바 -> 옆구리 기여가 통째로 0이 되지 않는다.
+
+    슬롯을 중심 한 점으로 보면 팔이 그 점을 가릴 때 슬롯 전체가 막혀 옆구리 R이 0이었다 (#24).
+    """
+    assert _flank_removal(sim, PoseParams(shoulder_abduction=90.0), slot_nozzles) > 0.0
+
+
+@pytest.mark.parametrize("pose", [PoseParams(), PoseParams(shoulder_abduction=90.0, torso_yaw=30.0),
+                                  PoseParams(shoulder_abduction=160.0, elbow_flexion=0.0)])
+def test_slot_occlusion_converges_in_point_count(sim, slot_nozzles, pose):
+    """슬롯 점 수를 늘리면 총 제거율이 K=9 결과로 수렴한다.
+
+    기본 K=3은 10% 안, 검증용 K=5는 5% 안. 무작위 자세 60개(400/m², 충돌 보정 켬)에서 K=9 대비
+    최대 상대 차가 K=3 8.9%, K=5 5.2%, 여기 세 자세에서는 K=3 6.3%, K=5 2.5%였다 (PR 본문).
+    """
+    assert SLOT_OCCLUSION_POINTS == 3
+
+    def removal_with(k):
+        ev = PatchEvaluator(sim.cfg, build_body=sim.evaluator._build_body,
+                            velocity_field_per_nozzle=sim.evaluator._velocity_field_per_nozzle,
+                            booth=sim.evaluator.booth, slot_points=k)
+        return ev.evaluate(pose, slot_nozzles, BodyParams(), sim.scenario).total_removal
+
+    r3, r5, r9 = removal_with(3), removal_with(5), removal_with(9)
+    assert r9 > 0.0
+    assert abs(r3 - r9) / r9 < 0.10
+    assert abs(r5 - r9) / r9 < 0.05
 
 
 def test_zero_strength_removes_nothing(sim):
@@ -671,33 +722,52 @@ def test_occlusion_backface_uses_patch_position_not_offset(physics):
     assert vis.tolist() == [[True]]
 
 
+def _brute_force_sources(nozzle: NozzleConfig, slot_points: int) -> list[np.ndarray]:
+    """노즐별 광원 점. 구현(`occlusion_sources`)과 따로, 00_common 4.1b의 행 단위 규약대로 만든다."""
+    out = []
+    for m in range(nozzle.count):
+        p = nozzle.positions[m].astype(np.float64)
+        if nozzle.slot_axis is None or nozzle.slot_length[m] <= 0 or not np.any(nozzle.slot_axis[m]):
+            out.append(p[None, :])
+            continue
+        e = nozzle.slot_axis[m].astype(np.float64)
+        e /= np.linalg.norm(e)
+        offsets = np.linspace(-0.5, 0.5, slot_points) * float(nozzle.slot_length[m])
+        out.append(p + offsets[:, None] * e)
+    return out
+
+
 def _occlusion_brute_force(state: BodyState, nozzle: NozzleConfig, physics: dict,
-                           patches: np.ndarray, samples: int = 4001) -> np.ndarray:
-    """(M, len(patches)) bool. 선분 위 점을 촘촘히 찍어 캡슐 안에 드는지 직접 본다."""
+                           patches: np.ndarray, samples: int = 4001,
+                           slot_points: int = SLOT_OCCLUSION_POINTS) -> np.ndarray:
+    """(M, len(patches)) 보이는 비율. 선분 위 점을 촘촘히 찍어 캡슐 안에 드는지 직접 본다."""
     delta = physics["air"]["wall_offset_m"]
     pos = state.patch_pos.astype(np.float64)
     normal = state.patch_normal.astype(np.float64)
-    npos = nozzle.positions.astype(np.float64)
     caps = state.capsules.astype(np.float64)
     ts = np.linspace(0.0, 1.0, samples)[:, None]
-    out = np.zeros((nozzle.count, len(patches)), dtype=bool)
-    for m in range(nozzle.count):
+    sources = _brute_force_sources(nozzle, slot_points)
+    out = np.zeros((nozzle.count, len(patches)))
+    for m, pts_m in enumerate(sources):
         for j, i in enumerate(patches):
-            if (npos[m] - pos[i]) @ normal[i] <= 0.0:          # 뒷면
-                continue
-            start = pos[i] + delta * normal[i]
-            pts = start + ts * (npos[m] - start)
-            clear = True
-            for k in range(caps.shape[0]):
-                if state.patch_capsule is not None and k == state.patch_capsule[i]:
+            clear_count = 0
+            for src in pts_m:
+                if (src - pos[i]) @ normal[i] <= 0.0:          # 뒷면
                     continue
-                a, ab, r = caps[k, 0:3], caps[k, 3:6] - caps[k, 0:3], caps[k, 6]
-                denom = ab @ ab
-                u = np.clip((pts - a) @ ab / denom, 0.0, 1.0) if denom > 0 else np.zeros(len(pts))
-                if (np.linalg.norm(pts - (a + u[:, None] * ab), axis=1) < r).any():
-                    clear = False
-                    break
-            out[m, j] = clear
+                start = pos[i] + delta * normal[i]
+                pts = start + ts * (src - start)
+                clear = True
+                for k in range(caps.shape[0]):
+                    if state.patch_capsule is not None and k == state.patch_capsule[i]:
+                        continue
+                    a, ab, r = caps[k, 0:3], caps[k, 3:6] - caps[k, 0:3], caps[k, 6]
+                    denom = ab @ ab
+                    u = np.clip((pts - a) @ ab / denom, 0.0, 1.0) if denom > 0 else np.zeros(len(pts))
+                    if (np.linalg.norm(pts - (a + u[:, None] * ab), axis=1) < r).any():
+                        clear = False
+                        break
+                clear_count += clear
+            out[m, j] = clear_count / len(pts_m)
     return out
 
 
@@ -722,8 +792,29 @@ def test_occlusion_matches_brute_force_on_real_body(physics, scenarios, scenario
     if select_body_fn(scenario=scenarios["default"]).uses_fake:
         pytest.skip("B 미병합")
     state = build_body(BodyParams(), pose, scenarios[scenario_name])
-    nz = load_nozzles()
     patches = np.random.default_rng(0).choice(state.patch_pos.shape[0], 120, replace=False)
-    fast = occlusion(state, nz, physics)[:, patches]
-    slow = _occlusion_brute_force(state, nz, physics, patches, samples=2001)
-    assert np.array_equal(fast, slow)
+    for layout in ("layout", "slot_bars"):                 # 원형 0/1, 슬롯은 점 비율
+        nz = load_nozzles(layout=layout)
+        fast = occlusion(state, nz, physics)[:, patches]
+        slow = _occlusion_brute_force(state, nz, physics, patches, samples=2001)
+        assert np.allclose(fast, slow, rtol=0.0, atol=1e-12), layout
+        if layout == "layout":
+            assert set(np.unique(fast)) <= {0.0, 1.0}
+        else:
+            assert ((fast > 0.0) & (fast < 1.0)).any(), "슬롯 부분 가림이 한 번도 나오지 않았다"
+
+
+def test_occlusion_sources_spread_along_slot():
+    nz = load_nozzles(layout="slot_bars")
+    src, owner = occlusion_sources(nz, slot_points=5)
+    assert src.shape == (5 * nz.count, 3)
+    for m in range(nz.count):
+        pts = src[owner == m]
+        e = nz.slot_axis[m] / np.linalg.norm(nz.slot_axis[m])
+        assert np.allclose(pts.mean(axis=0), nz.positions[m], atol=1e-6)
+        assert np.allclose(pts[-1] - pts[0], e * nz.slot_length[m], atol=1e-6)
+
+    round_nz = load_nozzles(layout="layout")
+    src, owner = occlusion_sources(round_nz)
+    assert np.array_equal(owner, np.arange(round_nz.count))
+    assert np.allclose(src, round_nz.positions)
