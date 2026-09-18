@@ -18,3 +18,6 @@ data/datasets/*
 # 학습 산출물·YOLO 가중치 (E, C)
 data/models/*
 !data/models/.gitkeep
+
+# SMPL-X 모델 파일은 재배포 금지라 저장소에 두지 않는다. MakeHuman(CC0) 자산은 data/meshes/makehuman/ 에 커밋 (E)
+data/meshes/smplx/
