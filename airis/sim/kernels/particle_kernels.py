@@ -309,91 +309,145 @@ class ParticleFields:
             u += self.impingement(x, n, t)
         return u
 
+    # ------------------------------------------------ 입자 하나의 한 스텝 (ti.func)
+    # 단계 11: 커널 4개를 입자 단위 함수로 나누고, 한 스텝(k_step) 또는 여러 스텝(k_run)을
+    # 한 커널에서 돈다. 입자끼리 상호작용이 없으므로 "모든 입자 이탈 -> 모든 입자 적분 -> ..."
+    # 순서와 "입자마다 이탈 -> 적분 -> 충돌 -> 제거" 순서는 같은 결과를 낸다.
+
     # ----------------------------------------------------------- 단계 5. 이탈
-    @ti.kernel
-    def k_detach(self, t: ti.f32, n_act: ti.i32):
-        for i in range(n_act * self.N):
-            if self.state[i] == 0:
-                nrm = self.normal[i]
-                u = self.surface_velocity(self.pos[i] + self.cst[C_WALL_OFF] * nrm, nrm, t)
-                u_t = u - u.dot(nrm) * nrm                          # 4.2 접선 성분
-                tau = 0.5 * self.cst[C_RHO_AIR] * self.cst[C_CF] * u_t.norm_sqr()
-                if tau > self.tau_crit[i]:
-                    self.state[i] = 1
-                    self.vel[i] = u_t * 0.1 + nrm * 0.05            # 작은 초기 속도
+    @ti.func
+    def detach_one(self, i, t):
+        if self.state[i] == 0:
+            nrm = self.normal[i]
+            u = self.surface_velocity(self.pos[i] + self.cst[C_WALL_OFF] * nrm, nrm, t)
+            u_t = u - u.dot(nrm) * nrm                              # 4.2 접선 성분
+            tau = 0.5 * self.cst[C_RHO_AIR] * self.cst[C_CF] * u_t.norm_sqr()
+            if tau > self.tau_crit[i]:
+                self.state[i] = 1
+                self.vel[i] = u_t * 0.1 + nrm * 0.05                # 작은 초기 속도
 
     # -------------------------------------------------- 단계 6. 부유 입자 적분
-    @ti.kernel
-    def k_advect(self, t: ti.f32, dt: ti.f32, n_act: ti.i32):
-        for i in range(n_act * self.N):
-            if self.state[i] == 1:
-                u = self.jet_velocity(self.pos[i], t)
-                v = self.vel[i]
-                d = self.diam[i]
-                re = self.cst[C_RHO_AIR] * (u - v).norm() * d / self.cst[C_MU]
-                # Schiller-Naumann. 4.5는 Re < 1000 구간만 적으므로 그 위는
-                # 표준 뉴턴 영역(Cd = 0.44 -> f = Cd·Re/24)으로 잇는다.
-                f = 1.0 + 0.15 * ti.pow(ti.max(re, 1e-12), 0.687)
-                if re >= 1000.0:
-                    f = 0.0183 * re
-                tau_p = self.cst[C_RHO_P] * d * d / (18.0 * self.cst[C_MU] * f)
-                v_new = (u + (v - u) * ti.exp(-dt / tau_p)
-                         + ti.Vector([0.0, 0.0, self.cst[C_GZ]], dt=ti.f32) * dt)
-                self.vel[i] = v_new
-                self.pos[i] = self.pos[i] + v_new * dt
+    @ti.func
+    def advect_one(self, i, t, dt):
+        if self.state[i] == 1:
+            u = self.jet_velocity(self.pos[i], t)
+            v = self.vel[i]
+            d = self.diam[i]
+            re = self.cst[C_RHO_AIR] * (u - v).norm() * d / self.cst[C_MU]
+            # Schiller-Naumann. 4.5는 Re < 1000 구간만 적으므로 그 위는
+            # 표준 뉴턴 영역(Cd = 0.44 -> f = Cd·Re/24)으로 잇는다.
+            f = 1.0 + 0.15 * ti.pow(ti.max(re, 1e-12), 0.687)
+            if re >= 1000.0:
+                f = 0.0183 * re
+            tau_p = self.cst[C_RHO_P] * d * d / (18.0 * self.cst[C_MU] * f)
+            v_new = (u + (v - u) * ti.exp(-dt / tau_p)
+                     + ti.Vector([0.0, 0.0, self.cst[C_GZ]], dt=ti.f32) * dt)
+            self.vel[i] = v_new
+            self.pos[i] = self.pos[i] + v_new * dt
 
     # ------------------------------------------- 단계 7. 캡슐 충돌과 재부착
+    @ti.func
+    def collide_one(self, i):
+        if self.state[i] == 1:
+            b = i // self.N
+            p = self.pos[i]
+            v = self.vel[i]
+            for k in range(self.n_caps[b]):
+                p0 = ti.Vector([self.capsules[b, k, 0], self.capsules[b, k, 1],
+                                self.capsules[b, k, 2]], dt=ti.f32)
+                p1 = ti.Vector([self.capsules[b, k, 3], self.capsules[b, k, 4],
+                                self.capsules[b, k, 5]], dt=ti.f32)
+                rad = self.capsules[b, k, 6]
+                ab = p1 - p0
+                denom = ab.dot(ab)
+                seg = 0.0
+                if denom > 1e-12:
+                    seg = ti.min(ti.max((p - p0).dot(ab) / denom, 0.0), 1.0)
+                c = p0 + seg * ab                               # 축 선분 위 최근접점
+                dv = p - c
+                dist = dv.norm()
+                if dist < rad:
+                    n_hit = ti.Vector([0.0, 0.0, 1.0], dt=ti.f32)
+                    if dist > 1e-9:
+                        n_hit = dv / dist
+                    p = c + n_hit * (rad + 1e-4)                # 표면 밖으로
+                    cp = self.cap_part[b, k]
+                    if cp == PART_TORSO_FRONT and n_hit.dot(self.body_fwd[b]) <= 0.0:
+                        cp = PART_TORSO_BACK
+                    if cp >= 0 and self.rand_redep[i] < self.cst[C_P_REDEP]:
+                        self.state[i] = 0                       # 몸에 재부착
+                        self.part[i] = cp
+                        self.normal[i] = n_hit
+                        self.tau_crit[i] = self.tau_crit_respawn[i]
+                        v = ti.Vector([0.0, 0.0, 0.0], dt=ti.f32)
+                        break
+                    v_n = v.dot(n_hit) * n_hit                  # 반사
+                    v = (v - v_n) * 0.8 - v_n * 0.3
+            self.pos[i] = p
+            self.vel[i] = v
+
+    # ------------------------------------------------- 단계 8. 부스 이탈 = 제거
+    @ti.func
+    def remove_one(self, i):
+        if self.state[i] == 1:
+            p = self.pos[i]
+            if (p[0] < 0.0 or p[0] > self.cst[C_BOOTH_L]
+                    or ti.abs(p[1]) > 0.5 * self.cst[C_BOOTH_W]
+                    or p[2] < 0.0 or p[2] > self.cst[C_BOOTH_H]):
+                self.state[i] = 2
+
+    @ti.func
+    def step_one(self, i, step, dt):
+        """입자 i의 한 스텝. 시각은 커널 안에서 t = f32(step)·dt로 계산해 두 경로가 같게 한다.
+
+        반환: 1이면 "부착 상태로 스텝을 시작했고 이탈 판정을 통과하지 못했다" (k_run 조기 종료용).
+        이탈했다가 같은 스텝에 재부착된 입자는 새 위치·법선·tau_crit를 가지므로 0이다.
+        """
+        t = ti.cast(step, ti.f32) * dt
+        start = self.state[i]
+        self.detach_one(i, t)
+        held = 0
+        if start == 0 and self.state[i] == 0:
+            held = 1
+        self.advect_one(i, t, dt)
+        self.collide_one(i)
+        self.remove_one(i)
+        return held
+
+    @ti.kernel
+    def k_step(self, step: ti.i32, dt: ti.f32, n_act: ti.i32):
+        """모든 입자 한 스텝. 매 스텝 호스트가 상태를 봐야 할 때 (덤프, 콜백)."""
+        for i in range(n_act * self.N):
+            self.step_one(i, step, dt)          # 반환값(조기 종료 신호)은 여기서 쓰지 않는다
+
+    @ti.kernel
+    def k_run(self, step0: ti.i32, n_steps: ti.i32, dt: ti.f32, n_act: ti.i32):
+        """모든 입자 step0부터 n_steps 스텝을 한 커널에서. 제거된 입자는 바로 끝낸다.
+
+        커널 실행 횟수가 스텝 수 × 4에서 (스텝 수 / n_steps)로 준다. 한 번에 너무 많은 스텝을
+        돌리면 Windows GPU 타임아웃(TDR, 약 2 s)에 걸릴 수 있어 호스트가 나눠 부른다.
+
+        조기 종료 (결과는 매 스텝 도는 k_step과 같다):
+        - 제거(state 2)된 입자는 더 바뀌지 않는다.
+        - 펄스가 꺼져 있으면 부착 입자의 이탈 판정 입력(위치, 법선, tau_crit, 공기 속도)이
+          시각과 무관하다. 이탈 판정을 통과하지 못한 부착 입자(step_one이 1을 돌려줌)는
+          이후 모든 스텝에서도 같은 판정을 받으므로 여기서 끝낸다. 한 스텝 안에서 이탈 후
+          재부착된 입자는 입력이 바뀌었으므로 계속 돈다.
+        """
+        steady = self.cst[C_PULSE_ON] < 0.5
+        for i in range(n_act * self.N):
+            for s in range(n_steps):
+                if self.state[i] == 2:
+                    break
+                held = self.step_one(i, step0 + s, dt)
+                if steady and held == 1:
+                    break
+
+    # 단계별 커널: 디버깅과 테스트용 (예: 재부착 판정만 따로 돌리기)
     @ti.kernel
     def k_collide(self, n_act: ti.i32):
         for i in range(n_act * self.N):
-            if self.state[i] == 1:
-                b = i // self.N
-                p = self.pos[i]
-                v = self.vel[i]
-                for k in range(self.n_caps[b]):
-                    p0 = ti.Vector([self.capsules[b, k, 0], self.capsules[b, k, 1],
-                                    self.capsules[b, k, 2]], dt=ti.f32)
-                    p1 = ti.Vector([self.capsules[b, k, 3], self.capsules[b, k, 4],
-                                    self.capsules[b, k, 5]], dt=ti.f32)
-                    rad = self.capsules[b, k, 6]
-                    ab = p1 - p0
-                    denom = ab.dot(ab)
-                    seg = 0.0
-                    if denom > 1e-12:
-                        seg = ti.min(ti.max((p - p0).dot(ab) / denom, 0.0), 1.0)
-                    c = p0 + seg * ab                               # 축 선분 위 최근접점
-                    dv = p - c
-                    dist = dv.norm()
-                    if dist < rad:
-                        n_hit = ti.Vector([0.0, 0.0, 1.0], dt=ti.f32)
-                        if dist > 1e-9:
-                            n_hit = dv / dist
-                        p = c + n_hit * (rad + 1e-4)                # 표면 밖으로
-                        cp = self.cap_part[b, k]
-                        if cp == PART_TORSO_FRONT and n_hit.dot(self.body_fwd[b]) <= 0.0:
-                            cp = PART_TORSO_BACK
-                        if cp >= 0 and self.rand_redep[i] < self.cst[C_P_REDEP]:
-                            self.state[i] = 0                       # 몸에 재부착
-                            self.part[i] = cp
-                            self.normal[i] = n_hit
-                            self.tau_crit[i] = self.tau_crit_respawn[i]
-                            v = ti.Vector([0.0, 0.0, 0.0], dt=ti.f32)
-                            break
-                        v_n = v.dot(n_hit) * n_hit                  # 반사
-                        v = (v - v_n) * 0.8 - v_n * 0.3
-                self.pos[i] = p
-                self.vel[i] = v
-
-    # ------------------------------------------------- 단계 8. 부스 이탈 = 제거
-    @ti.kernel
-    def k_remove(self, n_act: ti.i32):
-        for i in range(n_act * self.N):
-            if self.state[i] == 1:
-                p = self.pos[i]
-                if (p[0] < 0.0 or p[0] > self.cst[C_BOOTH_L]
-                        or ti.abs(p[1]) > 0.5 * self.cst[C_BOOTH_W]
-                        or p[2] < 0.0 or p[2] > self.cst[C_BOOTH_H]):
-                    self.state[i] = 2
+            self.collide_one(i)
 
     @ti.kernel
     def k_count(self, n_act: ti.i32):

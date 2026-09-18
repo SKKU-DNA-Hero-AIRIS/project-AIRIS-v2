@@ -967,3 +967,44 @@ def test_frame_dump_off_and_missing_dir(tmp_path, scenario):
     finally:
         ev.destroy()
     assert len(list((tmp_path / "call" / "frames").glob("*.npz"))) == 5
+
+
+# ------------------------------------------------------------- 단계 11. 성능 경로
+@pytest.mark.parametrize("variant", ["default", "redeposit", "pulse"])
+def test_fused_run_matches_stepwise(variant, scenario):
+    """여러 스텝을 한 커널에서 도는 빠른 경로(k_run, 조기 종료 포함)가 매 스텝 경로(k_step)와
+    입자 하나까지 같은 결과를 낸다. steps_per_launch를 바꿔도 같다.
+
+    - redeposit: 재부착 확률 0.5로 "한 스텝 안에서 이탈 후 재부착" 경우를 많이 만든다
+      (조기 종료가 이 입자를 멈추면 안 된다)
+    - pulse: 펄스가 켜지면 조기 종료를 쓰지 않는다
+    """
+    cfg = copy.deepcopy(load_physics())
+    if variant == "redeposit":
+        cfg["adhesion"]["redeposition_prob"] = 0.5
+    if variant == "pulse":
+        cfg["jet"]["pulse"]["enabled"] = True
+    nozzle = load_nozzles()
+    poses = [PoseParams(), PoseParams(torso_yaw=90.0, shoulder_abduction=40.0)]
+    states = [build_body(BodyParams(), p, scenario) for p in poses]
+
+    ev = ParticleEvaluator(cfg, max_candidates=2, particles_per_candidate=N_DEV,
+                           duration_s=DURATION_DEV)
+
+    def run(steps_per_launch, stepwise):
+        ev.steps_per_launch = steps_per_launch
+        cb = (lambda *a: None) if stepwise else None
+        res = ev.batch_evaluate_states(states, poses, nozzle, scenario, step_callback=cb)
+        return res, ev.f.state.to_numpy()[:2 * N_DEV], ev.f.pos.to_numpy()[:2 * N_DEV]
+
+    try:
+        ref, ref_state, ref_pos = run(100, stepwise=True)
+        assert sum(r.total_removal for r in ref) > 0.0
+        for spl in (1, 7, 100):
+            res, state, pos = run(spl, stepwise=False)
+            for a, b in zip(res, ref):
+                _assert_same(a, b)
+            np.testing.assert_array_equal(state, ref_state)
+            np.testing.assert_array_equal(pos, ref_pos)
+    finally:
+        ev.destroy()
