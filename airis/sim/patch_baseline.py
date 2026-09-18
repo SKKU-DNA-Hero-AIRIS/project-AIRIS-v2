@@ -17,7 +17,7 @@
     score, disc = scoring.score(R_part, pose, scenario, cfg)
 
 `build_body` 직후 부스 밖 자세 불가 규칙(`00_common.md` 5절)을 먼저 검사하고, 걸리면 제트
-계산 없이 `score = -1.0`을 돌려준다.
+계산 없이 벽을 넘은 거리에 비례한 벌점 `score = -1 - 10·d_out`을 돌려준다.
 
 물리 상수는 전부 `physics_cfg`(= `configs/physics.yaml`)에서 읽는다.
 """
@@ -37,8 +37,9 @@ from .types import PART_NAMES, BodyParams, BodyState, EvalResult, NozzleConfig, 
 _EPS = 1e-12
 # 후보 거르기 여유. float32 반올림보다 충분히 커서 거르기가 항상 보수적이 되게 한다.
 _CONE_SLACK = 1e-4
-# 부스 밖 자세의 점수 (00_common.md 5절).
-INFEASIBLE_SCORE = -1.0
+# 부스 밖 자세의 벌점 (00_common.md 5절): score = INFEASIBLE_BASE - INFEASIBLE_SLOPE_PER_M · d_out.
+INFEASIBLE_BASE = -1.0
+INFEASIBLE_SLOPE_PER_M = 10.0
 
 
 def _segment_segment_dist_sq(s1: np.ndarray, d1: np.ndarray,
@@ -170,17 +171,28 @@ def _area_weighted_by_part(values: np.ndarray, area: np.ndarray,
     return np.divide(weighted, total, out=np.zeros(n_parts), where=total > 0.0)
 
 
-def outside_booth(patch_pos: np.ndarray, booth: dict) -> bool:
-    """패치가 하나라도 옆벽(|y| > width/2)이나 천장(z > height) 밖이면 True.
+def booth_excess(patch_pos: np.ndarray, booth: dict) -> float:
+    """벽을 넘은 거리 d_out (m). 부스 안이면 0.
 
-    x 방향은 열린 문이라 검사하지 않는다 (`00_common.md` 5절). 경계와 같은 값은 안쪽이다.
+    `d_out = max(0, max_i(|y_i| - width/2), max_i(z_i - height))` (`00_common.md` 5절).
+    x 방향은 열린 문이라 검사하지 않는다. 경계와 같은 값은 안쪽이다.
     """
-    pos = np.asarray(patch_pos)
+    pos = np.asarray(patch_pos, dtype=np.float64)
     if pos.size == 0:
-        return False
-    half_width = 0.5 * float(booth["width_m"])
-    return bool(np.abs(pos[:, 1]).max() > half_width
-                or pos[:, 2].max() > float(booth["height_m"]))
+        return 0.0
+    over_wall = np.abs(pos[:, 1]).max() - 0.5 * float(booth["width_m"])
+    over_ceiling = pos[:, 2].max() - float(booth["height_m"])
+    return float(max(0.0, over_wall, over_ceiling))
+
+
+def outside_booth(patch_pos: np.ndarray, booth: dict) -> bool:
+    """패치가 하나라도 옆벽(|y| > width/2)이나 천장(z > height) 밖이면 True."""
+    return booth_excess(patch_pos, booth) > 0.0
+
+
+def infeasible_score(d_out: float) -> float:
+    """부스 밖 자세의 점수 `-1 - 10·d_out`. 조금 닿으면 -1에 가깝고 많이 나갈수록 낮다."""
+    return INFEASIBLE_BASE - INFEASIBLE_SLOPE_PER_M * float(d_out)
 
 
 class PatchEvaluator(Evaluator):
@@ -218,13 +230,14 @@ class PatchEvaluator(Evaluator):
     def evaluate(self, pose: PoseParams, nozzle: NozzleConfig,
                  body: BodyParams, scenario: Scenario) -> EvalResult:
         state = self.build_state(body, pose, scenario)
-        if outside_booth(state.patch_pos, self.booth):
+        d_out = booth_excess(state.patch_pos, self.booth)
+        if d_out > 0.0:
             return EvalResult(
-                score=INFEASIBLE_SCORE,
+                score=infeasible_score(d_out),
                 removal_by_part=np.zeros(len(PART_NAMES)),
                 total_removal=0.0,
                 discomfort=scoring.discomfort(pose, scenario),
-                extra={"infeasible": True},
+                extra={"infeasible": True, "d_out": d_out},
             )
 
         delta = float(self.cfg["air"]["wall_offset_m"])

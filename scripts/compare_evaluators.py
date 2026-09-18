@@ -18,7 +18,8 @@ README 6절 E2, docs/tracks/D_patch_baseline.md 단계 7.
     top_mismatch.md   순위 차이가 가장 큰 자세 N개의 부위별 제거율 표 (csv 도 함께)
 
 부스 밖 자세(00_common.md 5절)는 샘플링 단계에서 버리고 다시 뽑는다. 규칙에 걸린 자세는 두
-평가기 모두 score −1 로 같아 순위 비교에 정보가 없고, 입자판을 돌릴 이유도 없다. 버린 수는
+평가기 모두 같은 기하 벌점(−1 − 10·d_out)을 받아 제거율 비교에 정보가 없고, 입자판을 돌릴
+이유도 없다. 버린 수는
 summary.json 의 infeasible_rejected 에 남긴다.
 
 주의: 두 평가기의 score 는 같은 불편도 항(−w·discomfort)을 공유한다. 제거율이 둘 다 0에
