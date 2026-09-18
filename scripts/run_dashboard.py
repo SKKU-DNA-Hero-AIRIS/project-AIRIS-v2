@@ -11,6 +11,8 @@
     ⑤ 입자 애니메이션 (A 덤프가 있으면, 없으면 합성 프레임 미리보기)
 
 URL 쿼리 `?demo=1`이면 예시 이미지로 바로 시작한다 (스크린샷용). `?scenario=wheelchair` 등으로 시나리오 지정.
+몸 모델은 사이드바에서 고른다 (기본 사람 메시, `?model=capsule`이면 캡슐 마네킹). 체형 추정 비율·추천·점수·
+3D 그림·애니메이션이 모두 같은 몸 모델을 쓴다.
 v1(project-AIRIS-MVP `realtime_vision_app.py`)의 Streamlit 틀(사이드바 입력 선택, 모델 캐시)을 따랐다.
 """
 from __future__ import annotations
@@ -30,8 +32,8 @@ import numpy as np                                                    # noqa: E4
 import streamlit as st                                                # noqa: E402
 
 from airis.realtime import camera, pose_estimate as pe               # noqa: E402
-from airis.realtime.recommend import (compare_with_baselines, improvement,  # noqa: E402
-                                      pose_instructions, recommend)
+from airis.realtime.recommend import (compare_with_baselines, default_body,  # noqa: E402
+                                      improvement, pose_instructions, recommend)
 from airis.sim.body import build_body                                 # noqa: E402
 from airis.sim.scenario import load_nozzle_layout, load_scenarios     # noqa: E402
 from airis.sim.types import PART_NAMES, BodyParams, PoseParams       # noqa: E402
@@ -46,6 +48,7 @@ BODY_LABELS = {"height_m": "키 (m)", "shoulder_width_m": "어깨 너비 (m)",
                "leg_length_m": "다리 길이 (m)"}
 INPUT_MODES = ["예시 이미지", "이미지 업로드", "브라우저 카메라", "영상 파일", "로컬 카메라 (OpenCV)",
                "합성 마네킹 (카메라 없이)", "체형 직접 입력"]
+BODY_MODELS = {"사람 메시 (MakeHuman)": "mesh", "캡슐 마네킹": "capsule"}
 
 
 def _wide_kw() -> dict:
@@ -96,9 +99,9 @@ def detect_cached(digest: str, _image: np.ndarray):
 
 
 @st.cache_data(show_spinner="기준 자세와 점수를 비교하는 중 (패치판)…", max_entries=64)
-def compare_cached(body_t: tuple, scenario: str, pose_t: tuple):
+def compare_cached(body_t: tuple, scenario: str, pose_t: tuple, body_model: str):
     sc = get_scenarios()[scenario]
-    return compare_with_baselines(BodyParams(*body_t), sc, PoseParams(*pose_t))
+    return compare_with_baselines(BodyParams(*body_t), sc, PoseParams(*pose_t), model=body_model)
 
 
 def _digest(arr: np.ndarray) -> str:
@@ -143,11 +146,12 @@ def collect_frames(mode: str) -> tuple[list[np.ndarray], str | None]:
     return [], None
 
 
-def synthetic_input(height_m: float) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """합성 마네킹: 기본 비율 체형을 정면 카메라에 투영한 키포인트 (가짜 입력)."""
-    s = height_m / 1.70
-    body = BodyParams(height_m, 0.42 * s, 0.22 * s, 0.62 * s, 0.85 * s)
-    kp, conf = pe.synthetic_keypoints(body, PoseParams(), get_scenarios()["default"])
+def synthetic_input(height_m: float, body_model: str) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """합성 마네킹: 몸 모델의 기본 비율 체형을 정면 카메라에 투영한 키포인트 (가짜 입력)."""
+    base = default_body(body_model)
+    k = height_m / base.height_m
+    body = BodyParams(*(k * np.array(list(asdict(base).values()))))
+    kp, conf = pe.synthetic_keypoints(body, PoseParams(), get_scenarios()["default"], model=body_model)
     canvas = np.full((720, 1280, 3), 245, np.uint8)
     return canvas, kp, conf
 
@@ -155,9 +159,9 @@ def synthetic_input(height_m: float) -> tuple[np.ndarray, np.ndarray, np.ndarray
 # ---------------------------------------------------------------------------
 # 본문
 # ---------------------------------------------------------------------------
-def body_editor(estimated: BodyParams | None, key: str) -> BodyParams:
-    """추정 체형을 숫자 입력으로 보여 주고 수정을 받는다."""
-    base = estimated or BodyParams()
+def body_editor(estimated: BodyParams | None, key: str, body_model: str) -> BodyParams:
+    """추정 체형을 숫자 입력으로 보여 주고 수정을 받는다. 추정이 없으면 몸 모델의 기본 체형."""
+    base = estimated or default_body(body_model)
     cols = st.columns(5)
     vals = {}
     for col, f in zip(cols, fields(BodyParams)):
@@ -190,6 +194,13 @@ def main() -> None:
                                     disabled=calib == "키 입력")
         st.caption("휠체어 시나리오(앉은 자세)는 키를 입력해야 합니다.")
         st.divider()
+        st.header("몸 모델")
+        model_labels = list(BODY_MODELS)
+        body_model = BODY_MODELS[st.radio(
+            "몸 모델", model_labels, index=1 if q.get("model") == "capsule" else 0,
+            label_visibility="collapsed")]
+        st.caption("시뮬레이션 몸. 추천 표(E4)는 캡슐판 결과이고, 부스 안 판정·점수는 고른 몸으로 다시 잽니다.")
+        st.divider()
         st.caption("카메라 영상은 저장하지 않습니다. 시나리오(임산부·휠체어)는 영상으로 판별하지 않고 "
                    "사용자가 직접 고릅니다.")
 
@@ -209,24 +220,26 @@ def main() -> None:
         if mode == "체형 직접 입력":
             st.info("카메라 없이 체형 값을 직접 입력합니다 (오른쪽).")
         elif mode == "합성 마네킹 (카메라 없이)":
-            canvas, kp, conf = synthetic_input(height_cm / 100.0)
+            canvas, kp, conf = synthetic_input(height_cm / 100.0, body_model)
             det = camera.PoseDetection(kp, conf, np.r_[kp.min(axis=0) - 20, kp.max(axis=0) + 20],
                                        (canvas.shape[1], canvas.shape[0]))
-            st.image(camera.draw_pose(canvas, det), caption="합성 마네킹 키포인트 (B 관절을 정면 카메라에 투영한 가짜 입력)",
+            st.image(camera.draw_pose(canvas, det), caption="합성 마네킹 키포인트 (몸 모델 관절을 정면 카메라에 투영한 가짜 입력)",
                      **WIDE)
-            estimate = pe.estimate_body(kp, conf, height_m=height_cm / 100.0, seated=False)
+            estimate = pe.estimate_body(kp, conf, height_m=height_cm / 100.0, seated=False,
+                                        profile=body_model)
             stab_body = estimate.body
         else:
             frames, desc = collect_frames(mode)
             if frames:
                 try:
-                    model = get_pose_model()
+                    pose_model = get_pose_model()
                 except Exception as e:                     # ultralytics 미설치·다운로드 실패
                     st.error(f"포즈 모델을 불러오지 못했습니다: {e}. '체형 직접 입력'을 쓰세요.")
-                    model = None
-                if model is not None:
+                    pose_model = None
+                if pose_model is not None:
                     stab = pe.BodyEstimator(height_m=height_m, seated=seated, window=30,
-                                            min_frames=1 if len(frames) == 1 else 3)
+                                            min_frames=1 if len(frames) == 1 else 3,
+                                            profile=body_model)
                     last_img, last_det = frames[-1], None
                     for img in frames:
                         det = detect_cached(_digest(img), img)
@@ -261,10 +274,12 @@ def main() -> None:
             if estimate.missing:
                 st.caption("안 보이는 키포인트: " + ", ".join(estimate.missing))
         # 추정값이 바뀌면 입력칸을 새 값으로 다시 채운다 (키에 추정값을 넣는다)
-        key = "body_" + ("_".join(f"{v:.4f}" for v in asdict(stab_body).values())
-                         if stab_body else "none")
-        body = body_editor(stab_body, key)
-        st.caption("몸통 두께는 정면 사진으로 잴 수 없어 키 × 0.13으로 둡니다.")
+        key = f"body_{body_model}_" + ("_".join(f"{v:.4f}" for v in asdict(stab_body).values())
+                                       if stab_body else "none")
+        body = body_editor(stab_body, key, body_model)
+        ratio = pe.profile_for(body_model).torso_depth_per_height
+        st.caption(f"몸통 두께는 정면 사진으로 잴 수 없어 키 × {ratio:.3f}로 둡니다. "
+                   "어깨 너비·팔·다리는 관절 중심 기준(어깨 관절 간격, 상완+전완, 고관절 높이)입니다.")
 
     # ---------------- ③ 시나리오 ----------------
     st.subheader("③ 시나리오")
@@ -272,15 +287,16 @@ def main() -> None:
                     key="scenario", label_visibility="collapsed")
     scenario = scenarios[scen]
     try:
-        build_body(body, PoseParams(), scenario, patches_per_m2=100)
+        build_body(body, PoseParams(), scenario, patches_per_m2=100, model=body_model)
     except ValueError as e:
         st.error(f"이 체형으로는 마네킹을 만들 수 없습니다: {e}")
         st.stop()
 
     # ---------------- ④ 추천 자세 ----------------
     st.subheader("④ 추천 자세")
-    rec = recommend(body, scenario)
-    rows = compare_cached(tuple(asdict(body).values()), scen, tuple(asdict(rec.pose).values()))
+    rec = recommend(body, scenario, model=body_model)
+    rows = compare_cached(tuple(asdict(body).values()), scen, tuple(asdict(rec.pose).values()),
+                          body_model)
     by = {r.name: r for r in rows}
     rec_row = by["추천"]
 
@@ -311,12 +327,12 @@ def main() -> None:
         b0 = by["B0 기본"]
         fig = figure_from_pose(body, PoseParams(), scenario, result=b0.result, booth=booth,
                                title=f"B0 기본 자세 · 점수 {b0.score:.3f}", cmin=0.0, cmax=cmax,
-                               height=560)
+                               height=560, model=body_model)
         st.plotly_chart(fig, **WIDE)
     with f2:
         fig = figure_from_pose(body, rec.pose, scenario, result=rec_row.result, booth=booth,
                                title=f"추천: {rec.label} · 점수 {rec_row.score:.3f}", cmin=0.0,
-                               cmax=cmax, height=560)
+                               cmax=cmax, height=560, model=body_model)
         st.plotly_chart(fig, **WIDE)
     st.caption("색 = 패치별 제거율 (두 그림 같은 색 범위). 파란 선 = 퓨리움 슬롯 바 12개, 점선 = 분사 방향.")
 
@@ -340,7 +356,7 @@ def main() -> None:
     dumps = sorted(p.parent.name for p in out_dir.glob("*/frames") if any(p.glob("*.npz")))
     choice = st.selectbox("덤프", ["(보지 않음)", "합성 프레임 미리보기 (가짜 궤적)"] + dumps)
     if choice == "합성 프레임 미리보기 (가짜 궤적)":
-        state = build_body(body, rec.pose, scenario, patches_per_m2=400)
+        state = build_body(body, rec.pose, scenario, patches_per_m2=400, model=body_model)
         frames = anim.synthetic_frames(state, booth, n_particles=1500)
         st.plotly_chart(anim.animation(frames, state, booth, title="합성 프레임 (물리 계산 아님)"),
                         **WIDE)
@@ -352,12 +368,14 @@ def main() -> None:
         if meta.exists():                      # render_frames.py --simulate 가 남긴 체형·자세
             m = json.loads(meta.read_text(encoding="utf-8"))
             poses = [PoseParams(**p) for p in m["poses"]]
-            state = build_body(BodyParams(**m["body"]), poses[cand] if cand < len(poses) else poses[0],
-                               scenarios[m["scenario"]], patches_per_m2=400)
-            st.caption(f"덤프 출처: {m.get('source', '?')} · 시나리오 {m['scenario']}")
+            state = build_body(BodyParams(**m["body"]) if m.get("body") else None,
+                               poses[cand] if cand < len(poses) else poses[0],
+                               scenarios[m["scenario"]], patches_per_m2=400, model=m.get("model"))
+            st.caption(f"덤프 출처: {m.get('source', '?')} · 시나리오 {m['scenario']} · "
+                       f"몸 모델 {m.get('model') or '설정 파일 기본값'}")
         else:
             st.caption("덤프를 만든 자세 정보(render_meta.json)가 없어 몸은 현재 체형·추천 자세로 그립니다.")
-            state = build_body(body, rec.pose, scenario, patches_per_m2=400)
+            state = build_body(body, rec.pose, scenario, patches_per_m2=400, model=body_model)
         st.plotly_chart(anim.animation(frames, state, booth, candidate=cand, title=choice),
                         **WIDE)
 

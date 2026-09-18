@@ -1,7 +1,8 @@
 """안내용 3D 마네킹 뷰 (plotly). 소유자: E. (`docs/tracks/E_realtime.md` 단계 1)
 
 B의 디버그 뷰(`debug3d.py`, matplotlib 산점도)와 달리 사람에게 "이 자세를 취하세요"를 보여주는
-그림이다. 캡슐을 메시로 그리고 부스·슬롯 바를 함께 그려 대시보드에 그대로 넣는다.
+그림이다. 몸(사람 메시 `build_body(..., model="mesh")` 또는 캡슐 마네킹)과 부스·슬롯 바를 함께 그려
+대시보드에 그대로 넣는다.
 
     from airis.viz.pose_view import figure_from_pose, figure_compare
     fig = figure_from_pose(BodyParams(), PoseParams(torso_yaw=90), scenarios["default"])
@@ -190,10 +191,16 @@ def body_traces(state: BodyState, values: np.ndarray | None = None, *,
                 cmin: float | None = None, cmax: float | None = None,
                 colorbar_title: str = "제거율", showscale: bool = True,
                 opacity: float = 1.0, n_theta: int = 24, n_cap: int = 6) -> list[go.Mesh3d]:
-    """캡슐을 메시로. `values (N,)`가 없으면 부위 색, 있으면 정점마다 가장 가까운 자기 캡슐 패치 값.
+    """몸을 그린다. `values (N,)`(패치 값, 예: 제거율)가 없으면 부위 색, 있으면 그 값의 색.
 
-    `capsule_part == -1`(휠체어 프레임 등 가림 전용)은 회색 반투명.
+    - 메시 몸(`state.mesh_vertices`가 있음, `build_body(..., model="mesh")`): 사람 메시를 그린다.
+      부위는 `mesh_face_part`, 값은 면마다 같은 부위의 가까운 패치 4개를 거리 역가중 평균한 뒤 정점으로 평균.
+    - 캡슐 몸: 캡슐을 메시로. 값은 정점마다 가장 가까운 자기 캡슐 패치 값.
+    - `capsule_part == -1`(휠체어 프레임 등 가림 전용)은 두 경우 모두 회색 반투명 캡슐.
     """
+    if state.mesh_vertices is not None and state.mesh_faces is not None:
+        return _human_mesh_traces(state, values, cmin=cmin, cmax=cmax, colorbar_title=colorbar_title,
+                                  showscale=showscale, opacity=opacity, n_theta=n_theta, n_cap=n_cap)
     caps = np.asarray(state.capsules, dtype=np.float64)
     cap_part = (np.asarray(state.capsule_part) if state.capsule_part is not None
                 else np.zeros(caps.shape[0], dtype=int))
@@ -237,6 +244,103 @@ def body_traces(state: BodyState, values: np.ndarray | None = None, *,
         showscale=showscale, colorbar=dict(title=colorbar_title, len=0.6),
         opacity=opacity, name=colorbar_title, hovertemplate=f"{colorbar_title} %{{intensity:.3f}}<extra></extra>",
         lighting=dict(ambient=0.6, diffuse=0.6, specular=0.1)))
+    return traces
+
+
+_MESH_LIGHTING = dict(ambient=0.5, diffuse=0.75, specular=0.15, roughness=0.6, fresnel=0.1)
+
+
+def _occluder_traces(state: BodyState, n_theta: int, n_cap: int) -> list[go.Mesh3d]:
+    """가림 전용 캡슐(`capsule_part == -1`, 휠체어 프레임) → 회색 반투명."""
+    if state.capsule_part is None:
+        return []
+    caps = np.asarray(state.capsules, dtype=np.float64)
+    ks = np.flatnonzero(np.asarray(state.capsule_part) < 0)
+    if ks.size == 0:
+        return []
+    v, f, _ = _merge_meshes([capsule_mesh(caps[k, 0:3], caps[k, 3:6], float(caps[k, 6]), n_theta, n_cap)
+                             for k in ks])
+    return [go.Mesh3d(x=v[:, 0], y=v[:, 1], z=v[:, 2], i=f[:, 0], j=f[:, 1], k=f[:, 2],
+                      color=OCCLUDER_COLOR, opacity=0.35, name="휠체어 프레임", hoverinfo="skip",
+                      showlegend=True, flatshading=False)]
+
+
+#: 메시 면 값 보간에 쓰는 이웃 패치 수 (거리 역가중)
+MESH_VALUE_NEIGHBORS = 4
+
+
+def mesh_face_values(state: BodyState, values: np.ndarray, k: int = MESH_VALUE_NEIGHBORS) -> np.ndarray:
+    """패치 값 (N,) → 메시 면 값 (F,).
+
+    면 중심에서 같은 부위 패치 k개를 찾아 거리 역가중 평균한다. sim 메시·400/m² 에서는 패치(약 700)가
+    면(약 5,600)보다 훨씬 적어, 패치가 놓인 면만 칠하거나 가장 가까운 한 개로 채우면 조각 무늬가 된다.
+    값 범위는 패치 값의 [최솟값, 최댓값] 안이다.
+    """
+    V = np.asarray(state.mesh_vertices, dtype=np.float64)
+    F = np.asarray(state.mesh_faces, dtype=np.int64)
+    values = np.asarray(values, dtype=np.float64).reshape(-1)
+    ppos = np.asarray(state.patch_pos, dtype=np.float64)
+    if values.shape[0] != ppos.shape[0]:
+        raise ValueError(f"values 길이 {values.shape[0]} != 패치 수 {ppos.shape[0]}")
+    n_f = F.shape[0]
+    centroid = V[F].mean(axis=1)
+    fpart = (np.asarray(state.mesh_face_part) if state.mesh_face_part is not None
+             else np.zeros(n_f, dtype=int))
+    ppart = np.asarray(state.patch_part)
+    out = np.empty(n_f)
+    for p in np.unique(fpart):
+        faces = np.flatnonzero(fpart == p)
+        src = np.flatnonzero(ppart == p)
+        if src.size == 0:                                  # 이 부위에 패치가 하나도 없으면 전체에서
+            src = np.arange(ppos.shape[0])
+        kk = min(k, src.size)
+        d, idx = cKDTree(ppos[src]).query(centroid[faces], k=kk)
+        d, idx = d.reshape(len(faces), kk), idx.reshape(len(faces), kk)
+        w = 1.0 / np.maximum(d, 1e-4)
+        out[faces] = (w * values[src[idx]]).sum(axis=1) / w.sum(axis=1)
+    return out
+
+
+def mesh_vertex_values(state: BodyState, face_values: np.ndarray) -> np.ndarray:
+    """면 값 (F,) → 정점 값 (V,) = 그 정점에 붙은 면 값의 평균 (색을 부드럽게 잇는다)."""
+    F = np.asarray(state.mesh_faces, dtype=np.int64)
+    n_v = np.asarray(state.mesh_vertices).shape[0]
+    total = np.zeros(n_v)
+    count = np.zeros(n_v)
+    for c in range(3):
+        np.add.at(total, F[:, c], face_values)
+        np.add.at(count, F[:, c], 1.0)
+    return np.divide(total, count, out=np.zeros(n_v), where=count > 0)
+
+
+def _human_mesh_traces(state: BodyState, values: np.ndarray | None, *, cmin, cmax, colorbar_title,
+                       showscale, opacity, n_theta, n_cap) -> list[go.Mesh3d]:
+    V = np.asarray(state.mesh_vertices, dtype=np.float64)
+    F = np.asarray(state.mesh_faces, dtype=np.int64)
+    traces = _occluder_traces(state, n_theta, n_cap)
+    if values is None:
+        part = (np.asarray(state.mesh_face_part) if state.mesh_face_part is not None
+                else np.zeros(F.shape[0], dtype=int))
+        for part_id, name in enumerate(PART_NAMES):
+            f = F[part == part_id]
+            if f.size == 0:
+                continue
+            traces.append(go.Mesh3d(
+                x=V[:, 0], y=V[:, 1], z=V[:, 2], i=f[:, 0], j=f[:, 1], k=f[:, 2],
+                color=PART_COLORS[name], opacity=opacity, name=name, hoverinfo="name",
+                showlegend=True, flatshading=False, lighting=_MESH_LIGHTING))
+        return traces
+    vert_val = mesh_vertex_values(state, mesh_face_values(state, values))
+    values = np.asarray(values, dtype=np.float64)
+    lo = float(np.nanmin(values)) if cmin is None else cmin
+    hi = float(np.nanmax(values)) if cmax is None else cmax
+    traces.append(go.Mesh3d(
+        x=V[:, 0], y=V[:, 1], z=V[:, 2], i=F[:, 0], j=F[:, 1], k=F[:, 2],
+        intensity=vert_val, colorscale=REMOVAL_COLORSCALE,
+        cmin=lo, cmax=max(hi, lo + 1e-9), showscale=showscale,
+        colorbar=dict(title=colorbar_title, len=0.6), opacity=opacity, name=colorbar_title,
+        hovertemplate=f"{colorbar_title} %{{intensity:.3f}}<extra></extra>", flatshading=False,
+        lighting=_MESH_LIGHTING))
     return traces
 
 
@@ -351,16 +455,19 @@ def figure_from_state(state: BodyState, values: np.ndarray | None = None,
     return fig
 
 
-def figure_from_pose(body: BodyParams, pose: PoseParams, scenario: Scenario, *,
+def figure_from_pose(body: BodyParams | None, pose: PoseParams, scenario: Scenario, *,
                      values: np.ndarray | None = None, result: EvalResult | None = None,
                      nozzle: NozzleConfig | None = None, booth: Mapping | None = None,
-                     patches_per_m2: float = 400.0, title: str = "", **kw) -> go.Figure:
+                     patches_per_m2: float = 400.0, title: str = "", model: str | None = None,
+                     **kw) -> go.Figure:
     """체형 + 자세 + 시나리오 → 그림. 슬롯 바(`load_nozzles()`)와 부스를 항상 함께 그린다.
 
-    패치 색은 `values` 또는 `result.extra["removal"]`. 둘 다 D의 `PatchEvaluator`와 **같은
-    `patches_per_m2`**로 만든 몸이어야 길이가 맞는다 (기본 400 = 최적화 루프 밀도).
+    `model`: `"mesh"`(사람 메시) | `"capsule"` | None(= `configs/physics.yaml` `body.model`).
+    `body`가 None이면 모델의 기본 체형 (메시는 `MESH_DEFAULT_BODY`).
+    패치 색은 `values` 또는 `result.extra["removal"]`. 둘 다 D의 `PatchEvaluator`와 **같은 몸 모델,
+    같은 `patches_per_m2`**로 만든 몸이어야 길이가 맞는다 (기본 400 = 최적화 루프 밀도).
     """
-    state = build_body(body, pose, scenario, patches_per_m2=patches_per_m2)
+    state = build_body(body, pose, scenario, patches_per_m2=patches_per_m2, model=model)
     if values is None and result is not None and "removal" in result.extra:
         values = result.extra["removal"]
     return figure_from_state(state, values, nozzle if nozzle is not None else load_nozzles(),
@@ -374,11 +481,12 @@ def pose_label(pose: PoseParams) -> str:
             f"회전 {pose.torso_yaw:.0f}° · 고관절 {pose.hip_flexion:.0f}° · 무릎 {pose.knee_flexion:.0f}°")
 
 
-def figure_compare(body: BodyParams, poses: Mapping[str, PoseParams], scenario: Scenario, *,
+def figure_compare(body: BodyParams | None, poses: Mapping[str, PoseParams], scenario: Scenario, *,
                    results: Mapping[str, EvalResult] | None = None,
                    nozzle: NozzleConfig | None = None, booth: Mapping | None = None,
                    patches_per_m2: float = 400.0, reference: str | None = None,
-                   camera: str = DEFAULT_CAMERA, height: int = 620) -> go.Figure:
+                   camera: str = DEFAULT_CAMERA, height: int = 620,
+                   model: str | None = None) -> go.Figure:
     """자세 여러 개를 나란히 (예: 기준 자세 B0 vs 추천 자세).
 
     `results[name]`이 있으면 패치를 제거율 색으로 칠하고(모든 칸 같은 색 범위), 제목에 점수와
@@ -415,7 +523,7 @@ def figure_compare(body: BodyParams, poses: Mapping[str, PoseParams], scenario: 
                         subplot_titles=titles, horizontal_spacing=0.01)
     scene_names = []
     for col, n in enumerate(names, start=1):
-        state = build_body(body, poses[n], scenario, patches_per_m2=patches_per_m2)
+        state = build_body(body, poses[n], scenario, patches_per_m2=patches_per_m2, model=model)
         r = results.get(n)
         values = None if r is None or r.extra.get("infeasible") else r.extra.get("removal")
         if values is not None and len(values) != state.patch_pos.shape[0]:
