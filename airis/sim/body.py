@@ -450,14 +450,33 @@ def _ellipsoid_area(a: float, b: float, c: float) -> float:
 # ---------------------------------------------------------------------------
 # 공개 API
 # ---------------------------------------------------------------------------
+BODY_MODELS = ("capsule", "mesh")
+
+
+@lru_cache(maxsize=1)
+def _configured_body_model() -> str:
+    from .scenario import load_physics
+    model = str(load_physics().get("body", {}).get("model", "capsule"))
+    if model not in BODY_MODELS:
+        raise ValueError(f"configs/physics.yaml body.model 은 {BODY_MODELS} 중 하나: {model!r}")
+    return model
+
+
 def build_body(body: BodyParams, pose: PoseParams, scenario: Scenario,
-               patches_per_m2: float = 2000.0) -> BodyState:
+               patches_per_m2: float = 2000.0, model: str | None = None) -> BodyState:
     """체형 + 자세 + 시나리오 → 패치와 캡슐로 표현된 마네킹.
 
-    `docs/interfaces.md` 의 build_body 계약을 따른다.
+    `docs/interfaces.md` 의 build_body 계약을 따른다. `model` 이 None 이면 `configs/physics.yaml`
+    `body.model` (`capsule` | `mesh`). `mesh` 는 MakeHuman 사람 메시 (`human_mesh.build_mesh_body`).
     """
     if patches_per_m2 <= 0.0:
         raise ValueError("patches_per_m2 는 양수여야 한다")
+    model = model if model is not None else _configured_body_model()
+    if model == "mesh":
+        from .human_mesh import build_mesh_body
+        return build_mesh_body(body, pose, scenario, patches_per_m2)
+    if model != "capsule":
+        raise ValueError(f"model 은 {BODY_MODELS} 중 하나: {model!r}")
 
     joints, dims, r_body = joint_positions(body, pose, scenario)
     segs = _segments(joints, dims, r_body, scenario)

@@ -341,10 +341,14 @@ def _default_booth() -> dict:
 
 def posed_in_booth(mesh: HumanMesh, body: BodyParams, pose: PoseParams,
                    scenario: Scenario | None = None, booth: Mapping | None = None) -> np.ndarray:
-    """자세를 입힌 정점 (V,3), 부스 좌표. 면은 `mesh.faces` 그대로. 시뮬레이션·안내 뷰의 진입점."""
+    """자세를 입힌 정점 (V,3), 부스 좌표. 면은 `mesh.faces` 그대로. 시뮬레이션·안내 뷰의 진입점.
+
+    체형 5개(`BodyParams`)를 뼈별 축척(`shape_mesh`)으로 맞춘 뒤 자세를 입히고 부스에 놓는다.
+    """
     if booth is None:
         booth = _default_booth()
-    return place_in_booth(pose_vertices(mesh, resolve_pose(pose, scenario)), mesh, body, booth,
+    shaped = shape_mesh(mesh, body, scenario)
+    return place_in_booth(pose_vertices(shaped, resolve_pose(pose, scenario)), shaped, body, booth,
                           scenario)
 
 
@@ -352,11 +356,555 @@ def pose_mesh(asset: HumanMesh | None, body: BodyParams | None, pose: PoseParams
               scenario: Scenario | None = None, booth: Mapping | None = None) -> np.ndarray:
     """자세를 입힌 정점 (V,3), 부스 좌표. `docs/interfaces.md` "airis/sim/human_mesh.py" 시그니처와 같다.
 
-    `asset` 이 None 이면 캐시한 MakeHuman 기본 메시, `body` 가 None 이면 `BodyParams()`(키 1.70 m 균일 축척).
-    면은 `asset.faces`. 체형은 아직 키만 맞춘다 (뼈별 축척·타깃은 B 이관 때)."""
+    `asset` 이 None 이면 캐시한 MakeHuman 기본 메시, `body` 가 None 이면 `BodyParams()`.
+    체형 5개를 뼈별 축척으로 맞춘다 (`shape_mesh`). 면은 `asset.faces`."""
     return posed_in_booth(asset if asset is not None else cached_makehuman(),
                           body if body is not None else BodyParams(), pose, scenario, booth)
 
 
 #: `docs/interfaces.md` 의 이름
 MeshAsset = HumanMesh
+
+
+# ---------------------------------------------------------------------------
+# 뼈 → 부위 (docs/mesh_transition.md "패치 샘플링 규약", B 설계 승인 2026-09-18)
+# ---------------------------------------------------------------------------
+_HEAD_PREFIXES = ("head", "jaw", "neck", "eye", "oculi", "orbicularis", "oris", "levator", "risorius",
+                  "tongue", "temporalis", "special")
+_TORSO_PREFIXES = ("root", "spine", "pelvis", "breast", "clavicle")
+_ARM_PREFIXES = ("shoulder", "upperarm", "lowerarm", "wrist", "metacarpal", "finger")
+_LEG_PREFIXES = ("upperleg", "lowerleg", "foot", "toe")
+
+
+def bone_part(name: str) -> int:
+    """MakeHuman 뼈 이름 → PART_NAMES 인덱스. 몸통은 torso_front (앞뒤는 법선으로 나중에 나눈다).
+
+    shoulder01(삼각근 윗부분)은 캡슐판 경계(어깨 관절부터 팔)와 맞춰 arms 다.
+    """
+    from .types import PART_NAMES
+    base = name.split(".")[0]
+    for prefixes, part in ((_HEAD_PREFIXES, "head"), (_TORSO_PREFIXES, "torso_front"),
+                           (_ARM_PREFIXES, "arms"), (_LEG_PREFIXES, "legs")):
+        if base.startswith(prefixes):
+            return PART_NAMES.index(part)
+    raise KeyError(f"부위를 정하지 않은 뼈: {name}")
+
+
+def mirror_bone_index(names: list[str]) -> np.ndarray:
+    """(B,) 좌우 짝 뼈 인덱스 (.L ↔ .R, 가운데 뼈는 자기 자신)."""
+    index = {n: i for i, n in enumerate(names)}
+
+    def swap(n: str) -> str:
+        if n.endswith(".L"):
+            return n[:-2] + ".R"
+        if n.endswith(".R"):
+            return n[:-2] + ".L"
+        return n
+    return np.array([index[swap(n)] for n in names])
+
+
+
+# ---------------------------------------------------------------------------
+# 체형 측정 (BodyParams 정의, docs/mesh_transition.md 8, 2026-09-18 확정)
+# ---------------------------------------------------------------------------
+#: 가슴 두께 단면 반높이 (m, 휴지 자세). "breast 뼈 머리 높이(유두선) ±1 cm 몸통 단면의 x 범위".
+CHEST_SLICE_HALF_M = 0.01
+
+
+def vertex_parts(mesh: HumanMesh) -> np.ndarray:
+    """(V,) 정점 부위 = 가중치 최댓값 뼈의 부위 (몸통은 torso_front)."""
+    W = mesh.weights
+    parts = np.array([bone_part(n) if W[:, i].any() else -1 for i, n in enumerate(mesh.bone_names)])
+    return parts[np.argmax(W, axis=1)]
+
+
+def measure_body(mesh: HumanMesh) -> dict[str, float]:
+    """휴지 자세 메시의 BodyParams 5개 (메시 단위 m, 관절 중심 기준).
+
+    - height_m: 정점 z 범위 (정수리 − 발바닥)
+    - shoulder_width_m: 좌우 upperarm01 머리(상완골 관절) 간격
+    - torso_depth_m: breast 뼈 머리 높이 ±1 cm 에 있는 몸통 부위 정점의 x 범위 (가슴 두께)
+    - arm_length_m: upperarm01 머리 → wrist 머리 (왼쪽)
+    - leg_length_m: 고관절 중심 z − 발바닥 z
+    """
+    from .types import PART_NAMES
+    h = mesh.bone_head
+    v = mesh.vertices
+    torso = vertex_parts(mesh) == PART_NAMES.index("torso_front")
+    zb = h[mesh.bone("breast.L"), 2]
+    band = torso & (np.abs(v[:, 2] - zb) <= CHEST_SLICE_HALF_M)
+    return {
+        "height_m": float(np.ptp(v[:, 2])),
+        "shoulder_width_m": float(np.linalg.norm(h[mesh.bone("upperarm01.L")] - h[mesh.bone("upperarm01.R")])),
+        "torso_depth_m": float(np.ptp(v[band, 0])),
+        "arm_length_m": float(np.linalg.norm(h[mesh.bone("upperarm01.L")] - h[mesh.bone("wrist.L")])),
+        "leg_length_m": float(mesh.hip_center[2] - v[:, 2].min()),
+    }
+
+
+def _chest_center_x(mesh: HumanMesh) -> float:
+    from .types import PART_NAMES
+    v = mesh.vertices
+    torso = vertex_parts(mesh) == PART_NAMES.index("torso_front")
+    band = torso & (np.abs(v[:, 2] - mesh.bone_head[mesh.bone("breast.L"), 2]) <= CHEST_SLICE_HALF_M)
+    return float(0.5 * (v[band, 0].min() + v[band, 0].max()))
+
+
+# ---------------------------------------------------------------------------
+# 체형 맞춤: 휴지 자세 뼈별 아핀 (B 설계, 2026-09-18 승인)
+# ---------------------------------------------------------------------------
+def _affine(A: np.ndarray, t: np.ndarray) -> np.ndarray:
+    M = np.eye(4)
+    M[:3, :3] = A
+    M[:3, 3] = t
+    return M
+
+
+def _bone_group(name: str) -> str:
+    base, _, side = name.partition(".")
+    if base.startswith(("upperleg", "lowerleg", "foot", "toe")):
+        return "leg"
+    if base.startswith("clavicle"):
+        return "clavicle"
+    if base.startswith("shoulder"):
+        return "shoulder"
+    if base.startswith("upperarm"):
+        return "upperarm"
+    if base.startswith("lowerarm"):
+        return "lowerarm"
+    if base.startswith(("wrist", "metacarpal", "finger")):
+        return "hand"
+    if base.startswith(("root", "spine", "pelvis", "breast")):
+        return "torso"
+    return "head"                                             # 목·머리·얼굴
+
+
+def shape_affines(mesh: HumanMesh, body: BodyParams) -> np.ndarray:
+    """(B,4,4) 휴지 자세 뼈별 아핀 S_b. 체형 정점 v' = (Σ_b w_vb S_b) v.
+
+    휴지 메시 단위(키 H0)에서 목표값을 s = body.height_m / H0 로 나눠 맞춘 뒤, 부스 배치가 s 로 균일 축척한다.
+      1. 다리: 고관절 높이 z 로 kL 배 (upperleg·lowerleg·foot·toe)
+      2. 몸통: 가슴 중심 x 기준 전후 kD 배(가슴 두께), 고관절 z 기준 상하 kT 배.
+         kT = 1 + (1 − kL)·LL0 / (z_neck − z_hip) 이라 다리가 길어진 만큼 몸통이 줄어 키가 H0 로 유지된다.
+      3. 목·머리: 몸통이 옮긴 목 밑(neck01 머리)만큼 평행이동 (모양 유지)
+      4. 쇄골: 몸통 변환 + 좌우 ky 배 (어깨 관절 간격)
+      5. 팔: 어깨 관절이 옮긴 만큼 평행이동 + 상완·전완을 각자 휴지 축 방향으로 kA 배 (어깨→손목),
+         손(wrist·metacarpal·finger)은 평행이동만
+    """
+    ref = _reference_mesh(mesh)                               # 측정 정의는 원본(고해상도) 메시 기준
+    m0 = measure_body(ref)
+    H0 = m0["height_m"]
+    s = body.height_m / H0
+    kL = (body.leg_length_m / s) / m0["leg_length_m"]
+    kD = (body.torso_depth_m / s) / m0["torso_depth_m"]
+    ky = (body.shoulder_width_m / s) / m0["shoulder_width_m"]
+    kA = (body.arm_length_m / s) / m0["arm_length_m"]
+    h = mesh.bone_head
+    z_hip = float(mesh.hip_center[2])
+    z_neck = float(h[mesh.bone("neck01"), 2])
+    kT = 1.0 + (1.0 - kL) * m0["leg_length_m"] / (z_neck - z_hip)
+    xc = _chest_center_x(ref)
+
+    torso = _affine(np.diag([kD, 1.0, kT]), np.array([xc * (1 - kD), 0.0, z_hip * (1 - kT)]))
+    clavicle = _affine(np.diag([kD, ky, kT]), torso[:3, 3])
+    leg = _affine(np.diag([1.0, 1.0, kL]), np.array([0.0, 0.0, z_hip * (1 - kL)]))
+    neck = h[mesh.bone("neck01")]
+    head = _affine(np.eye(3), torso[:3, :3] @ neck + torso[:3, 3] - neck)
+
+    arm: dict[str, dict[str, np.ndarray]] = {}
+    for side in ("L", "R"):
+        sh, el, wr = (h[mesh.bone(f"{b}.{side}")] for b in ("upperarm01", "lowerarm01", "wrist"))
+        a = (el - sh) / np.linalg.norm(el - sh)
+        b = (wr - el) / np.linalg.norm(wr - el)
+        d_sh = clavicle[:3, :3] @ sh + clavicle[:3, 3] - sh           # 어깨 관절 이동
+        Pa, Pb = (kA - 1.0) * np.outer(a, a), (kA - 1.0) * np.outer(b, b)
+        d_el = Pa @ (el - sh)
+        d_wr = d_el + Pb @ (wr - el)
+        arm[side] = {
+            "shoulder": _affine(np.eye(3), d_sh),
+            "upperarm": _affine(np.eye(3) + Pa, d_sh - Pa @ sh),
+            "lowerarm": _affine(np.eye(3) + Pb, d_sh + d_el - Pb @ el),
+            "hand": _affine(np.eye(3), d_sh + d_wr),
+        }
+
+    S = np.empty((len(mesh.bone_names), 4, 4))
+    for i, name in enumerate(mesh.bone_names):
+        g = _bone_group(name)
+        side = name.rpartition(".")[2]
+        if g in ("shoulder", "upperarm", "lowerarm", "hand"):
+            S[i] = arm[side][g]
+        else:
+            S[i] = {"torso": torso, "clavicle": clavicle, "leg": leg, "head": head}[g]
+    return S
+
+
+def _reference_mesh(mesh: HumanMesh) -> HumanMesh:
+    """체형 측정 기준 메시. sim 메시는 원본의 부분 정점이라 단면 측정(가슴 두께)이 달라지므로
+    원본 기본 메시로 잰 비율을 같은 뼈대에 그대로 적용한다 → sim 몸 = 맞춘 원본 몸의 데시메이션."""
+    return cached_makehuman() if isinstance(mesh, SimMesh) else mesh
+
+
+def _apply_affines(mesh: HumanMesh, S: np.ndarray) -> np.ndarray:
+    A = np.asarray(mesh._weights_csr @ S[:, :3, :].reshape(-1, 12)).reshape(-1, 3, 4)
+    return np.einsum("vij,vj->vi", A[:, :, :3], mesh.vertices) + A[:, :, 3]
+
+
+def shape_mesh(mesh: HumanMesh, body: BodyParams, scenario: Scenario | None = None) -> HumanMesh:
+    """체형을 맞춘 휴지 자세 메시 (같은 클래스, 새 인스턴스). 키는 휴지 키 H0 그대로 두고 부스 배치가 축척한다.
+
+    뼈 머리·꼬리도 각 뼈의 아핀으로 옮긴다 (자세 회전의 중심). 같은 (메시, 체형) 은 캐시한다.
+    """
+    targets = _scenario_targets(scenario)
+    key = (body.height_m, body.shoulder_width_m, body.torso_depth_m, body.arm_length_m, body.leg_length_m,
+           tuple(sorted(targets.items())))
+    cache = mesh.__dict__.setdefault("_shape_cache", {})
+    if key in cache:
+        return cache[key]
+    S = shape_affines(mesh, body)
+    head = np.einsum("bij,bj->bi", S[:, :3, :3], mesh.bone_head) + S[:, :3, 3]
+    tail = np.einsum("bij,bj->bi", S[:, :3, :3], mesh.bone_tail) + S[:, :3, 3]
+    fields = {f: getattr(mesh, f) for f in mesh.__dataclass_fields__}
+    base = fields["vertices"]
+    if targets:                                     # 모디파이어 타깃은 체형 축척 전 휴지 정점에 더한다
+        base = base + sum(w * target_displacement(mesh, name) for name, w in targets.items())
+    fields.update(vertices=base, bone_head=head, bone_tail=tail)
+    fields.update(vertices=_apply_affines(type(mesh)(**fields), S))
+    shaped = type(mesh)(**fields)
+    shaped.__dict__["_shape_cache"] = {key: shaped}           # 이미 맞춘 메시를 다시 맞추지 않게
+    if len(cache) > 64:
+        cache.clear()
+    cache[key] = shaped
+    return shaped
+
+
+# ---------------------------------------------------------------------------
+# sim 메시 (scripts/build_sim_mesh.py 가 만든 약 5.6k 삼각형, 좌우 대칭)
+# ---------------------------------------------------------------------------
+SIM_MESH_FILE = MAKEHUMAN_DIR / "sim_mesh.npz"
+
+
+@dataclass
+class SimMesh(HumanMesh):
+    """데시메이션한 시뮬레이션 메시. `HumanMesh` 연산(자세·체형·부스 배치)을 그대로 쓴다."""
+    face_part: np.ndarray | None = None          # (F,) PART_NAMES 인덱스 (몸통은 torso_front)
+    mirror_vertex: np.ndarray | None = None      # (V,)
+    mirror_face: np.ndarray | None = None        # (F,)
+    mirror_face_perm: np.ndarray | None = None   # (F,3)
+    obj_vertex: np.ndarray | None = None         # (V,) base.obj 정점 번호
+
+    @property
+    def height_m(self) -> float:
+        """원본 기본 메시의 휴지 키 H0. 체형 맞춤은 키를 H0 로 유지하고, sim 은 원본의 부분 정점이라
+        정수리·발바닥 정점이 조금 다를 수 있으므로 부스 축척을 원본과 같게 둔다."""
+        return cached_makehuman().height_m
+
+
+def load_sim_mesh(path: Path | str | None = None) -> SimMesh:
+    d = np.load(Path(path) if path is not None else SIM_MESH_FILE, allow_pickle=False)
+    nv, nb = d["vertices"].shape[0], d["bone_names"].shape[0]
+    W = np.zeros((nv, nb))
+    rows = np.repeat(np.arange(nv), d["weight_bone"].shape[1])
+    np.add.at(W, (rows, d["weight_bone"].ravel().astype(np.int64)), d["weight_val"].ravel())
+    return SimMesh(
+        vertices=d["vertices"].astype(np.float64), faces=d["faces"].astype(np.int64),
+        bone_names=[str(n) for n in d["bone_names"]], bone_parent=d["bone_parent"].astype(np.int64),
+        bone_head=d["bone_head"], bone_tail=d["bone_tail"], weights=W, source=str(d["source"]),
+        face_part=d["face_part"].astype(np.int64), mirror_vertex=d["mirror_vertex"].astype(np.int64),
+        mirror_face=d["mirror_face"].astype(np.int64), mirror_face_perm=d["mirror_face_perm"].astype(np.int64),
+        obj_vertex=d["obj_vertex"].astype(np.int64),
+    )
+
+
+@lru_cache(maxsize=2)
+def cached_sim_mesh(path: str = str(SIM_MESH_FILE)) -> SimMesh:
+    return load_sim_mesh(path)
+
+
+
+# ---------------------------------------------------------------------------
+# 메시 몸 → BodyState (docs/mesh_transition.md "패치 샘플링 규약", interfaces.md build_body 메시 계약)
+# ---------------------------------------------------------------------------
+#: 면별 확률 반올림용 난수 씨앗 (결정론). 거울 짝 면은 같은 값을 쓴다.
+_PATCH_SEED = 20260918
+#: torso_front/back 판정 허용치 (body.py `_FRONT_BACK_TOL` 과 같은 규칙, #42)
+_FRONT_BACK_TOL = 1e-9
+
+
+def _halton(i: np.ndarray, base: int) -> np.ndarray:
+    f = np.ones_like(i, dtype=np.float64)
+    r = np.zeros_like(i, dtype=np.float64)
+    i = i.astype(np.int64).copy()
+    while (i > 0).any():
+        f = f / base
+        r = r + f * (i % base)
+        i = i // base
+    return r
+
+
+def _canonical_faces(mesh: SimMesh) -> np.ndarray:
+    """(F,) 거울 짝 중 작은 번호. 짝 면은 같은 표본 수·같은 무게중심 좌표(순서만 치환)를 쓴다."""
+    return np.minimum(np.arange(len(mesh.faces)), mesh.mirror_face)
+
+
+def _face_areas(v: np.ndarray, f: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    cr = np.cross(v[f[:, 1]] - v[f[:, 0]], v[f[:, 2]] - v[f[:, 0]])
+    a2 = np.linalg.norm(cr, axis=1)
+    return 0.5 * a2, cr / np.maximum(a2, 1e-30)[:, None]
+
+
+def _patch_counts(shaped: SimMesh, scale: float, patches_per_m2: float) -> tuple[np.ndarray, np.ndarray]:
+    """(F,) 면별 패치 수와 기대 패치 수. 체형 맞춘 휴지 면적(부스 축척) × 밀도를 확률 반올림한다.
+
+    자세와 무관하다 (같은 체형이면 자세가 바뀌어도 패치 수·면 배정이 같다). 거울 짝 면은 면적 평균과
+    같은 난수를 써서 수가 정확히 같다.
+    """
+    area, _ = _face_areas(shaped.vertices, shaped.faces)
+    area = 0.5 * (area + area[shaped.mirror_face]) * scale * scale
+    expect = area * patches_per_m2
+    base = np.floor(expect)
+    u = np.random.default_rng(_PATCH_SEED).random(len(area))[_canonical_faces(shaped)]
+    return (base + (u < expect - base)).astype(np.int64), expect
+
+
+def _barycentric(counts: np.ndarray, mesh: SimMesh) -> tuple[np.ndarray, np.ndarray]:
+    """(N,) 면 번호와 (N,3) 무게중심 좌표. 면 안 k 번째 점은 (k + ½)/n 층화 + Halton(3) (결정론).
+
+    거울 짝 면(정점 순서 [0,2,1])은 같은 좌표를 [0,2,1] 로 치환해 정확히 거울 위치에 놓는다.
+    """
+    face = np.repeat(np.arange(len(counts)), counts)
+    start = np.repeat(np.cumsum(counts) - counts, counts)
+    k = np.arange(len(face)) - start
+    n = counts[face]
+    r1 = (k + 0.5) / n
+    r2 = _halton(k + 1, 3)
+    sq = np.sqrt(r1)
+    bary = np.stack([1.0 - sq, sq * (1.0 - r2), sq * r2], axis=1)
+    flip = _canonical_faces(mesh)[face] != face
+    bary[flip] = bary[flip][:, [0, 2, 1]]
+    return face, bary
+
+
+# --- 근사 캡슐 (A 입자 충돌·D 캡슐 폴백). 휴지 체형에서 맞추고 자세는 주 뼈 변환으로 강체 이동 ---
+_TORSO_BANDS = 5
+_CAPSULE_RADIUS_PERCENTILE = 75.0
+
+
+def _capsule_groups(mesh: HumanMesh) -> tuple[np.ndarray, list[tuple[str, int]]]:
+    """(V,) 정점별 캡슐 번호와 [(이름, 부위)] 목록. 몸통은 고관절~목 밑을 높이 띠로 나눈다."""
+    from .types import PART_NAMES
+    W = mesh.weights
+    names = mesh.bone_names
+    arg = np.argmax(W, axis=1)
+    part = vertex_parts(mesh)
+    z = mesh.vertices[:, 2]
+    z0, z1 = float(mesh.hip_center[2]) - 0.12, float(mesh.bone_head[mesh.bone("neck01"), 2])
+    groups: list[tuple[str, int]] = []
+    gid = np.full(len(z), -1)
+
+    def add(label: str, part_name: str, mask: np.ndarray) -> None:
+        gid[mask & (gid < 0)] = len(groups)
+        groups.append((label, PART_NAMES.index(part_name)))
+
+    base = np.array([names[b].split(".")[0] for b in arg])
+    side = np.array([names[b].rpartition(".")[2] if "." in names[b] else "" for b in arg])
+    add("neck", "head", np.char.startswith(base, "neck"))
+    add("head", "head", part == PART_NAMES.index("head"))
+    for sd in ("L", "R"):
+        add(f"upperarm.{sd}", "arms", (side == sd) & (np.char.startswith(base, "upperarm")
+                                                        | np.char.startswith(base, "shoulder")))
+        add(f"lowerarm.{sd}", "arms", (side == sd) & np.char.startswith(base, "lowerarm"))
+        add(f"hand.{sd}", "arms", (side == sd) & (part == PART_NAMES.index("arms")))
+        add(f"upperleg.{sd}", "legs", (side == sd) & np.char.startswith(base, "upperleg"))
+        add(f"lowerleg.{sd}", "legs", (side == sd) & np.char.startswith(base, "lowerleg"))
+        add(f"foot.{sd}", "legs", (side == sd) & (part == PART_NAMES.index("legs")))
+    torso = part == PART_NAMES.index("torso_front")
+    edges = np.linspace(z0, z1, _TORSO_BANDS + 1)
+    band = np.clip(np.searchsorted(edges, z, side="right") - 1, 0, _TORSO_BANDS - 1)
+    for k in range(_TORSO_BANDS):
+        add(f"torso{k}", "torso_front", torso & (band == k))
+    assert (gid >= 0).all()
+    return gid, groups
+
+
+def _fit_capsules(shaped: HumanMesh) -> dict:
+    """휴지(체형 맞춤) 좌표의 캡슐 (K,7), 부위 (K,), 주 뼈 (K,), 정점별 캡슐 번호 (V,).
+
+    주성분 축 위 투영 범위 [t_min + r, t_max − r], 반지름 r = 축까지 거리의 75 백분위.
+    좌우 짝 캡슐은 왼쪽을 맞춘 뒤 y 반사로 만들어 정확히 대칭이다.
+    """
+    gid, groups = _capsule_groups(shaped)
+    v = shaped.vertices
+    arg = np.argmax(shaped.weights, axis=1)
+    label_index = {g[0]: i for i, g in enumerate(groups)}
+    mb = mirror_bone_index(shaped.bone_names)
+    caps = np.zeros((len(groups), 7))
+    driver = np.zeros(len(groups), dtype=np.int64)
+    M = np.array([1.0, -1.0, 1.0])
+    for i, (label, _) in enumerate(groups):
+        if label.endswith(".R"):
+            continue
+        pts = v[gid == i]
+        c = pts.mean(axis=0)
+        if not label.endswith(".L"):                          # 가운데 캡슐은 축을 좌우 대칭으로 맞춘다
+            c[1] = 0.0
+        _, _, vt = np.linalg.svd(pts - c, full_matrices=False)
+        a = vt[0]
+        if label.startswith("torso"):                         # 몸통 띠: 좌우(y) 축 캡슐
+            a = np.array([0.0, 1.0, 0.0])
+        elif not label.endswith(".L"):                        # 목·머리: 대칭면(xz) 안의 주축
+            _, _, vt2 = np.linalg.svd((pts - c)[:, [0, 2]], full_matrices=False)
+            a = np.array([vt2[0, 0], 0.0, vt2[0, 1]])
+        t = (pts - c) @ a
+        radial = np.linalg.norm((pts - c) - t[:, None] * a, axis=1)
+        r = float(np.percentile(radial, _CAPSULE_RADIUS_PERCENTILE))
+        lo, hi = t.min() + r, t.max() - r
+        if hi < lo:
+            lo = hi = 0.5 * (t.min() + t.max())
+        caps[i] = np.concatenate([c + lo * a, c + hi * a, [r]])
+        bones, counts = np.unique(arg[gid == i], return_counts=True)
+        driver[i] = bones[np.argmax(counts)]
+        if label.endswith(".L"):
+            j = label_index[label[:-2] + ".R"]
+            caps[j] = np.concatenate([caps[i, :3] * M, caps[i, 3:6] * M, [r]])
+            driver[j] = mb[driver[i]]
+    parts = np.array([g[1] for g in groups], dtype=np.int32)
+    return {"caps": caps, "part": parts, "driver": driver, "vertex_capsule": gid}
+
+
+def build_mesh_body(body: BodyParams, pose: PoseParams, scenario: Scenario,
+                    patches_per_m2: float = 2000.0, mesh: SimMesh | None = None) -> "BodyState":
+    """MakeHuman sim 메시 몸 → `BodyState` (interfaces.md build_body 메시 계약).
+
+    - mesh_vertices/mesh_faces/mesh_face_part: 자세·체형 적용, 부스 좌표. 몸통 면은 법선으로 앞뒤.
+    - 패치: 면 위 점, 면적 비례(체형 휴지 면적 기준 확률 반올림), 법선 = 면 법선, 부위 = 면 부위.
+      y → −y 거울 짝이 정확하다 (#42 규칙).
+    - capsules/capsule_part: 뼈에 맞춘 근사 캡슐 (몸통 여러 개 = torso_front) + 휠체어 프레임(−1).
+    - patch_capsule: 패치가 놓인 면의 캡슐 (캡슐 폴백용).
+    """
+    from scipy.spatial.transform import Rotation
+
+    from .body import _wheelchair_segments, _capsule_array
+    from .types import PART_NAMES, BodyState
+
+    if patches_per_m2 <= 0.0:
+        raise ValueError("patches_per_m2 는 양수여야 한다")
+    mesh = mesh if mesh is not None else cached_sim_mesh()
+    shaped = shape_mesh(mesh, body, scenario)
+    booth = _default_booth()
+    p = resolve_pose(pose, scenario)
+    M = bone_transforms(shaped, p)
+    A = np.asarray(shaped._weights_csr @ M[:, :3, :].reshape(-1, 12)).reshape(-1, 3, 4)
+    rest_posed = np.einsum("vij,vj->vi", A[:, :, :3], shaped.vertices) + A[:, :, 3]
+
+    # 부스 배치 (place_in_booth 와 같은 식을 캡슐에도 쓰려고 풀어 쓴다)
+    scale = body.height_m / shaped.height_m
+    hip = shaped.hip_center
+    verts = (rest_posed - hip) * scale
+    offset = np.array([float(booth["length_m"]) / 2.0, 0.0, 0.0])
+    if scenario is not None and scenario.seat_height_m is not None:
+        offset[2] = float(scenario.seat_height_m)
+    else:
+        offset[2] = -verts[:, 2].min()
+    verts = verts + offset
+
+    faces = shaped.faces
+    f_area, f_normal = _face_areas(verts, faces)
+    r_body = Rotation.from_euler("z", p.torso_yaw, degrees=True) * Rotation.from_euler("y", p.torso_pitch,
+                                                                                      degrees=True)
+    forward = r_body.apply([1.0, 0.0, 0.0])
+    front, back = PART_NAMES.index("torso_front"), PART_NAMES.index("torso_back")
+    face_part = np.where((shaped.face_part == front) & (f_normal @ forward <= _FRONT_BACK_TOL),
+                         back, shaped.face_part)
+
+    counts, expect = _patch_counts(shaped, scale, patches_per_m2)
+    pf, bary = _barycentric(counts, shaped)
+    tri = verts[faces[pf]]                                                 # (N,3,3)
+    patch_pos = np.einsum("nk,nkd->nd", bary, tri)
+    # 패치 면적 = 면 면적 / 기대 패치 수 (≈ 1/밀도). "면 면적 / 실제 패치 수" 로 하면 패치가 없는 면의
+    # 면적이 빠지고(400/m² 에서 표면적의 약 30% 만 남음), 뽑힌 면이 면적² 에 비례해 가중돼 면적 가중
+    # 평균이 큰 면 쪽으로 치우친다. 기대값으로 나누면 면마다 기대 합이 그 면 면적이라 편향이 없다.
+    patch_area = f_area[pf] / expect[pf]
+
+    fit = shaped.__dict__.get("_capsule_fit")
+    if fit is None:
+        fit = _fit_capsules(shaped)
+        shaped.__dict__["_capsule_fit"] = fit
+    caps = fit["caps"].copy()
+    Md = M[fit["driver"]]
+    for k in (0, 3):
+        pts = caps[:, k:k + 3]
+        caps[:, k:k + 3] = (np.einsum("kij,kj->ki", Md[:, :3, :3], pts) + Md[:, :3, 3] - hip) * scale + offset
+    caps[:, 6] *= scale
+    cap_part = fit["part"]
+    if scenario is not None and scenario.name == "wheelchair":
+        hip_booth = (np.einsum("ij,j->i", M[shaped.bone("root"), :3, :3], hip)
+                     + M[shaped.bone("root"), :3, 3] - hip) * scale + offset
+        wc = _capsule_array(_wheelchair_segments({"pelvis": hip_booth}, r_body)).astype(np.float64)
+        caps = np.concatenate([caps, wc])
+        cap_part = np.concatenate([cap_part, np.full(len(wc), -1, dtype=np.int32)])
+    vcap = fit["vertex_capsule"][faces]                                    # (F,3)
+    face_cap = np.where(vcap[:, 1] == vcap[:, 2], vcap[:, 1], vcap[:, 0])  # 세 정점 중 다수
+
+    return BodyState(
+        patch_pos=patch_pos.astype(np.float32),
+        patch_normal=f_normal[pf].astype(np.float32),
+        patch_area=patch_area.astype(np.float32),
+        patch_part=face_part[pf].astype(np.int32),
+        capsules=caps.astype(np.float32),
+        capsule_part=cap_part.astype(np.int32),
+        patch_capsule=face_cap[pf].astype(np.int32),
+        mesh_vertices=verts.astype(np.float32),
+        mesh_faces=faces.astype(np.int32),
+        mesh_face_part=face_part.astype(np.int32),
+        patch_face=pf.astype(np.int32),
+    )
+
+
+
+# ---------------------------------------------------------------------------
+# MakeHuman 모디파이어 타깃 (임산부 배 등). 파일 형식: 줄마다 "base.obj 정점 번호 dx dy dz" (MakeHuman 축, dm)
+# ---------------------------------------------------------------------------
+def _scenario_targets(scenario: Scenario | None) -> dict[str, float]:
+    """시나리오의 메시 타깃 중 파일이 있는 것만 {이름: 가중치}."""
+    if scenario is None:
+        return {}
+    from .scenario import scenario_mesh_targets
+    return {n: w for n, w in scenario_mesh_targets(scenario.name).items()
+            if (MAKEHUMAN_DIR / f"{n}.target").exists()}
+
+
+def scenario_targets_names(name: str) -> list[str]:
+    """설정(scenarios.yaml mesh_targets)에 적힌 타깃 이름 (파일 유무와 무관)."""
+    from .scenario import scenario_mesh_targets
+    return sorted(scenario_mesh_targets(name))
+
+
+def read_target(path: Path | str) -> dict[int, np.ndarray]:
+    """MakeHuman .target → {base.obj 정점 번호: 변위 (우리 축, m)}."""
+    out: dict[int, np.ndarray] = {}
+    for line in Path(path).read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        idx, dx, dy, dz = line.split()[:4]
+        out[int(idx)] = (_MH_TO_OURS @ np.array([float(dx), float(dy), float(dz)])) * _DM_TO_M
+    return out
+
+
+def target_displacement(mesh: HumanMesh, name: str, directory: Path | None = None) -> np.ndarray:
+    """(V,3) 이 메시 정점에 대응하는 타깃 변위. 원본 메시는 body 정점 순서, sim 메시는 obj_vertex 로 찾는다."""
+    d = Path(directory) if directory is not None else MAKEHUMAN_DIR
+    cache = mesh.__dict__.setdefault("_target_cache", {})
+    key = (str(d), name)
+    if key not in cache:
+        tgt = read_target(d / f"{name}.target")
+        if isinstance(mesh, SimMesh) and mesh.obj_vertex is not None:
+            obj = mesh.obj_vertex
+        else:
+            _, _, obj = _read_obj_body(MAKEHUMAN_DIR / "base.obj")
+        disp = np.zeros((len(obj), 3))
+        for i, o in enumerate(obj):
+            if int(o) in tgt:
+                disp[i] = tgt[int(o)]
+        cache[key] = disp
+    return cache[key]
