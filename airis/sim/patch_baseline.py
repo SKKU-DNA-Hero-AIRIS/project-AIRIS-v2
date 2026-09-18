@@ -8,7 +8,8 @@
 흐름 (`docs/tracks/D_patch_baseline.md` 단계 4)
 
     state   = build_body(body, pose, scenario)
-    u_mn    = velocity_field_per_nozzle(patch_pos + d·n, nozzle, t=0, cfg)   # (M,N,3)
+    u_mn    = velocity_field_per_nozzle(patch_pos + d·n, nozzle, t=0, cfg,
+                                        surface_normals=patch_normal)        # (M,N,3), 4.2b 보정
     visible = occlusion(state, nozzle, cfg)                                  # (M,N) 0~1
     u       = sum_m u_mn · visible[m]                                        # (N,3)
     tau     = scoring.wall_shear(u, patch_normal, cfg)                       # (N,)
@@ -38,8 +39,9 @@ from .types import PART_NAMES, BodyParams, BodyState, EvalResult, NozzleConfig, 
 _EPS = 1e-12
 # 후보 거르기 여유. float32 반올림보다 충분히 커서 거르기가 항상 보수적이 되게 한다.
 _CONE_SLACK = 1e-4
-# 슬롯 노즐 가림을 볼 때 슬롯을 따라 찍는 점 수 (양 끝 포함, 등간격).
-SLOT_OCCLUSION_POINTS = 5
+# 슬롯 노즐 가림을 볼 때 슬롯을 따라 찍는 점 수 (양 끝 포함, 등간격). 기본 3은 속도와 정확도의
+# 절충이다 (400/m², K=9 대비 Spearman 0.994). 검증에는 `PatchEvaluator(slot_points=5)`를 쓴다.
+SLOT_OCCLUSION_POINTS = 3
 # 부스 밖 자세의 벌점 (00_common.md 5절): score = INFEASIBLE_BASE - INFEASIBLE_SLOPE_PER_M · d_out.
 INFEASIBLE_BASE = -1.0
 INFEASIBLE_SLOPE_PER_M = 10.0
@@ -291,7 +293,9 @@ class PatchEvaluator(Evaluator):
         probe = np.asarray(state.patch_pos, dtype=np.float64) + delta * normal
 
         # 정상 상태 평가라 t = 0. 펄스는 무시한다 (00_common.md 4.1).
-        u_mn = np.asarray(self._velocity_field_per_nozzle(probe, nozzle, 0.0, self.cfg))  # (M,N,3)
+        # 법선을 넘겨 충돌 제트 -> 벽면 제트 보정(00_common.md 4.2b)을 받는다.
+        u_mn = np.asarray(self._velocity_field_per_nozzle(
+            probe, nozzle, 0.0, self.cfg, surface_normals=normal))                       # (M,N,3)
         visible = occlusion(state, nozzle, self.cfg, self.slot_points)                    # (M,N) 0~1
         # 보이는 비율을 곱해 합산한다. (M,N,3) 마스크 곱 대신 축약 합으로 한 번에.
         u = np.einsum("mnk,mn->nk", u_mn, visible.astype(u_mn.dtype)).astype(np.float64)
