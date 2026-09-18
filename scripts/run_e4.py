@@ -12,6 +12,12 @@
     outputs/<group_id>/best_poses.json    시드별 best 자세, 시나리오별 평균 자세, 기준선 점수
     outputs/<group_id>/baselines.csv      이번 묶음에서 평가한 B0, B1, B2
 
+재채점 (--rescore-patches-per-m2, 패치판 기본 2000):
+    탐색은 400/m² 로 빠르게 하되, 400/m² 패치 격자는 좌우 거울 대칭이 아니라 같은 자세의
+    yaw ±θ 점수가 최대 약 3% 다르고 CMA-ES 가 그 격자 잡음을 이용할 수 있다.
+    그래서 시드별 best 자세와 B0·B1·B2 를 더 촘촘한 밀도로 다시 평가해 rescore_* 열로 함께 남긴다.
+    0 이면 끈다. 패치판이 아니면 무시한다.
+
 요약 파일은 실행 묶음마다 <group_id> 폴더에 따로 남긴다 (다시 돌려도 이전 요약을 덮어쓰지 않는다).
 docs/tracks/C_optimize.md 단계 7.
 """
@@ -47,6 +53,8 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--tol-stagnation-gens", type=int, default=30)
     ap.add_argument("--patches-per-m2", type=float, default=cli.DEFAULT_PATCHES_PER_M2,
                     help="패치판 표면 패치 밀도 (--evaluator patch 에만 적용)")
+    ap.add_argument("--rescore-patches-per-m2", type=float, default=2000.0,
+                    help="best 자세·기준선 재채점 밀도 (패치판만, 0 이면 끔)")
     ap.add_argument("--body", default=None, help="BodyParams 덮어쓰기 JSON")
     ap.add_argument("--tag", default="e4", help="exp_id·group_id 접두어")
     ap.add_argument("--log-dir", default=str(ROOT / "outputs"))
@@ -90,6 +98,7 @@ def main(argv: list[str] | None = None) -> int:
           f"nozzles={nozzle.count}({nozzle_source})"
           + (f" patches_per_m2={args.patches_per_m2:g}" if args.evaluator == "patch" else ""))
 
+    rescore = args.evaluator == "patch" and args.rescore_patches_per_m2 > 0
     summary_rows: list[dict] = []
     baseline_rows: list[dict] = []
     poses_out: dict = {
@@ -153,11 +162,27 @@ def main(argv: list[str] | None = None) -> int:
                   f"{result.elapsed_s:6.1f} s  [{exp_id}]")
 
         summary = e4.summarize_scenario(runs, base)
-        summary_rows.append({"scenario": name, **summary})
+        row = {"scenario": name, **summary}
+        if rescore:
+            # 같은 자세를 촘촘한 격자로 다시 평가한다 (탐색은 하지 않는다).
+            fine = cli.make_evaluator(args.evaluator, scenario, body=body, nozzle=nozzle,
+                                      patches_per_m2=args.rescore_patches_per_m2)
+            base_fine = baselines.evaluate_all(fine, nozzle, body, scenario)
+            for r in runs:
+                r["rescore_score"] = float(fine.evaluate(r["best_pose"], nozzle, body, scenario).score)
+            fine_summary = e4.summarize_scenario(
+                [{**r, "best_score": r["rescore_score"]} for r in runs], base_fine)
+            row["rescore_patches_per_m2"] = args.rescore_patches_per_m2
+            for key in ("best_mean", "best_std", "best_min", "best_max"):
+                row[f"rescore_{key}"] = fine_summary[key]
+            for b in e4.BASELINE_NAMES:
+                for key in (f"{b}_score", f"{b}_infeasible", f"imp_vs_{b}"):
+                    row[f"rescore_{key}"] = fine_summary[key]
+        summary_rows.append(row)
         poses_out["scenarios"][name] = {
             "runs": [{
                 "exp_id": r["exp_id"], "seed": r["seed"], "best_score": r["best_score"],
-                "total_removal": r["total_removal"], "best_start": e4.winning_start(r["per_start"]),
+                "rescore_score": r.get("rescore_score"), "total_removal": r["total_removal"], "best_start": e4.winning_start(r["per_start"]),
                 "pose": cli.pose_dict(r["best_pose"]), "pose_folded": e4.fold_pose(r["best_pose"]),
             } for r in runs],
             "mean_pose_folded": {k: summary[f"pose_mean_{k}"] for k in e4.POSE_KEYS},
@@ -182,6 +207,15 @@ def main(argv: list[str] | None = None) -> int:
         print(f"{row['scenario']:<12}{row['best_mean']:>11.4f}{row['best_std']:>10.4f}{imps}"
               f"{row['pose_std_torso_yaw']:>11.1f}{row['pose_std_shoulder_abduction']:>10.1f}"
               f"  {row['best_start_counts']}")
+    if rescore:
+        print()
+        print(f"재채점 ({args.rescore_patches_per_m2:g}/m², 같은 자세)")
+        for row in summary_rows:
+            imps = "".join(
+                f"{'불가':>9}" if row[f"rescore_{b}_infeasible"] else f"{row[f'rescore_imp_vs_{b}']:>+9.0%}"
+                for b in e4.BASELINE_NAMES
+            )
+            print(f"{row['scenario']:<12}{row['rescore_best_mean']:>11.4f}{row['rescore_best_std']:>10.4f}{imps}")
     print()
     print(f"저장 위치    {group_dir}")
     return 0

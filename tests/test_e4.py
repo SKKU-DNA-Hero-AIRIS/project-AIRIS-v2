@@ -85,6 +85,7 @@ def test_run_e4_dummy_writes_summary(tmp_path):
     assert [r["scenario"] for r in rows] == ["default", "wheelchair"]
     for r in rows:
         assert r["n_seeds"] == "2"
+        assert "rescore_best_mean" not in r, "재채점은 패치판에서만"
         for key in ("imp_vs_B0", "imp_vs_B1", "imp_vs_B2", "pose_std_torso_yaw", "best_start_counts"):
             assert key in r
 
@@ -116,3 +117,23 @@ def test_run_e4_rejects_unknown_scenario(tmp_path):
     from scripts.run_e4 import main
 
     assert main(["--evaluator", "dummy", "--scenarios", "nope", "--log-dir", str(tmp_path)]) == 2
+
+
+def test_run_e4_patch_rescore(tmp_path):
+    """패치판은 best 자세·기준선을 촘촘한 밀도로 재채점해 rescore_* 열을 남긴다 (짧게)."""
+    from scripts.run_e4 import main
+
+    code = main([
+        "--evaluator", "patch", "--scenarios", "default", "--seeds", "0",
+        "--max-evals", "8", "--popsize", "4", "--starts", "default",
+        "--patches-per-m2", "100", "--rescore-patches-per-m2", "400", "--log-dir", str(tmp_path),
+    ])
+    assert code == 0
+    (group,) = [p for p in tmp_path.iterdir() if p.is_dir() and (p / "e4_summary.csv").exists()]
+    with (group / "e4_summary.csv").open(encoding="utf-8") as fh:
+        (row,) = list(csv.DictReader(fh))
+    assert row["rescore_patches_per_m2"] == "400.0"
+    for key in ("rescore_best_mean", "rescore_imp_vs_B0", "rescore_B1_score"):
+        assert row[key] != ""
+    poses = json.loads((group / "best_poses.json").read_text(encoding="utf-8"))
+    assert poses["scenarios"]["default"]["runs"][0]["rescore_score"] is not None
