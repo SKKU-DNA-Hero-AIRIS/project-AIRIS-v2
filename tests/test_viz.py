@@ -382,6 +382,11 @@ def test_resolve_pose_applies_wheelchair_fixed_pose():
 
 
 # 아래는 저장소에 커밋한 MakeHuman 자산(data/meshes/makehuman/, CC0)을 쓴다.
+# 메시 기본 체형 (관절 중심 정의, 키 1.70 축척): 키, 어깨 관절 간격, 가슴 두께, 상완+전완, 고관절 높이.
+# 전역 BodyParams() 기본값(0.42/0.62/0.85)은 캡슐 시절 값이라, B의 메시 build_body 가 5개를 모두 뼈 축척에
+# 반영하면 팔이 0.62 m로 늘어 만세 손끝이 천장을 넘는다. 전역 기본값을 바꾸기(5단계) 전까지 명시한다.
+MESH_BODY = BodyParams(height_m=1.70, shoulder_width_m=0.342, torso_depth_m=0.194,
+                       arm_length_m=0.463, leg_length_m=0.883)
 @pytest.fixture(scope="module")
 def mh():
     return hm.cached_makehuman()
@@ -401,9 +406,9 @@ def test_makehuman_load(mh):
 @pytest.mark.parametrize("pose", MESH_POSES[:3])
 def test_makehuman_posed_in_booth(mh, scenario, pose):
     sc = SCENARIOS[scenario]
-    v = hm.posed_in_booth(mh, BodyParams(), pose, sc, BOOTH)
+    v = hm.posed_in_booth(mh, MESH_BODY, pose, sc, BOOTH)
     assert v.shape == mh.vertices.shape and np.isfinite(v).all()
-    hip = hm.place_in_booth(mh.hip_center[None, :], mh, BodyParams(), BOOTH, sc)[0]
+    hip = hm.place_in_booth(mh.hip_center[None, :], mh, MESH_BODY, BOOTH, sc)[0]
     assert hip[0] == pytest.approx(BOOTH["length_m"] / 2.0) and hip[1] == pytest.approx(0.0)
     if sc.seat_height_m is None:
         assert v[:, 2].min() == pytest.approx(0.0, abs=1e-9)          # 발바닥이 바닥
@@ -452,8 +457,12 @@ def test_pose_mesh_defaults(mh):
     assert hm.load_makehuman(None).vertices.shape == mh.vertices.shape
     sc = SCENARIOS["default"]
     v = hm.pose_mesh(None, None, PoseParams(torso_yaw=30.0), sc)
-    np.testing.assert_allclose(v, hm.posed_in_booth(mh, BodyParams(), PoseParams(torso_yaw=30.0), sc, BOOTH))
-    tall = hm.pose_mesh(mh, BodyParams(height_m=1.85), PoseParams(), sc)
+    np.testing.assert_allclose(v, hm.posed_in_booth(mh, MESH_BODY, PoseParams(torso_yaw=30.0), sc, BOOTH))
+    k = 1.85 / MESH_BODY.height_m                   # 메시 기본 체형을 비례로 키운 키 1.85
+    tall_body = BodyParams(*(k * np.array([MESH_BODY.height_m, MESH_BODY.shoulder_width_m,
+                                           MESH_BODY.torso_depth_m, MESH_BODY.arm_length_m,
+                                           MESH_BODY.leg_length_m])))
+    tall = hm.pose_mesh(mh, tall_body, PoseParams(), sc)
     assert tall[:, 2].max() == pytest.approx(1.85, abs=0.02)
 
 
@@ -495,8 +504,8 @@ def test_makehuman_pose_speed(mh):
 
 
 def test_figure_from_mesh(mh):
-    v = hm.posed_in_booth(mh, BodyParams(), PoseParams(), SCENARIOS["default"], BOOTH)
-    state = build_body(BodyParams(), PoseParams(), SCENARIOS["default"], patches_per_m2=400)
+    v = hm.posed_in_booth(mh, MESH_BODY, PoseParams(), SCENARIOS["default"], BOOTH)
+    state = build_body(BodyParams(), PoseParams(), SCENARIOS["default"], patches_per_m2=400)   # 캡슐 겹침
     fig = hm.figure_from_mesh(v, mh.faces, overlay_state=state, booth=BOOTH)
     assert {"사람 메시", "캡슐 마네킹 (반투명)", "부스", "슬롯 바 12개"} <= _names(fig)
     fig.to_dict()
