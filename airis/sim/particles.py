@@ -11,14 +11,16 @@
 - 부스 밖 자세(00_common.md 5절)는 시뮬레이션하지 않고 score = -1 - 10·d_out (벽 초과 거리 벌점)
 
 구현 상태 (A_particles.md 기준)
-- 단계 1~10, 12(프레임 덤프) 완료. 단계 11(성능: 커널 병합)은 미구현.
+- 단계 1~12 완료. 단계 11(성능): 입자 단위 한 스텝 함수를 여러 스텝씩 한 커널에서 돈다.
 - `batch_evaluate`/`evaluate`는 B의 `build_body`를 호출한다. B 병합 전에는
   `batch_evaluate_states`에 BodyState를 직접 넘겨 쓴다 (테스트가 이 경로).
 """
 from __future__ import annotations
 
 import hashlib
+import os
 from collections.abc import Sequence
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import numpy as np
@@ -37,6 +39,10 @@ from .types import (
 N_PARTS = len(PART_NAMES)
 assert PART_NAMES[PART_TORSO_FRONT] == "torso_front" and PART_NAMES[PART_TORSO_BACK] == "torso_back"
 SURFACE_LIFT_M = 1e-4          # 입자를 패치 표면에서 띄우는 거리 (단계 3)
+# 호스트 초기화 병렬화: 후보가 이만큼 이상이면 스레드로 나눈다 (numpy가 GIL을 푼다).
+# 후보마다 시드와 쓰는 슬라이스가 따로라 순서와 무관하게 결과가 같다.
+INIT_PARALLEL_MIN = 8
+INIT_WORKERS = min(8, os.cpu_count() or 1)
 INFEASIBLE_BASE = -1.0         # 부스 밖 자세 점수의 시작값 (00_common.md 5절)
 INFEASIBLE_SLOPE_PER_M = 10.0  # 벽 초과 거리 1 m당 벌점. 문서가 고정한 값
 
@@ -55,7 +61,8 @@ class ParticleEvaluator(Evaluator):
                  booth: dict | None = None,
                  duration_s: float | None = None,
                  dump_every: int | None = None,
-                 dump_dir: str | Path | None = None):
+                 dump_dir: str | Path | None = None,
+                 steps_per_launch: int = 100):
         """`dump_every`(스텝, None이면 `simulation.dump_every`)가 0보다 크면 매 평가마다
         `dump_dir/frames/<step>.npz`에 입자 상태를 저장한다 (단계 12). 최적화 중에는 0."""
         self.cfg = physics_cfg
@@ -70,6 +77,10 @@ class ParticleEvaluator(Evaluator):
         self.seed = int(sim["seed"])
         self.dump_every = int(sim.get("dump_every", 0) if dump_every is None else dump_every)
         self.dump_dir = None if dump_dir is None else Path(dump_dir)
+        # 커널 한 번에 도는 스텝 수. 크면 실행 횟수가 줄지만 Windows GPU 타임아웃(TDR)에 가깝다.
+        self.steps_per_launch = int(steps_per_launch)
+        if self.steps_per_launch < 1:
+            raise ValueError("steps_per_launch는 1 이상이어야 한다")
         if self.dump_every < 0:
             raise ValueError("dump_every는 0 이상이어야 한다")
         self.booth = booth if booth is not None else load_nozzle_layout()["booth"]
@@ -185,16 +196,18 @@ class ParticleEvaluator(Evaluator):
 
         n_steps = int(round(self.duration_s / self.dt))
         f = self.f
-        for step in range(n_steps):
-            t = step * self.dt
-            f.k_detach(t, n_act)
-            f.k_advect(t, self.dt, n_act)
-            f.k_collide(n_act)
-            f.k_remove(n_act)
-            if frames_dir is not None and step % self.dump_every == 0:
-                self._dump_frame(frames_dir, step, n_act, slot_candidate)
-            if step_callback is not None:
-                step_callback(step, self, n_act)
+        if frames_dir is None and step_callback is None:
+            # 빠른 경로: 여러 스텝을 한 커널에서 (단계 11)
+            for step0 in range(0, n_steps, self.steps_per_launch):
+                f.k_run(step0, min(self.steps_per_launch, n_steps - step0), self.dt, n_act)
+        else:
+            # 매 스텝 호스트가 상태를 봐야 하는 경로 (덤프, 콜백). 같은 입자 함수를 쓴다.
+            for step in range(n_steps):
+                f.k_step(step, self.dt, n_act)
+                if frames_dir is not None and step % self.dump_every == 0:
+                    self._dump_frame(frames_dir, step, n_act, slot_candidate)
+                if step_callback is not None:
+                    step_callback(step, self, n_act)
         f.k_count(n_act)
 
         removed = f.count_removed.to_numpy()[:n_act]
@@ -307,9 +320,17 @@ class ParticleEvaluator(Evaluator):
         self._h_cap_part[:] = -1
         self._h_caps[:] = 0.0
         self._h_count_init[:] = 0
-        for b in range(n_act):
+
+        def init_one(b: int) -> None:
             rng = np.random.default_rng(self._candidate_seed(poses[b], nozzle))
             self._init_candidate(b, states[b], poses[b], rng)
+
+        if n_act >= INIT_PARALLEL_MIN and INIT_WORKERS > 1:
+            with ThreadPoolExecutor(max_workers=INIT_WORKERS) as pool:
+                list(pool.map(init_one, range(n_act)))       # 예외를 그대로 올린다
+        else:
+            for b in range(n_act):
+                init_one(b)
 
         f = self.f
         for name, arr in self._h.items():
