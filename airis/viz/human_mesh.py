@@ -18,7 +18,9 @@
     M = bone_transforms(mesh, pose)           # (B,4,4) 뼈별 월드 변환: 기본 자세 점 x → M_b·x
     v = pose_vertices(mesh, pose)             # (V,3) 기본 자세 좌표계에서 자세를 입힌 정점
     v = posed_in_booth(mesh, body, pose, scenario)   # (V,3) 부스 좌표 (아래 규약)
-    v = pose_mesh(pose, scenario, body)              # 같은 것, 캐시한 기본 메시 사용 (body 생략 = 키 1.70)
+    v = pose_mesh(asset, body, pose, scenario)       # 같은 것. docs/interfaces.md 시그니처 (asset=None 이면
+                                                     # 캐시한 기본 메시, body=None 이면 키 1.70)
+    MeshAsset = HumanMesh                            # docs/interfaces.md 의 이름
 
 좌표 규약 (`docs/tracks/00_common.md` 5절, B의 `build_body`와 같음)
 - x = 게이트 진행 방향(사람이 보는 앞), y = 왼쪽(+), z = 위. 단위 m.
@@ -138,9 +140,11 @@ def _read_obj_body(path: Path) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     return verts, faces, np.unique(faces)
 
 
-def load_makehuman(directory: Path | str = MAKEHUMAN_DIR) -> HumanMesh:
-    """MakeHuman 기본 메시 + 기본 뼈대 + 가중치 → `HumanMesh` (body 그룹만, 헬퍼 제외)."""
-    d = Path(directory)
+def load_makehuman(directory: Path | str | None = None) -> HumanMesh:
+    """MakeHuman 기본 메시 + 기본 뼈대 + 가중치 → `HumanMesh` (body 그룹만, 헬퍼 제외).
+
+    `directory` 가 None 이면 저장소의 `data/meshes/makehuman/`."""
+    d = Path(directory) if directory is not None else MAKEHUMAN_DIR
     missing = [n for n in MAKEHUMAN_FILES if not (d / n).exists()]
     if missing:
         raise FileNotFoundError(f"MakeHuman 자산이 없다: {d} / {missing} "
@@ -346,12 +350,18 @@ def posed_in_booth(mesh: HumanMesh, body: BodyParams, pose: PoseParams,
                           scenario)
 
 
-def pose_mesh(pose: PoseParams, scenario: Scenario | None = None, body: BodyParams | None = None,
-              *, mesh: HumanMesh | None = None, booth: Mapping | None = None) -> np.ndarray:
-    """자세를 입힌 정점 (V,3), 부스 좌표. `body` 생략 시 `BodyParams()`(키 1.70 m 균일 축척),
-    `mesh` 생략 시 캐시한 MakeHuman 기본 메시. 면은 `load_makehuman().faces` (`cached_makehuman().faces`)."""
-    return posed_in_booth(mesh if mesh is not None else cached_makehuman(),
+def pose_mesh(asset: HumanMesh | None, body: BodyParams | None, pose: PoseParams,
+              scenario: Scenario | None = None, booth: Mapping | None = None) -> np.ndarray:
+    """자세를 입힌 정점 (V,3), 부스 좌표. `docs/interfaces.md` "airis/sim/human_mesh.py" 시그니처와 같다.
+
+    `asset` 이 None 이면 캐시한 MakeHuman 기본 메시, `body` 가 None 이면 `BodyParams()`(키 1.70 m 균일 축척).
+    면은 `asset.faces`. 체형은 아직 키만 맞춘다 (뼈별 축척·타깃은 B 이관 때)."""
+    return posed_in_booth(asset if asset is not None else cached_makehuman(),
                           body if body is not None else BodyParams(), pose, scenario, booth)
+
+
+#: `docs/interfaces.md` 의 이름
+MeshAsset = HumanMesh
 
 
 # ---------------------------------------------------------------------------

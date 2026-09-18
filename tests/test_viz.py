@@ -427,8 +427,8 @@ def test_makehuman_hands_up_raises_hands(mh):
     sc = SCENARIOS["default"]
     hand_bones = [i for i, n in enumerate(mh.bone_names) if n.startswith(("finger", "metacarpal", "wrist"))]
     hand = mh.weights[:, hand_bones].sum(axis=1) > 0.5
-    down = hm.pose_mesh(PoseParams(), sc)
-    up = hm.pose_mesh(PoseParams(shoulder_abduction=180.0, elbow_flexion=0.0), sc)
+    down = hm.pose_mesh(None, None, PoseParams(), sc)
+    up = hm.pose_mesh(None, None, PoseParams(shoulder_abduction=180.0, elbow_flexion=0.0), sc)
     assert up[hand, 2].max() > down[hand, 2].max() + 0.9            # 손끝이 1 m 가까이 올라간다
     assert up[hand, 2].max() > 1.9 > down[:, 2].max()                # 머리(1.70) 위, 천장(2.15) 아래
     assert up[:, 2].max() < BOOTH["height_m"]
@@ -447,11 +447,13 @@ def test_makehuman_yaw90_shoulder_line_along_x(mh, yaw):
 
 
 def test_pose_mesh_defaults(mh):
-    """pose_mesh 는 캐시 메시·키 1.70·부스 좌표를 기본으로 쓴다 (posed_in_booth 와 같은 값)."""
+    """pose_mesh(asset, body, pose, scenario): None 이면 캐시 메시·키 1.70. posed_in_booth 와 같은 값."""
+    assert hm.MeshAsset is hm.HumanMesh
+    assert hm.load_makehuman(None).vertices.shape == mh.vertices.shape
     sc = SCENARIOS["default"]
-    v = hm.pose_mesh(PoseParams(torso_yaw=30.0), sc)
+    v = hm.pose_mesh(None, None, PoseParams(torso_yaw=30.0), sc)
     np.testing.assert_allclose(v, hm.posed_in_booth(mh, BodyParams(), PoseParams(torso_yaw=30.0), sc, BOOTH))
-    tall = hm.pose_mesh(PoseParams(), sc, BodyParams(height_m=1.85))
+    tall = hm.pose_mesh(mh, BodyParams(height_m=1.85), PoseParams(), sc)
     assert tall[:, 2].max() == pytest.approx(1.85, abs=0.02)
 
 
@@ -478,7 +480,7 @@ def test_makehuman_pose_speed(mh):
     """자세 1회 50 ms 이하 (실측 약 2 ms). CPU 부하로 넘으면 기준 연산 대비 40배 이하 (실측 약 2~3배)."""
     import time
     sc = SCENARIOS["default"]
-    fn = lambda: hm.pose_mesh(PoseParams(torso_yaw=90.0, shoulder_abduction=180.0), sc)   # noqa: E731
+    fn = lambda: hm.pose_mesh(mh, None, PoseParams(torso_yaw=90.0, shoulder_abduction=180.0), sc)  # noqa: E731
     fn()
     best = best_ref = float("inf")
     for _ in range(15):
