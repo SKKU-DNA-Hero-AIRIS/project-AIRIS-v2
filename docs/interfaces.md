@@ -32,13 +32,13 @@
 ### `velocity_field_per_nozzle(points, nozzle, t, cfg, surface_normals=None) -> (M, P, 3)` (B)
 
 - 노즐별 자유 제트 기여. `velocity_field`는 이것의 합. 시각 `t`는 펄스용. 수식은 `docs/tracks/00_common.md` 4.1 (원형) / 4.1b (슬롯, `nozzle.slot_axis`가 있는 노즐).
-- `surface_normals`가 주어지고 충돌 보정이 켜져 있으면 정체점 보정을 적용한다 (2주차 옵션).
+- `surface_normals`가 주어지고 `jet.impingement.enabled`면 충돌 제트 → 벽면 제트 보정(`00_common.md` 4.2b)을 적용한 값을 돌려준다. D는 항상 `state.patch_normal`을 넘긴다.
 - 몸에 의한 가림은 여기서 처리하지 않는다 (평가기 책임).
 
 ### `Evaluator.evaluate(pose, nozzle, body, scenario) -> EvalResult` (A, D)
 
 - 결정론: 같은 입력이면 같은 `score`. 난수는 `cfg.simulation.seed`로 고정.
-- 부스 밖 자세(패치가 `|y| > width/2` 또는 `z > height`)는 불가: `score = −1.0`, 제거율 0, `extra["infeasible"] = True` (`00_common.md` 5절).
+- 부스 밖 자세(패치가 `|y| > width/2` 또는 `z > height`)는 불가: `score = −1 − 10·d_out`(벽 초과 거리 m), 제거율 0, `extra["infeasible"] = True` (`00_common.md` 5절). 불가 판정은 `score ≤ −1.0`.
 - `score = Σ part_weights · removal_by_part − discomfort_weight · discomfort`
 - `discomfort = Σ discomfort_weights[k] · |pose[k] − pose_default[k]| / range[k]`
 

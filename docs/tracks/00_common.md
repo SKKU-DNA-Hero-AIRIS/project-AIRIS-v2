@@ -87,7 +87,29 @@ u_t = u − (u·n)·n                    (접선 성분)
 τ   = 0.5 · air.density · air.friction_coeff · |u_t|²
 ```
 
-정체점 보정(충돌 제트)은 2주차 옵션이며 B가 `jet.py`에 넣는다. 켜지면 `velocity_field`가 이미 보정된 값을 돌려주므로 D와 A는 바뀌지 않는다.
+#### 4.2b 충돌 제트 → 벽면 제트 보정 (B가 `jet.py`에, A가 Taichi로 동일 구현. D는 법선만 넘긴다)
+
+4.2만 쓰면 제트를 정면으로 받는 면은 접선 성분이 0이라 τ ≈ 0이 되어, "노즐을 마주 보면 정면 제거율이 오른다"가 뒤집힌다 (PR #11, #24 관찰). 실제로는 정면으로 부딪힌 공기가 정체점에서 방사상으로 퍼지는 벽면 제트가 되어 그 둘레를 문지른다. `jet.impingement.enabled`가 true이고 `surface_normals`가 주어지면 `velocity_field_per_nozzle`이 노즐 m마다 아래 `w·e_r`을 4.1/4.1b의 `u`에 더한 값을 돌려준다. τ는 그 값으로 4.2 그대로 계산한다.
+
+조회점 `x`(= 패치 위치 + δ·n), 바깥 법선 `n`, 노즐 위치 `n_m`, 분사 단위 방향 `d`:
+
+```
+cosθ = max(−d·n, 0)                        정면으로 받는 정도. 0이면 보정 없음
+H    = ((x − n_m)·n) / (d·n)               노즐에서 접평면까지 제트 축 거리. H ≤ 0이면 보정 없음
+c    = n_m + H·d                            충돌점
+r    = (x − c) − ((x − c)·n)·n              접평면 위, 충돌점 기준 벡터
+       슬롯이면 r ← r − (r·e_t)·e_t          e_t = 슬롯 축 e의 접평면 성분 단위벡터 (선 충돌)
+ξ    = |r| / σ(H)                            σ는 4.1/4.1b의 σ(s)를 s = H에서
+U_H  = U_c(H)                                4.1/4.1b의 중심 속도를 s = H에서 (strength 포함)
+F    = (1 − exp(−ξ²/2)) / ξ                  원형 노즐
+F    = (1 − exp(−ξ²/2)) / sqrt(ξ)            슬롯. 슬롯 끝 밖은 exp(−ρ_e'²/(2σ²))를 곱한다
+w    = k · cosθ · U_H · F · gate(t)          k = jet.impingement.wall_jet_gain
+u_corr = u + w · e_r,   e_r = r / |r|        ξ < 1e-6이면 w = 0
+```
+
+- 정체점(ξ = 0)에서 0, 그 둘레 고리에서 최대, 바깥은 원형 1/ξ · 슬롯 1/√ξ로 감쇠한다 (방사상 / 평면 벽면 제트). 봉우리 위치는 Beltaos & Rajaratnam 1974(r/H ≈ 0.14)와 같은 함수족이지만 원문 계수는 미확인이라 `k`를 문헌값으로 고정하지 않는다.
+- 설정: `jet.impingement.enabled` (기본 true), `jet.impingement.wall_jet_gain` (기본 1.0). `stagnation_radius_factor`, `wall_jet_start_factor`는 삭제. E3에서 `enabled` 켬/끔과 `k ∈ {0.5, 1, 2}`를 스윕한다.
+- 계약: D는 `velocity_field_per_nozzle(probe, nozzle, 0, cfg, surface_normals=state.patch_normal)`로 법선을 넘긴다. A는 부착 입자(패치 법선 있음)에만 적용하고 부유 입자는 자유 제트 그대로. 보정을 켜면 τ가 커지므로 `adhesion.fabric_roughness_factor`를 B가 같은 PR에서 다시 잡는다 (기준 자세 전신 R 5~10% 유지).
 
 ### 4.3 제거율 (D는 닫힌 식, A는 입자 통계)
 
@@ -127,7 +149,7 @@ v_p(t+dt) = v_air + (v_p(t) − v_air) · exp(−dt/τ_p) + g·dt
 - x: 진행 방향, y: 좌우(중심 0), z: 상하(바닥 0). 단위 m, 각도 degree.
 - 부스 크기는 `configs/nozzles.yaml`의 `booth`. 입자가 부스 밖으로 나가면 제거 확정.
 - 마네킹은 부스 중앙 `(booth.length_m/2, 0, 0)`에 선다.
-- **부스 밖 자세는 불가.** `BodyState.patch_pos`가 하나라도 `|y| > booth.width_m/2` 또는 `z > booth.height_m`이면 (x 방향은 열린 문이라 허용) 그 후보는 평가하지 않고 `score = −1.0`, `removal_by_part = 0`, `total_removal = 0`, `extra["infeasible"] = True`를 돌려준다. D와 A가 동일하게 구현한다. 사람마다 체형이 달라 `pose_bounds`로는 막을 수 없고, 벽 밖으로 나간 팔의 먼지가 공짜로 제거되는 것을 막기 위한 규칙이다.
+- **부스 밖 자세는 불가.** `BodyState.patch_pos`가 하나라도 `|y| > booth.width_m/2` 또는 `z > booth.height_m`이면 (x 방향은 열린 문이라 허용) 그 후보는 평가하지 않고 `removal_by_part = 0`, `total_removal = 0`, `extra["infeasible"] = True`, 그리고 **벽을 넘은 거리에 비례한 벌점** `score = −1 − 10·d_out`을 돌려준다. `d_out = max(0, max_i(|y_i| − width/2), max_i(z_i − height))` (m). 조금 닿으면 −1에 가깝고 많이 닿을수록 낮아져 CMA-ES가 부스 안으로 돌아올 기울기를 얻는다. 계수 10 /m은 고정이다. C는 `score ≤ −1.0` 또는 `extra["infeasible"]`로 불가를 판정한다. D와 A가 동일하게 구현한다. 사람마다 체형이 달라 `pose_bounds`로는 막을 수 없고, 벽 밖으로 나간 팔의 먼지가 공짜로 제거되는 것을 막기 위한 규칙이다.
 
 ## 6. 테스트와 PR
 
