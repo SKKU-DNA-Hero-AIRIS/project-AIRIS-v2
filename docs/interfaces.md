@@ -13,7 +13,7 @@
 
 | 타입 | 생산자 | 소비자 | 비고 |
 |---|---|---|---|
-| `BodyParams` | E(포즈 추정), C(샘플링) | B | 체형 5개 값. 메시 몸 기준 정의(관절 중심): 키, 좌우 upperarm01 머리 간격, 유두선 높이 몸통 앞뒤 폭, 상완+전완 구간 합(자세 불변), 고관절 높이. 메시 기본 체형 1.70/0.342/0.194/0.463/0.883 = `human_mesh.MESH_DEFAULT_BODY`; 전역 기본값은 5단계 전환 때 교체 (`docs/mesh_transition.md` 8) |
+| `BodyParams` | E(포즈 추정), C(샘플링) | B | 체형 5개 값. 메시 몸 기준 정의(관절 중심): 키, 좌우 upperarm01 머리 간격, 유두선 높이 몸통 앞뒤 폭, 상완+전완 구간 합(자세 불변), 고관절 높이. 기본값 1.70/0.342/0.194/0.463/0.883 = `human_mesh.MESH_DEFAULT_BODY` (#62, 2026-09-18) (`docs/mesh_transition.md` 8) |
 | `PoseParams` | C(최적화 변수) | B | degree. `to_vector / from_vector` 순서 고정 |
 | `NozzleConfig` | B (`configs/nozzles.yaml`) | A, D | 위치 (M,3), 방향 (M,3), 세기 (M,). 슬롯 제트면 `slot_axis` (M,3), `slot_length` (M,) 추가 (`None`이면 전부 원형; 배열이면 행 단위로 `slot_length[m] > 0`이고 `slot_axis[m] ≠ 0`인 노즐만 슬롯). 고정 입력 |
 | `Scenario` | B (`configs/scenarios.yaml`) | C, A, D | 상속 지원 |
