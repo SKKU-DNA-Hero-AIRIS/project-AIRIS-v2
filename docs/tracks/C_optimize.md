@@ -119,7 +119,7 @@ E4의 B0, B1을 평가한다.
 | B1 | `PoseParams()`에 `torso_yaw = 0, 30, …, 330` (12개)를 각각 평가한 평균 | 퓨리움 공식 안내 "서서 몸을 회전". `score`·`removal_by_part`·`total_removal`은 가능한 yaw의 평균, `discomfort`는 기본 자세 값(0). 전부 불가면 불가 |
 | B2 | `shoulder_abduction=180, elbow_flexion=0`, 나머지 기본 | 일반 에어샤워 안내 "만세". 체형에 따라 천장(2.15 m)에 걸리면 불가로 기록 |
 
-("팔 수평 90°"는 기준 장비에서 벽 밖이라 제외.) 세 시나리오 × 세 조건을 평가해 `outputs/baselines_<날짜>.csv`에 저장. 휠체어는 `fixed_pose` 적용. `run_e4.py`의 개선율도 B0·B1·B2 세 기준으로 낸다.
+("팔 수평 90°"는 기준 장비에서 벽 밖이라 제외.) 세 시나리오 × 세 조건을 평가해 `outputs/baselines_<날짜>.csv`에 저장. 휠체어는 `fixed_pose` 적용. B1의 yaw는 시나리오 `pose_bounds` 안의 값만 평균한다 (휠체어는 [−45, 45]라 −30/0/30 — 휠체어는 깊이 0.886 m 게이트 안에서 제자리 회전이 불가능하다). `run_e4.py`의 개선율도 B0·B1·B2 세 기준으로 낸다.
 
 ## 단계 7. E4 러너 (`scripts/run_e4.py`, 2주차, 2시간)
 

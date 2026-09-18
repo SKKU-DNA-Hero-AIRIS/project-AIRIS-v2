@@ -6,7 +6,7 @@
 
 **의존성**: 없음. `types.py`와 `configs/`만 있으면 시작 가능.
 
-**공유 수식**: `docs/tracks/00_common.md` 4.1을 그대로 구현한다.
+**공유 수식**: `docs/tracks/00_common.md` 4.1(원형 노즐), 4.1b(슬롯 제트), 4.2b(충돌 제트 → 벽면 제트 보정)를 그대로 구현한다. 기준 장비는 퓨리움 PURIUM-10000-P(슬롯 바 12개)이며 원형 배치는 비교용으로 남긴다.
 
 ---
 
@@ -82,7 +82,7 @@ pelvis
 
 - 원통부: 길이 방향 `n_len`, 둘레 방향 `n_theta`. 패치 면적 = `2πr·L / (n_len·n_theta)`.
 - 반구부 ×2: 위도 `n_lat`, 경도 `n_theta`. 면적 가중 위도 간격 사용.
-- `patches_per_m2` 인자에서 `n_*`을 결정한다. 기본 2000/m² → 성인 마네킹 약 1.8 m² → 패치 약 3,600개.
+- `patches_per_m2` 인자에서 `n_*`을 결정한다. 기본 2000/m² → 성인 마네킹 해석적 표면적 약 2.2 m² → 패치 약 5,200개 (최적화 루프는 400/m², 약 1,000개).
 - 법선: 원통부는 축에서 바깥 방향, 반구부는 중심에서 바깥 방향.
 - 몸통 타원: 매개변수 θ에서 위치 `(a cosθ, b sinθ)`, 법선 `∝ (cosθ/a, sinθ/b)`. 부위는 법선의 몸 전방 성분이 양이면 `torso_front`, 아니면 `torso_back`.
 - `patch_capsule[i]` = 그 패치가 속한 캡슐 인덱스. D의 가림 판정이 자기 캡슐을 제외할 때 쓴다.
@@ -91,8 +91,10 @@ pelvis
 
 ## 단계 5. 노즐 배치 전개 (2시간)
 
-`scenario.load_nozzles() -> NozzleConfig`를 구현한다. `configs/nozzles.yaml`의 `layout`을 전개한다.
+`scenario.load_nozzles(path=None, layout=None) -> NozzleConfig`를 구현한다. `configs/nozzles.yaml`의 `active`가 가리키는 배치를 전개한다.
 
+- 기준 배치 `slot_bars` (퓨리움): 측면 `wall_y × z_levels` = 8개 + 상단 `x_positions × y_positions` = 4개 → 12개. 전 행 슬롯(`slot_axis`, `slot_length` 채움, 4.1b). 슬롯 축은 분사 방향에 수직.
+- 원형 비교 배치 `layout` (`load_nozzles(layout="layout")`): 아래 규칙으로 16개, `slot_axis=None`.
 - 위치: `(x, wall_y, z)` for x in `x_positions`, wall_y in `wall_y`, z in `z_levels` → 16개.
 - 방향: 벽면 안쪽 법선 `(0, −sign(wall_y), 0)`을 z 축으로 `yaw_deg`만큼 진행 방향(+x)으로, 다시 수평축으로 `pitch_deg`만큼 아래로 회전.
 - 세기: `layout.strength` 모두 동일.
@@ -116,15 +118,9 @@ pelvis
 
 첫날부터 매 단계 이 뷰로 확인한다. 마네킹이 누워 있거나 팔이 몸을 뚫으면 여기서 보인다.
 
-## 단계 8. 충돌 제트 보정 (2주차 옵션)
+## 단계 8. 충돌 제트 → 벽면 제트 보정 (필수, 총괄 결정 ⑩)
 
-`cfg["jet"]["impingement"]["enabled"]`일 때 `velocity_field_per_nozzle`에 적용한다. 점 `p`가 어떤 캡슐 표면에서 `δ` 안에 있고(호출자가 `surface_normals (P,3)`를 넘김), 제트 축과 법선 사이 각도가 30도 이내이면:
-
-- 충돌점(제트 축과 표면의 교점) 기준 반경 `ρ_w`를 구한다.
-- `ρ_w < stagnation_radius_factor · r_½`이면 접선 속도를 `ρ_w / (stagnation_radius_factor · r_½)` 배로 줄인다 (정체점에서 0).
-- 그 바깥은 벽면 제트로 보고 접선 속도를 그대로 둔다.
-
-시그니처가 바뀌므로 `surface_normals=None` 기본 인자로 추가하고, `None`이면 보정 없음.
+`00_common.md` 4.2b를 그대로 구현한다. `velocity_field_per_nozzle`·`velocity_field`가 `surface_normals (P,3)`를 받고 `cfg["jet"]["impingement"]["enabled"]`면 노즐별 `w·e_r`을 더한 값을 돌려준다. `None`이면 보정 없음. 상수는 `jet.impingement.wall_jet_gain`(k, 기본 1.0, E3 스윕 변수) 하나. 옛 키 `stagnation_radius_factor`·`wall_jet_start_factor`는 삭제됐다. 보정을 켜면 τ가 커지므로 `adhesion.fabric_roughness_factor`를 같이 잡는다(PR #27: k=1, f=0.25, 기준 자세 전신 R ≈ 7.9%).
 
 ## 단계 9. 테스트
 
@@ -139,16 +135,19 @@ pelvis
 - 노즐 축 위 점: `s ≤ L_c`에서 속도 = U0, `s = 2L_c`에서 U0/2.
 - 노즐 뒤(`s < 0`)는 0.
 - 반경 `σ`에서 중심의 `exp(−0.5)`배.
-- `load_nozzles()` 노즐 16개, 방향 벡터 단위 길이, 모두 부스 안쪽을 향함 (`d·(0,−sign(y),0) > 0`).
+- `load_nozzles()` 기준 배치 12개 전 행 슬롯, `slot_axis ⊥ direction`, 측면은 안쪽·상단은 아래를 향함. `load_nozzles(layout="layout")` 원형 16개, `slot_axis=None`, 모두 부스 안쪽 (`d·(0,−sign(y),0) > 0`).
+- 4.1b: 코어 끝 연속, `s = 4L_c`에서 `U0/2`, 슬롯 길이 안 균일·끝 밖 가우시안, 독립 참고 구현(float64) 대조 1e-5.
+- 4.2b: 정체점 0, 고리 최대, 바깥 원형 1/ξ·슬롯 1/√ξ, `enabled=false`면 4.1과 비트 일치, 독립 참고 구현 대조 1e-4.
 
 ## 완료 기준
 
 - [ ] `build_body(BodyParams(), PoseParams(), scenarios["default"])`가 예외 없이 `BodyState`를 반환하고 3D 뷰에서 사람 형태로 서 있다.
 - [ ] 세 시나리오 모두 마네킹이 생성되고 휠체어는 앉아 있다.
-- [ ] `plot_jet_slice`에서 노즐 16개의 제트가 마네킹 위치에 닿는 것이 보인다.
+- [ ] 기준 배치 슬롯 12개가 세 시나리오 마네킹에 닿는다 (몸 높이 안 측면 바는 `U_c(0.73 m)` 이상, 12개 전부 0.5 m/s 초과). 원형 비교 배치 16개도 닿는다.
 - [ ] `test_body.py`, `test_jet.py` 전부 통과.
-- [ ] 1회 `build_body` 20 ms 이하, `velocity_field` 패치 3,600개 × 노즐 16개 5 ms 이하.
+- [ ] 1회 `build_body` 20 ms 이하. `velocity_field` 무보정 패치 3,600개 × 슬롯 12개 5 ms 이하, **4.2b 보정 포함(법선 전달) 25 ms 이하**.
 - [ ] `configs/physics.yaml`의 `jet` 섹션 키가 코드에서 전부 읽힌다 (안 쓰는 키 없음).
+- [ ] 세 시나리오의 기본 자세 `PoseParams()`가 부스 안이다 (`00_common.md` 5절: `|y| ≤ width/2`, `z ≤ height`). 설정 변경이 기본 자세를 불가로 만들면 안 된다 (PR #21 사례).
 
 ## 병합 후 알림
 

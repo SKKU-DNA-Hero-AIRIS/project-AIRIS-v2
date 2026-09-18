@@ -110,7 +110,7 @@ def make_body():
 - [ ] `tests/fakes.py`가 있고 다른 트랙이 import해서 쓴다.
 - [ ] `scoring.py`의 네 함수가 `00_common.md` 수식과 일치하고 단위 테스트가 있다 (τ=0 → R=0, τ=τ_med → R=0.5, 불편도 기본 자세 → 0).
 - [ ] 정성 테스트 5개가 skip 없이 통과한다 (가짜 몸으로도, B 병합 후 실제 몸으로도).
-- [ ] `evaluate` 1회 `patches_per_m2=400`(약 1,000 패치, 노즐 16)에서 15 ms 이하. `PatchEvaluator(physics_cfg, patches_per_m2=...)` 인자로 밀도를 고른다 (기본 2000은 검증용, 최적화 루프는 400).
+- [ ] `evaluate` 1회 `patches_per_m2=400`(약 1,000 패치, 슬롯 12개, 4.2b 보정·슬롯 가림 K=3 포함)에서 **30 ms 이하**. 슬롯 가림은 슬롯 축 위 `slot_points`개(기본 3, 검증용 5)의 보이는 비율. `PatchEvaluator(physics_cfg, patches_per_m2=...)` 인자로 밀도를 고른다 (기본 2000은 검증용, 최적화 루프는 400).
 - [ ] `plot_body(state, values=result.extra["removal"])`로 제거율 분포가 그려지고, 팔을 든 자세에서 겨드랑이가 밝아지는 것이 보인다.
 
 ## 병합 후 알림
