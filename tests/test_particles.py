@@ -1037,8 +1037,12 @@ def test_occlusion_matches_patch_evaluator_visibility(scenario):
     """부착 입자의 이탈 판정 속도 = Σ_m occlusion[m, 소속 패치] · (자유 제트 + 4.2b)_m.
 
     D의 `patch_baseline.occlusion` 배열을 입자별 소속 패치로 그대로 읽는지 본다. 가림을 끄면
-    B의 `velocity_field(..., surface_normals=)`와 같다. 좌우 벽의 대칭 노즐이 서로 상쇄해
-    합이 거의 0인 점이 있어, 상대 오차의 분모는 max(|u|, 1e-3·Σ_m w·|u_m|)로 둔다.
+    B의 `velocity_field(..., surface_normals=)`와 같다.
+
+    허용치: |Δu| ≤ 1e-4·|u| + 1e-5·Σ_m w·|u_m|. 좌우 벽의 대칭 노즐이 서로 상쇄해 합 |u|가
+    거의 0인 점(거울 대칭 패치 격자에서 1e-7 m/s까지)에서는 상대 오차가 뜻이 없다. 노즐 M개를
+    float32로 더하는 누적 오차는 대략 M·eps·Σ_m w·|u_m| (M = 12면 약 7e-7·Σ)이므로, 합산 크기에
+    비례하는 절대 항을 그보다 넉넉히 두고 상대 기준 1e-4는 그대로 유지한다.
     """
     cfg = load_physics()
     nozzle = load_nozzles()
@@ -1060,12 +1064,18 @@ def test_occlusion_matches_patch_evaluator_visibility(scenario):
 
     np.testing.assert_array_equal(pidx, pidx_off)
     err = np.linalg.norm(vel.astype(np.float64) - ref, axis=1)
-    rel = err / np.maximum(np.linalg.norm(ref, axis=1), 1e-3 * scale + 1e-12)
-    assert rel.max() < 1e-4, f"가림 적용 속도 최대 상대 오차 {rel.max():.3e}"
+    bound = 1e-4 * np.linalg.norm(ref, axis=1) + 1e-5 * scale
+    worst = int(np.argmax(err / np.maximum(bound, 1e-300)))
+    assert np.all(err <= bound), (
+        f"가림 적용 속도: 점 {worst}에서 |Δu| {err[worst]:.3e} > 허용 {bound[worst]:.3e} "
+        f"(|u| {np.linalg.norm(ref[worst]):.3e}, Σw|u_m| {scale[worst]:.3e})")
 
-    free = velocity_field(pos + cfg["air"]["wall_offset_m"] * nrm, nozzle, 0.0, cfg,
-                          surface_normals=nrm).astype(np.float64)
-    assert _relative_error(vel_off.astype(np.float64), free).max() < 1e-4
+    x_off = pos + cfg["air"]["wall_offset_m"] * nrm
+    free = velocity_field(x_off, nozzle, 0.0, cfg, surface_normals=nrm).astype(np.float64)
+    free_scale = np.linalg.norm(velocity_field_per_nozzle(
+        x_off, nozzle, 0.0, cfg, surface_normals=nrm).astype(np.float64), axis=2).sum(axis=0)
+    err_off = np.linalg.norm(vel_off.astype(np.float64) - free, axis=1)
+    assert np.all(err_off <= 1e-4 * np.linalg.norm(free, axis=1) + 1e-5 * free_scale)
     # 가림이 실제로 무언가를 가린다 (공허하지 않다)
     assert np.linalg.norm(vel_off - vel, axis=1).max() > 1.0
 
