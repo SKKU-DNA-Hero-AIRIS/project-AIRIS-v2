@@ -4,7 +4,7 @@
 
 1. C의 회귀 모델 `airis.model.predict.predict_pose` (4주차, `docs/interfaces.md` "회귀 모델")와
    학습 산출물 `data/models/pose_regressor.joblib`이 있으면 그것을 쓴다.
-2. 없으면 **스텁**: `docs/experiments.md`의 시나리오별 최적 자세 표(`STUB_TABLE`)를 돌려준다.
+2. 없으면 **스텁**: E4 정식 결과의 시나리오별 최적 자세 표(`STUB_TABLE`)를 돌려준다.
    표는 봉우리 후보다(만세 + 옆으로 회전, 팔 내림 + 옆으로 회전). 키가 커서 만세가 천장에
    닿는 체형이면 D의 `outside_booth`로 거르고, 남은 후보는 이 체형으로 패치판 점수를 재서 고른다
    (표는 기본 체형 결과라 체형이 다르면 순위가 바뀔 수 있다).
@@ -38,33 +38,34 @@ class StubEntry:
     source: str
 
 
-# docs/experiments.md "현재 물리 기준: 4.2b·f=0.25·K=3" (main 8465937, 체형 BodyParams() 기본값).
+# 첫 후보 = E4 정식 결과 (패치판, 대칭 격자 main 5f353be, 시드 5개 평균, 체형 BodyParams() 기본값).
+#   default·wheelchair 는 만세 봉우리, pregnant 는 팔 내림 봉우리다 (벌림 불편도 가중이 커서).
+# 둘째 후보 = 다른 봉우리. 체형 때문에 첫 후보가 부스 밖이거나 점수가 낮을 때 쓴다. #42(패치 격자
+#   대칭화) 이전 docs/experiments.md 기록이라 값은 참고용이고, recommend() 가 이 체형으로 다시 잰다.
 # yaw 는 좌우 대칭이라 |yaw| 로 적는다 (interfaces.md 거울 정규화).
+E4_SOURCE = "E4 e4_20260918_125531_5c81a2 시드 평균"
+
 STUB_TABLE: dict[str, list[StubEntry]] = {
     "default": [
         StubEntry("만세 + 옆으로 회전",
-                  PoseParams(179.7, 3.0, 4.6, 0.4, 99.8, 1.4, 0.4),
-                  "starts_20260918_104700_377fae (best 0.6251)"),
+                  PoseParams(179.8, 0.0, 1.4, -0.8, 94.2, 0.6, 1.5), E4_SOURCE),
         StubEntry("팔 내림 + 옆으로 회전",
                   PoseParams(4.8, -3.2, 3.1, 0.5, 98.1, 0.1, 0.2),
-                  "remeasure_20260918_103149_00b235 (best 0.5657)"),
+                  "remeasure_20260918_103149_00b235 (#42 이전, 대체 후보)"),
     ],
     "pregnant": [
+        StubEntry("팔 내림 + 옆으로 회전",
+                  PoseParams(12.5, -3.0, 7.4, -0.1, 84.6, 2.4, 5.3), E4_SOURCE),
         StubEntry("만세 + 옆으로 회전",
                   PoseParams(180.0, 6.7, 2.6, -0.1, 97.2, 0.9, 2.1),
-                  "starts_20260918_110639_46f4dd (best 0.5965)"),
-        # pregnant 팔 내림 봉우리 자세는 기록이 없어 default 봉우리를 시나리오 범위로 투영해 쓴다.
-        StubEntry("팔 내림 + 옆으로 회전",
-                  PoseParams(4.8, -3.2, 3.1, 0.5, 98.1, 0.1, 0.2),
-                  "remeasure_20260918_103149_00b235 (default 자세 차용)"),
+                  "starts_20260918_110639_46f4dd (#42 이전, 대체 후보)"),
     ],
     "wheelchair": [
         StubEntry("만세 + 몸 45° 회전",
-                  PoseParams(180.0, 2.0, 5.7, 0.7, 45.0, 90.0, 90.0),
-                  "starts_20260918_105104_bdea6d (best 0.3761)"),
+                  PoseParams(179.9, 7.9, 9.6, 4.4, 44.9, 90.0, 90.0), E4_SOURCE),
         StubEntry("팔 내림 + 몸 45° 회전",
                   PoseParams(0.0, -29.9, 14.5, 0.3, 45.0, 90.0, 90.0),
-                  "remeasure_20260918_103307_2bd141 (best 0.3532)"),
+                  "remeasure_20260918_103307_2bd141 (#42 이전, 대체 후보)"),
     ],
 }
 

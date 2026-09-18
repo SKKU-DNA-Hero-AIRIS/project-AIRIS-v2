@@ -258,12 +258,18 @@ def test_recommend_pose_inside_booth_and_bounds(scenario):
         assert getattr(pose, key) == v
 
 
-@pytest.mark.parametrize("scenario", ["default", "pregnant", "wheelchair"])
-def test_stub_first_entry_is_experiments_best_for_default_body(scenario):
-    rec = recommend(BodyParams(), SCENARIOS[scenario], use_model=False)
-    assert rec.source.startswith("stub")
-    assert rec.label == STUB_TABLE[scenario][0].label
-    assert rec.pose.shoulder_abduction > 170.0            # 기본 체형은 만세 봉우리
+@pytest.mark.parametrize("scenario,arms_up", [("default", True), ("pregnant", False),
+                                              ("wheelchair", True)])
+def test_stub_first_entry_is_e4_best_for_default_body(scenario, arms_up):
+    """기본 체형이면 E4 정식 결과(첫 후보)를 그대로 고른다. pregnant 는 팔 내림 봉우리."""
+    from airis.optimize.encoding import PoseEncoder
+    from airis.realtime.recommend import E4_SOURCE
+    sc = SCENARIOS[scenario]
+    rec = recommend(BodyParams(), sc, use_model=False)
+    first = STUB_TABLE[scenario][0]
+    assert rec.source == f"stub: {E4_SOURCE}"
+    assert rec.label == first.label and rec.pose == PoseEncoder(sc).clip_pose(first.pose)
+    assert (rec.pose.shoulder_abduction > 170.0) == arms_up
     assert not rec.notes
 
 
