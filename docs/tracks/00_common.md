@@ -10,6 +10,7 @@
 | D | `airis/sim/patch_baseline.py`, `airis/sim/scoring.py`, `tests/test_sanity_physics.py`, `tests/fakes.py`, `scripts/compare_evaluators.py` | `configs/` |
 | C | `airis/optimize/*`, `scripts/run_optimize.py`, `scripts/run_baselines.py`, `scripts/run_e4.py`, `tests/test_encoding.py`, `tests/test_cmaes_dummy.py` | `configs/` |
 | A | `airis/sim/particles.py`, `airis/sim/kernels/*`, `tests/test_particles.py` | `configs/` |
+| E | `airis/realtime/*`, `airis/viz/*`(단 `debug3d.py`는 B), `scripts/run_dashboard.py`, `scripts/render_frames.py`, `tests/test_realtime.py`, `tests/test_viz.py`, `docs/figures/*` | `configs/`, `airis/sim/*` |
 | 전원 | | `airis/sim/types.py`, `airis/sim/interface.py`, `docs/interfaces.md` |
 
 공용 파일을 바꿔야 한다면 코드를 고치지 말고 PR 설명이나 이슈에 "types.py 변경 제안"으로 남긴다. 병합 담당이 별도 PR로 처리한다.
