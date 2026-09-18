@@ -60,13 +60,14 @@ _FLANK_DEPTH_M = 0.25
 # --- B 병합 전후 전환 --------------------------------------------------------
 
 def select_body_fn(build=build_body, scenario: Scenario | None = None):
-    """(pose, scenario) -> BodyState. `build`가 미구현이면 fake_body로 바꾼다.
+    """(pose, scenario) -> 캡슐 BodyState. `build`가 미구현이면 fake_body로 바꾼다.
 
-    반환 함수의 `uses_fake` 속성으로 어느 쪽인지 알 수 있다.
+    반환 함수의 `uses_fake` 속성으로 어느 쪽인지 알 수 있다. `physics.yaml`의 `body.model`이
+    mesh로 바뀌어도 캡슐 몸을 쓰도록 `model="capsule"`을 명시한다 (B #68).
     """
     scenario = scenario or load_scenarios()["default"]
     try:
-        build(BodyParams(), PoseParams(), scenario)
+        build(BodyParams(), PoseParams(), scenario, model="capsule")
     except NotImplementedError:
         def fake(pose, scen):
             return fake_body(arms_up=pose.shoulder_abduction > 60, yaw_deg=pose.torso_yaw)
@@ -74,7 +75,7 @@ def select_body_fn(build=build_body, scenario: Scenario | None = None):
         return fake
 
     def real(pose, scen):
-        return build(BodyParams(), pose, scen)
+        return build(BodyParams(), pose, scen, model="capsule")
     real.uses_fake = False
     return real
 
@@ -815,10 +816,14 @@ def test_occlusion_matches_brute_force_on_fake_body(physics, arms_up, yaw_deg):
     ("wheelchair", PoseParams()),     # 가림 전용 캡슐(capsule_part = -1) 포함
 ])
 def test_occlusion_matches_brute_force_on_real_body(physics, scenarios, scenario_name, pose):
-    """B의 실제 몸(길이 0 캡슐, 휠체어 프레임 포함)에서 패치 일부를 뽑아 대조한다."""
+    """B의 실제 캡슐 몸(길이 0 캡슐, 휠체어 프레임 포함)에서 패치 일부를 뽑아 대조한다.
+
+    `body.model` 기본값과 무관하게 캡슐 몸을 만든다. 메시 몸은 아래 메시 전수 판정 테스트가 본다.
+    """
     if select_body_fn(scenario=scenarios["default"]).uses_fake:
         pytest.skip("B 미병합")
-    state = build_body(BodyParams(), pose, scenarios[scenario_name])
+    state = build_body(BodyParams(), pose, scenarios[scenario_name], model="capsule")
+    assert state.mesh_vertices is None
     patches = np.random.default_rng(0).choice(state.patch_pos.shape[0], 120, replace=False)
     for layout in ("layout", "slot_bars"):                 # 원형 0/1, 슬롯은 점 비율
         nz = load_nozzles(layout=layout)
@@ -997,3 +1002,39 @@ def test_evaluator_runs_on_fake_mesh_body(physics, scenarios):
     assert result.extra["removal"].shape == (n,)
     assert 0.0 < result.extra["visible_frac"] < 1.0
     assert 0.0 < result.total_removal < 1.0
+
+
+@pytest.mark.parametrize("scenario_name, pose", [
+    ("default", PoseParams(shoulder_abduction=150.0, torso_yaw=30.0)),
+    ("wheelchair", PoseParams()),     # 메시 몸 + 휠체어 프레임 캡슐(capsule_part = -1)
+])
+def test_mesh_occlusion_matches_brute_force_on_real_mesh_body(physics, scenarios, scenario_name, pose):
+    """B의 실제 메시 몸(sim 메시)에서 패치 일부를 뽑아 Möller–Trumbore 전수 판정과 대조한다.
+
+    휠체어는 프레임 캡슐 가림이 더해지므로, 전수 판정에도 프레임 캡슐 판정을 곱한다.
+    """
+    make = mesh_body_fn(scenario=scenarios["default"])
+    if make is None:
+        pytest.skip("B의 메시 build_body(model='mesh') 미병합")
+    state = make(pose, scenarios[scenario_name])
+    nz = load_nozzles(layout="slot_bars")
+    patches = np.random.default_rng(2).choice(state.patch_pos.shape[0], 60, replace=False)
+    fast = occlusion(state, nz, physics)[:, patches]
+    slow = _mesh_occlusion_brute_force(state, nz, physics, patches)
+    frame = np.asarray(state.capsule_part) == -1
+    if frame.any():
+        frame_state = BodyState(patch_pos=state.patch_pos, patch_normal=state.patch_normal,
+                                patch_area=state.patch_area, patch_part=state.patch_part,
+                                capsules=state.capsules[frame], capsule_part=state.capsule_part[frame])
+        frame_ratio = _occlusion_brute_force(frame_state, nz, physics, patches, samples=2001)
+        # 메시와 프레임은 광원 점마다 곱해지고 전수 판정은 노즐 단위 비율을 돌려주므로,
+        # 프레임이 전혀 안 가리는 셀은 메시 판정과, 전부 가리는 셀은 0과 비교한다.
+        clear, blocked = frame_ratio == 1.0, frame_ratio == 0.0
+        assert clear.sum() >= 100, "프레임과 무관한 비교 셀이 너무 적다"
+        assert np.abs(fast - slow)[clear].max() <= 1.0 / SLOT_OCCLUSION_POINTS + 1e-9
+        assert (fast[clear] != slow[clear]).mean() < 0.01
+        assert (fast[blocked] == 0.0).all()
+    else:
+        assert np.abs(fast - slow).max() <= 1.0 / SLOT_OCCLUSION_POINTS + 1e-9
+        assert (fast != slow).mean() < 0.01
+    assert ((fast > 0.0) & (fast < 1.0)).any()
