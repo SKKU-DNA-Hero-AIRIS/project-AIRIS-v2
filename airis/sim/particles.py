@@ -11,7 +11,7 @@
 - 부스 밖 자세(00_common.md 5절)는 시뮬레이션하지 않고 score = -1 - 10·d_out (벽 초과 거리 벌점)
 
 구현 상태 (A_particles.md 기준)
-- 단계 1~10 완료. 단계 11(성능: 커널 병합), 12(프레임 덤프)는 미구현.
+- 단계 1~10, 12(프레임 덤프) 완료. 단계 11(성능: 커널 병합)은 미구현.
 - `batch_evaluate`/`evaluate`는 B의 `build_body`를 호출한다. B 병합 전에는
   `batch_evaluate_states`에 BodyState를 직접 넘겨 쓴다 (테스트가 이 경로).
 """
@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import hashlib
 from collections.abc import Sequence
+from pathlib import Path
 
 import numpy as np
 
@@ -52,7 +53,11 @@ class ParticleEvaluator(Evaluator):
                  particles_per_candidate: int | None = None,
                  max_capsules: int = 64, max_nozzles: int = 64,
                  booth: dict | None = None,
-                 duration_s: float | None = None):
+                 duration_s: float | None = None,
+                 dump_every: int | None = None,
+                 dump_dir: str | Path | None = None):
+        """`dump_every`(스텝, None이면 `simulation.dump_every`)가 0보다 크면 매 평가마다
+        `dump_dir/frames/<step>.npz`에 입자 상태를 저장한다 (단계 12). 최적화 중에는 0."""
         self.cfg = physics_cfg
         self.arch = init_taichi(arch)          # 프로세스당 1회. 이미 되어 있으면 건너뜀
 
@@ -63,6 +68,10 @@ class ParticleEvaluator(Evaluator):
         self.dt = float(sim["dt_s"])
         self.duration_s = float(duration_s if duration_s is not None else sim["duration_s"])
         self.seed = int(sim["seed"])
+        self.dump_every = int(sim.get("dump_every", 0) if dump_every is None else dump_every)
+        self.dump_dir = None if dump_dir is None else Path(dump_dir)
+        if self.dump_every < 0:
+            raise ValueError("dump_every는 0 이상이어야 한다")
         self.booth = booth if booth is not None else load_nozzle_layout()["booth"]
 
         self.f = ParticleFields(self.max_candidates, self.N, max_capsules, max_nozzles)
@@ -110,7 +119,8 @@ class ParticleEvaluator(Evaluator):
     def batch_evaluate_states(self, states: Sequence[BodyState],
                               poses: Sequence[PoseParams],
                               nozzle: NozzleConfig, scenario: Scenario,
-                              *, step_callback=None) -> list[EvalResult]:
+                              *, step_callback=None,
+                              dump_dir: str | Path | None = None) -> list[EvalResult]:
         """BodyState를 직접 받는 배치 평가. `batch_evaluate`의 본체.
 
         부스 밖 자세(00_common.md 5절)는 시뮬레이션하지 않고 score = -1 - 10·d_out,
@@ -120,6 +130,9 @@ class ParticleEvaluator(Evaluator):
 
         `step_callback(step, evaluator, n_act)`는 매 스텝 뒤 호출된다 (테스트/디버그용).
         `n_act`는 실제로 시뮬레이션하는 (가능) 후보 수다.
+
+        `dump_every > 0`이면 `dump_dir`(없으면 생성자의 `dump_dir`)`/frames/<step>.npz`에
+        프레임을 저장한다. 같은 디렉터리로 다시 부르면 덮어쓴다.
         """
         n_cand = len(states)
         if n_cand != len(poses):
@@ -143,16 +156,29 @@ class ParticleEvaluator(Evaluator):
                     discomfort=scoring.discomfort(poses[b], scenario),
                     extra={"evaluator": "particle", "infeasible": True, "d_out_m": d_out[b]},
                 )
+        frames_dir = None
+        if self.dump_every > 0:
+            base = Path(dump_dir) if dump_dir is not None else self.dump_dir
+            if base is None:
+                raise ValueError("dump_every > 0이면 dump_dir(outputs/<exp_id>)가 필요하다")
+            frames_dir = base / "frames"
+            frames_dir.mkdir(parents=True, exist_ok=True)
         if feasible:
             simulated = self._simulate([states[b] for b in feasible],
                                        [poses[b] for b in feasible],
-                                       nozzle, scenario, step_callback)
+                                       nozzle, scenario, step_callback,
+                                       frames_dir, np.asarray(feasible, np.int32))
             for b, res in zip(feasible, simulated):
                 results[b] = res
         return results
 
-    def _simulate(self, states, poses, nozzle, scenario, step_callback) -> list[EvalResult]:
-        """가능 후보 n_act개를 슬롯 0..n_act-1에 올려 한 번에 시뮬레이션한다."""
+    def _simulate(self, states, poses, nozzle, scenario, step_callback,
+                  frames_dir: Path | None = None,
+                  slot_candidate: np.ndarray | None = None) -> list[EvalResult]:
+        """가능 후보 n_act개를 슬롯 0..n_act-1에 올려 한 번에 시뮬레이션한다.
+
+        `slot_candidate[k]`는 슬롯 k에 올린 후보의 원래 입력 순서 (프레임 덤프용).
+        """
         n_act = len(states)
         self._init_candidates(states, poses, nozzle, n_act)
         self._upload_nozzles(nozzle)
@@ -165,6 +191,8 @@ class ParticleEvaluator(Evaluator):
             f.k_advect(t, self.dt, n_act)
             f.k_collide(n_act)
             f.k_remove(n_act)
+            if frames_dir is not None and step % self.dump_every == 0:
+                self._dump_frame(frames_dir, step, n_act, slot_candidate)
             if step_callback is not None:
                 step_callback(step, self, n_act)
         f.k_count(n_act)
@@ -191,6 +219,32 @@ class ParticleEvaluator(Evaluator):
                 },
             ))
         return results
+
+    # ------------------------------------------------------ 단계 12. 프레임 덤프
+    def _dump_frame(self, frames_dir: Path, step: int, n_act: int,
+                    slot_candidate: np.ndarray) -> None:
+        """`docs/interfaces.md` 시각화용 상태 덤프 형식.
+
+        계약 필드: pos (P,3) f32, attached (P,) bool, part (P,) i32, candidate (P,) i32
+        추가 필드: state (P,) i8 (0 부착 / 1 부유 / 2 제거), part_init (P,) i32 (집계 기준 부위),
+                  step, t_s, particles_per_candidate
+        `part`는 현재 부위(재부착으로 바뀔 수 있음), `candidate`는 입력 순서의 후보 번호다
+        (부스 밖 후보를 건너뛰어 GPU 슬롯과 다를 수 있다). P = 가능 후보 수 × N.
+        """
+        n = n_act * self.N
+        state = self.f.state.to_numpy()[:n]
+        np.savez(
+            frames_dir / f"{step:05d}.npz",
+            pos=self.f.pos.to_numpy()[:n].astype(np.float32),
+            attached=state == 0,
+            part=self.f.part.to_numpy()[:n].astype(np.int32),
+            candidate=np.repeat(slot_candidate[:n_act], self.N).astype(np.int32),
+            state=state.astype(np.int8),
+            part_init=self.f.part_init.to_numpy()[:n].astype(np.int32),
+            step=np.int32(step),
+            t_s=np.float32(step * self.dt),
+            particles_per_candidate=np.int32(self.N),
+        )
 
     # ---------------------------------------------------------- 디버그 조회
     def state_counts(self, n_act: int) -> np.ndarray:
