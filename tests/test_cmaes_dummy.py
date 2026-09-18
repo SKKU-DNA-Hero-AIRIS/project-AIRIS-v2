@@ -88,7 +88,8 @@ class _BoothWallEvaluator(DummyEvaluator):
     """shoulder_abduction 이 LIMIT 를 넘으면 부스 밖이라 불가로 판정하는 더미.
 
     목표(TARGET, 벌림 95°)는 불가 구간에 있다. 불가 후보를 best 로 고르지 않으면
-    best 는 LIMIT 이하에 머문다.
+    best 는 LIMIT 이하에 머문다. 벌점은 평가기와 같은 등급화 −1 − 10·d_out 흉내
+    (d_out 대신 초과 각도/180).
     """
 
     LIMIT = 60.0
@@ -96,7 +97,7 @@ class _BoothWallEvaluator(DummyEvaluator):
     def evaluate(self, pose, nozzle, body, scenario):
         result = super().evaluate(pose, nozzle, body, scenario)
         if pose.shoulder_abduction > self.LIMIT:
-            result.score = INFEASIBLE_SCORE
+            result.score = INFEASIBLE_SCORE - 10.0 * (pose.shoulder_abduction - self.LIMIT) / 180.0
             result.extra["infeasible"] = True
         return result
 
@@ -261,3 +262,80 @@ def test_patches_per_m2_reaches_patch_evaluator(scenarios, tmp_path):
     (run_dir,) = [p for p in tmp_path.iterdir() if p.is_dir()]
     meta = json.loads((run_dir / "meta.json").read_text(encoding="utf-8"))
     assert meta["args"]["patches_per_m2"] == 100
+
+
+class _YawWallEvaluator(DummyEvaluator):
+    """|torso_yaw| > 100 이면 불가, 가능하면 점수 = 제거율 = yaw/1000 인 더미 (기준선 집계 검증용)."""
+
+    def evaluate(self, pose, nozzle, body, scenario):
+        result = super().evaluate(pose, nozzle, body, scenario)
+        if abs(pose.torso_yaw) > 100:
+            result.score = INFEASIBLE_SCORE - 1.0
+            result.extra["infeasible"] = True
+        else:
+            result.score = pose.torso_yaw / 1000.0
+            result.total_removal = pose.torso_yaw / 1000.0
+            result.removal_by_part = np.full(5, pose.torso_yaw / 1000.0)
+        return result
+
+
+def test_baseline_b1_averages_feasible_yaws(scenarios):
+    """⑧′ B1: 기본 자세 yaw 12개 중 가능한 것만 평균, 휠체어는 pose_bounds 밖 yaw 를 뺀다."""
+    from scripts.run_baselines import B1_YAWS_DEG, BASELINES, evaluate_condition
+
+    assert B1_YAWS_DEG == [float(y) for y in range(0, 360, 30)]
+    assert [p.torso_yaw for p in BASELINES["B1"]] == [0, 30, 60, 90, 120, 150, 180,
+                                                     -150, -120, -90, -60, -30]
+    assert BASELINES["B2"] == [PoseParams(shoulder_abduction=180.0, elbow_flexion=0.0)]
+    assert set(BASELINES) == {"B0", "B1", "B2"}
+
+    nozzle = load_nozzles()
+    scenario = scenarios["default"]
+    agg = evaluate_condition(_YawWallEvaluator(TARGET, scenario), BASELINES["B1"],
+                             PoseEncoder(scenario), nozzle, BodyParams(), scenario)
+    # 가능한 yaw: 0, ±30, ±60, ±90 → 평균 0
+    assert (agg["n_poses"], agg["n_in_bounds"], agg["n_feasible"]) == (12, 12, 7)
+    assert not agg["infeasible"]
+    assert agg["score"] == pytest.approx(0.0)
+    assert agg["total_removal"] == pytest.approx(0.0)
+    assert agg["pose"].torso_yaw == 0
+
+    wheelchair = scenarios["wheelchair"]
+    agg = evaluate_condition(_YawWallEvaluator(TARGET, wheelchair), BASELINES["B1"],
+                             PoseEncoder(wheelchair), nozzle, BodyParams(), wheelchair)
+    assert (agg["n_in_bounds"], agg["n_feasible"]) == (3, 3)      # torso_yaw [-45, 45]
+    assert agg["yaws"] == "0;30;-30"
+    assert agg["pose"].hip_flexion == 90
+
+
+def test_baseline_all_infeasible_is_marked(scenarios):
+    from scripts.run_baselines import evaluate_condition
+
+    scenario = scenarios["default"]
+    poses = [PoseParams(torso_yaw=150.0), PoseParams(torso_yaw=-120.0)]
+    agg = evaluate_condition(_YawWallEvaluator(TARGET, scenario), poses,
+                             PoseEncoder(scenario), load_nozzles(), BodyParams(), scenario)
+    assert agg["infeasible"]
+    assert agg["n_feasible"] == 0
+    assert agg["score"] <= INFEASIBLE_SCORE
+    assert agg["total_removal"] == 0.0
+    assert not agg["removal_by_part"].any()
+
+
+def test_run_baselines_writes_three_conditions(tmp_path):
+    import csv
+
+    from scripts.run_baselines import main
+
+    assert main(["--evaluator", "dummy", "--log-dir", str(tmp_path)]) == 0
+    (path,) = tmp_path.glob("baselines_*.csv")
+    with path.open(encoding="utf-8") as fh:
+        rows = list(csv.DictReader(fh))
+    assert {(r["scenario"], r["condition"]) for r in rows} == {
+        (s, c) for s in ("default", "pregnant", "wheelchair") for c in ("B0", "B1", "B2")
+    }
+    b1 = {r["scenario"]: r for r in rows if r["condition"] == "B1"}
+    assert b1["default"]["n_in_bounds"] == "12"
+    assert b1["wheelchair"]["n_in_bounds"] == "3"
+    # 더미 점수는 −1 아래로도 내려가지만 infeasible 표시가 없으면 불가가 아니다.
+    assert all(r["infeasible"] == "False" for r in rows)

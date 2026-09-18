@@ -3,8 +3,9 @@
 자세 벡터를 [-1, 1]^dim 으로 정규화(encoding.PoseEncoder)하고 CMA-ES 로 탐색한다.
 cma 는 최소화기이므로 점수에 음수를 취해 tell 한다.
 
-평가기는 부스 밖으로 나가는 자세를 score=INFEASIBLE_SCORE, extra["infeasible"]=True 로
-돌려준다. CMA-ES 에는 그 점수를 그대로 벌점으로 넘기고, best 갱신에서는 제외한다.
+평가기는 부스 밖으로 나가는 자세를 score = −1 − 10·d_out (≤ INFEASIBLE_SCORE),
+extra["infeasible"]=True 로 돌려준다 (총괄 결정 ⑨, d_out 은 벽 초과 거리 m).
+CMA-ES 에는 그 점수를 그대로 벌점으로 넘겨 가능 구간 쪽 기울기를 주고, best 갱신에서는 제외한다.
 """
 from __future__ import annotations
 
@@ -22,8 +23,17 @@ from .encoding import PoseEncoder
 #: 정체 판정 기준. 이보다 작은 best 개선은 개선으로 치지 않는다.
 STAGNATION_TOL = 1e-4
 
-#: 평가기가 불가 자세(부스 밖)에 돌려주는 점수.
+#: 불가 자세(부스 밖) 점수의 상한. 평가기는 −1 − 10·d_out 을 돌려준다.
+#: 실제 평가기(패치판·입자판)에서 가능한 자세의 점수는 −discomfort_weight·불편도(> −1) 이상이다.
 INFEASIBLE_SCORE = -1.0
+
+
+def is_infeasible(result: EvalResult) -> bool:
+    """평가 결과 하나가 불가(부스 밖)인가. extra["infeasible"] 만 본다.
+
+    점수로 판정하지 않는 이유: DummyEvaluator 는 −(정규화 거리)² 라 가능한 자세도 −1 아래로 내려간다.
+    """
+    return bool(result.extra.get("infeasible", False))
 
 
 @dataclass
@@ -61,19 +71,19 @@ def score_batch(
     batch_evaluate 는 점수만 돌려주므로 extra["infeasible"] 을 볼 수 없다.
     - batch_evaluate 를 오버라이드하지 않은 평가기(패치판, 더미)는 기본 구현과 같은
       순차 evaluate 를 직접 불러 extra["infeasible"] 을 읽는다.
-    - 오버라이드한 평가기(입자판)는 batch_evaluate 를 쓰고 score == INFEASIBLE_SCORE 로 판정한다.
+    - 오버라이드한 평가기(입자판)는 batch_evaluate 를 쓰고 score <= INFEASIBLE_SCORE 로 판정한다.
     """
     if type(evaluator).batch_evaluate is Evaluator.batch_evaluate:
         results = [evaluator.evaluate(p, nozzle, body, scenario) for p in poses]
         # 기본 batch_evaluate 와 같은 float32 를 거쳐 기존 실행과 궤적을 맞춘다.
         scores = np.array([r.score for r in results], dtype=np.float32).astype(np.float64)
-        infeasible = np.array([bool(r.extra.get("infeasible", False)) for r in results], dtype=bool)
+        infeasible = np.array([is_infeasible(r) for r in results], dtype=bool)
     else:
         scores = np.asarray(
             evaluator.batch_evaluate([(p, nozzle) for p in poses], body, scenario),
             dtype=np.float64,
         ).reshape(-1)
-        infeasible = scores == INFEASIBLE_SCORE
+        infeasible = scores <= INFEASIBLE_SCORE
     if scores.size != len(poses):
         raise ValueError(
             f"batch_evaluate 가 후보 {len(poses)}개에 점수 {scores.size}개를 돌려줬다"
