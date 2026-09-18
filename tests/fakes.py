@@ -5,6 +5,8 @@ B의 `build_body` / `load_nozzles`가 병합되기 전까지의 대체재였고,
 
 제공하는 것
 - `fake_body(arms_up, yaw_deg)`   -> BodyState : 몸통/머리/팔 4개 캡슐, 패치 280개
+- `fake_mesh_body(arms_up, yaw_deg)` -> BodyState : 상자 6개(몸통·머리·팔·다리) 삼각형 메시.
+  메시 필드(`mesh_vertices` 등)를 채운 메시 모델 대체재 (`docs/mesh_transition.md`, D 단계 8)
 - `fake_nozzles()`                -> NozzleConfig : 좌우 벽 × 높이 2단 = 4개
 
 `fake_velocity_field_per_nozzle`는 B 병합 후 삭제했다 (D 문서 단계 1).
@@ -45,6 +47,129 @@ _ARM_POLAR_UP_DEG = 36.0
 _TORSO_GRID = (24, 7)       # (둘레 방향, 축 방향)
 _ARM_GRID = (8, 4)
 _HEAD_GRID = (6, 8)         # (위도 밴드, 경도)
+
+# --- 가짜 메시 몸 (docs/mesh_transition.md, D 단계 8) --------------------------
+# 상자 치수 (m). 가로 = 몸 좌우(y), 깊이 = 몸 앞뒤(x). 몸통·머리·팔·어깨 높이는 fake_body와 같다.
+_MESH_TORSO_HALF = (0.10, 0.15)     # (깊이/2, 가로/2)
+_MESH_HEAD_HALF = 0.10              # 정육면체 반변
+_MESH_ARM_HALF = 0.04               # 팔 단면 반변
+_MESH_LEG_HALF = 0.06               # 다리 단면 반변
+_MESH_LEG_Y = 0.08                  # 다리 중심 y. 두 다리 사이 틈 0.04
+_MESH_LEG_BOTTOM_Z = 0.05
+# 면 분할 목표 크기. 면마다 ceil(변 길이 / 이 값)칸으로 나눈다 (삼각형 약 1,000개).
+_MESH_CELL_M = 0.05
+
+
+def _box_mesh(p0: np.ndarray, p1: np.ndarray, half_a: float, half_b: float,
+              e_a: np.ndarray, e_b: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """축 p0 -> p1, 단면 반변 (half_a along e_a, half_b along e_b)인 직육면체 삼각형 메시.
+
+    (e_a, e_b, 축 방향)은 오른손 정규 직교 기저여야 한다.
+
+    면마다 격자로 나눠 삼각형 두 개씩 만든다. 면끼리 정점을 공유하지 않는다(광선 판정에는 무관).
+    삼각형은 바깥에서 보아 반시계. Returns (vertices (V,3), faces (F,3)).
+    """
+    axis = p1 - p0
+    length = float(np.linalg.norm(axis))
+    e_c = axis / length
+    assert np.dot(np.cross(e_a, e_b), e_c) > 0.999, "오른손 기저가 아니다"
+    center = 0.5 * (p0 + p1)
+    half = {"a": half_a, "b": half_b, "c": 0.5 * length}
+    basis = {"a": e_a, "b": e_b, "c": e_c}
+    verts, faces = [], []
+    # 면 = (법선 축, 부호, 면 위 두 축). u × v = 법선 방향이 되게 고른다.
+    for n_key, u_key, v_key in (("a", "b", "c"), ("b", "c", "a"), ("c", "a", "b")):
+        for sign in (1.0, -1.0):
+            u_axis = basis[u_key] * sign     # 부호를 u에 실어 u × v 가 바깥을 보게 한다
+            v_axis = basis[v_key]
+            nu = max(1, int(np.ceil(2 * half[u_key] / _MESH_CELL_M)))
+            nv = max(1, int(np.ceil(2 * half[v_key] / _MESH_CELL_M)))
+            us = np.linspace(-half[u_key], half[u_key], nu + 1)
+            vs = np.linspace(-half[v_key], half[v_key], nv + 1)
+            grid = (center + sign * half[n_key] * basis[n_key]
+                    + us[:, None, None] * u_axis + vs[None, :, None] * v_axis)   # (nu+1, nv+1, 3)
+            base = sum(len(v) for v in verts)
+            verts.append(grid.reshape(-1, 3))
+            idx = base + np.arange((nu + 1) * (nv + 1)).reshape(nu + 1, nv + 1)
+            a, b = idx[:-1, :-1].ravel(), idx[1:, :-1].ravel()
+            c, d = idx[1:, 1:].ravel(), idx[:-1, 1:].ravel()
+            faces.append(np.stack([a, b, c], axis=1))
+            faces.append(np.stack([a, c, d], axis=1))
+    return np.concatenate(verts), np.concatenate(faces)
+
+
+def fake_mesh_body(arms_up: bool = False, yaw_deg: float = 0.0) -> BodyState:
+    """상자 6개(몸통·머리·팔 2·다리 2)로 만든 가짜 메시 몸. 부스 중앙에 선다.
+
+    B의 메시 `build_body`가 병합되기 전 D의 메시 가림 판정을 시험하는 대체재다.
+    - 패치 = 삼각형마다 1개(무게중심), 법선 = 면 법선, 면적 = 삼각형 면적, `patch_face` = 그 면.
+    - 부위: 몸통은 회전 전 법선의 x 성분이 양수면 `torso_front`, 아니면 `torso_back`.
+    - `capsules`: 상자마다 근사 캡슐 1개 (A 입자 충돌·캡슐 폴백용). `patch_capsule`은 None.
+    - `arms_up`, `yaw_deg`는 `fake_body`와 같은 뜻이다.
+    """
+    center = np.array(_booth_center())
+    cx = center[0]
+    ex, ey, ez = np.eye(3)
+    torso_top_z = _TORSO_BOTTOM_Z + _TORSO_LENGTH_M
+    shoulder_z = torso_top_z - _SHOULDER_DROP_M
+    polar = np.radians(_ARM_POLAR_UP_DEG if arms_up else _ARM_POLAR_DOWN_DEG)
+    head_bottom = torso_top_z + _HEAD_GAP_M
+
+    # (p0, p1, half_a, half_b, e_a, e_b, part, capsule_radius)
+    boxes = [
+        (np.array([cx, 0.0, _TORSO_BOTTOM_Z]), np.array([cx, 0.0, torso_top_z]),
+         *_MESH_TORSO_HALF, ex, ey, "torso", _MESH_TORSO_HALF[1]),
+        (np.array([cx, 0.0, head_bottom]), np.array([cx, 0.0, head_bottom + 2 * _MESH_HEAD_HALF]),
+         _MESH_HEAD_HALF, _MESH_HEAD_HALF, ex, ey, "head", _MESH_HEAD_HALF),
+    ]
+    for sign in (-1.0, 1.0):
+        shoulder = np.array([cx, sign * _SHOULDER_OFFSET_M, shoulder_z])
+        direction = np.array([0.0, sign * np.sin(polar), np.cos(polar)])
+        e_b = _unit(np.cross(direction, ex))     # (ex, e_b, direction) 오른손 기저
+        boxes.append((shoulder, shoulder + _ARM_LENGTH_M * direction, _MESH_ARM_HALF,
+                      _MESH_ARM_HALF, ex, e_b, "arms", _MESH_ARM_HALF))
+        boxes.append((np.array([cx, sign * _MESH_LEG_Y, _MESH_LEG_BOTTOM_Z]),
+                      np.array([cx, sign * _MESH_LEG_Y, _TORSO_BOTTOM_Z]),
+                      _MESH_LEG_HALF, _MESH_LEG_HALF, ex, ey, "legs", _MESH_LEG_HALF))
+
+    verts, faces, face_part, capsules, capsule_part = [], [], [], [], []
+    for p0, p1, half_a, half_b, e_a, e_b, part, radius in boxes:
+        v, f = _box_mesh(p0, p1, half_a, half_b, e_a, e_b)
+        tri = v[f]
+        n = _unit(np.cross(tri[:, 1] - tri[:, 0], tri[:, 2] - tri[:, 0]))
+        if part == "torso":
+            ids = np.where(n[:, 0] > 1e-9, PART_NAMES.index("torso_front"),
+                           PART_NAMES.index("torso_back"))
+        else:
+            ids = np.full(len(f), PART_NAMES.index(part))
+        faces.append(f + sum(len(x) for x in verts))
+        verts.append(v)
+        face_part.append(ids)
+        capsules.append(np.concatenate([p0, p1, [radius]]))
+        capsule_part.append(PART_NAMES.index("torso_front" if part == "torso" else part))
+
+    verts = _rotate_z(np.concatenate(verts), yaw_deg, center)
+    faces = np.concatenate(faces)
+    tri = verts[faces]
+    cross = np.cross(tri[:, 1] - tri[:, 0], tri[:, 2] - tri[:, 0])
+    caps = np.stack(capsules)
+    caps = np.concatenate([_rotate_z(caps[:, 0:3], yaw_deg, center),
+                           _rotate_z(caps[:, 3:6], yaw_deg, center), caps[:, 6:7]], axis=1)
+    face_part = np.concatenate(face_part)
+    return BodyState(
+        patch_pos=tri.mean(axis=1).astype(np.float32),
+        patch_normal=_unit(cross).astype(np.float32),
+        patch_area=(0.5 * np.linalg.norm(cross, axis=1)).astype(np.float32),
+        patch_part=face_part.astype(np.int32),
+        capsules=caps.astype(np.float32),
+        capsule_part=np.array(capsule_part, dtype=np.int32),
+        patch_capsule=None,
+        mesh_vertices=verts.astype(np.float32),
+        mesh_faces=faces.astype(np.int32),
+        mesh_face_part=face_part.astype(np.int32),
+        patch_face=np.arange(len(faces), dtype=np.int32),
+    )
+
 
 # --- 가짜 노즐 ----------------------------------------------------------------
 # 높이는 D 문서 단계 1이 지정한 두 단. 벽 y, yaw, pitch, 세기는 configs/nozzles.yaml

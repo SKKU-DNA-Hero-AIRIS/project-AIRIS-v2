@@ -122,14 +122,104 @@ def occlusion(state: BodyState, nozzle: NozzleConfig, physics_cfg: dict,
 
     원형 노즐은 0 또는 1. 슬롯 노즐은 슬롯을 따라 찍은 `slot_points`개 점 중 패치를 볼 수 있는
     점의 비율이다 (길이 0.6 m 슬롯을 중심 한 점으로 보면 팔 하나가 슬롯 전체를 가린 것으로
-    잘못 판정된다). 점 하나의 판정은 `_visible_from_points`.
+    잘못 판정된다).
+
+    점 하나의 판정은 몸 모델에 따라 갈린다 (`docs/mesh_transition.md` 결정 5).
+    - 메시 모델(`state.mesh_vertices`가 있음): 광선-삼각형 교차 `_visible_from_points_mesh`.
+      `capsules` 중 가림 전용(`capsule_part == -1`, 휠체어 프레임)만 캡슐 판정을 더한다.
+      뼈 근사 캡슐은 메시와 겹치므로 가림에 쓰지 않는다.
+    - 캡슐 모델: 선분-캡슐 교차 `_visible_from_points` (폴백).
     """
     src, owner = occlusion_sources(nozzle, slot_points)
-    vis = _visible_from_points(state, src, physics_cfg).astype(np.float64)    # (S,N)
+    if state.mesh_vertices is not None:
+        vis = _visible_from_points_mesh(state, src, physics_cfg)                  # (S,N)
+        frame = _frame_only(state)
+        if frame is not None:
+            vis &= _visible_from_points(frame, src, physics_cfg)
+    else:
+        vis = _visible_from_points(state, src, physics_cfg)
+    vis = vis.astype(np.float64)
     m_count = np.asarray(nozzle.positions).reshape(-1, 3).shape[0]
     total = np.zeros((m_count, vis.shape[1]))
     np.add.at(total, owner, vis)
     return total / np.bincount(owner, minlength=m_count)[:, None]
+
+
+def _frame_only(state: BodyState) -> BodyState | None:
+    """가림 전용 캡슐(`capsule_part == -1`)만 남긴 사본. 없으면 None."""
+    if state.capsule_part is None or state.capsules is None:
+        return None
+    keep = np.asarray(state.capsule_part) == -1
+    if not keep.any():
+        return None
+    return BodyState(patch_pos=state.patch_pos, patch_normal=state.patch_normal,
+                     patch_area=state.patch_area, patch_part=state.patch_part,
+                     capsules=np.asarray(state.capsules)[keep],
+                     capsule_part=np.asarray(state.capsule_part)[keep], patch_capsule=None)
+
+
+# 자기 면에 맞은 광선을 다시 쏠 때 맞은 점에서 더 나아가는 거리 (광선 길이 비율).
+_SELF_HIT_ADVANCE = 1e-6
+# 자기 면 재발사 최대 횟수. 볼록하지 않은 면 배치에서도 자기 면은 광선당 한 번만 맞는다.
+_SELF_HIT_RETRIES = 2
+
+
+def _visible_from_points_mesh(state: BodyState, sources: np.ndarray,
+                              physics_cfg: dict) -> np.ndarray:
+    """(S, N) bool. 메시 몸에서 광원 점 s가 패치 n을 볼 수 있으면 True.
+
+    1. 뒷면: `normal · (source - patch_pos) <= 0` 이면 가림 (캡슐 모델과 같은 기준).
+    2. 광선: 시작 `patch_pos + d·normal`, 방향 `source - 시작`(정규화하지 않음)으로 Open3D
+       `RaycastingScene.cast_rays`를 쏜다. 첫 교차의 `t_hit < 1`이면 광원보다 앞에서 막힌 것이다.
+    3. 자기 면(`patch_face`)에 맞은 광선은 맞은 점 너머에서 다시 쏜다. 광원이 접평면 바로 위
+       (높이 < d)에 있으면 광선이 자기 면으로 내려갈 수 있다.
+    """
+    import open3d as o3d   # 메시 모델에서만 필요하다. 캡슐 경로는 open3d 없이 돈다.
+
+    delta = float(physics_cfg["air"]["wall_offset_m"])
+    pos = np.asarray(state.patch_pos, dtype=np.float64)
+    normal = np.asarray(state.patch_normal, dtype=np.float64)
+    src = np.asarray(sources, dtype=np.float64).reshape(-1, 3)
+    n_src, n_patch = src.shape[0], pos.shape[0]
+
+    visible = src @ normal.T - np.einsum("ij,ij->i", normal, pos)[None, :] > 0.0   # (S,N) 앞면
+    si, ni = np.nonzero(visible)
+    if si.size == 0:
+        return visible
+
+    scene = o3d.t.geometry.RaycastingScene()
+    scene.add_triangles(
+        o3d.core.Tensor(np.ascontiguousarray(state.mesh_vertices, dtype=np.float32)),
+        o3d.core.Tensor(np.ascontiguousarray(state.mesh_faces, dtype=np.uint32)))
+
+    origin = pos[ni] + delta * normal[ni]                       # (Q,3)
+    direction = src[si] - origin                                # (Q,3) 길이 = 광원까지 거리
+    own = (None if state.patch_face is None
+           else np.asarray(state.patch_face, dtype=np.int64)[ni])
+
+    start = np.zeros(si.size)                                   # 광선 매개변수 시작점 (0~1)
+    pending = np.arange(si.size)
+    blocked = np.zeros(si.size, dtype=bool)
+    for _ in range(_SELF_HIT_RETRIES + 1):
+        o = origin[pending] + start[pending, None] * direction[pending]
+        d = direction[pending] * (1.0 - start[pending])[:, None]
+        rays = np.concatenate([o, d], axis=1).astype(np.float32)
+        hit = scene.cast_rays(o3d.core.Tensor(rays))
+        t_hit = hit["t_hit"].numpy().astype(np.float64)         # 단위: 이 광선의 d 길이
+        prim = hit["primitive_ids"].numpy().astype(np.int64)
+        in_range = t_hit < 1.0
+        self_hit = in_range & (own is not None) & (prim == (own[pending] if own is not None else -1))
+        blocked[pending[in_range & ~self_hit]] = True
+        if not self_hit.any():
+            break
+        again = pending[self_hit]
+        start[again] = start[again] + (t_hit[self_hit] + _SELF_HIT_ADVANCE) * (1.0 - start[again])
+        pending = again[start[again] < 1.0]
+        if pending.size == 0:
+            break
+
+    visible[si[blocked], ni[blocked]] = False
+    return visible
 
 
 def _visible_from_points(state: BodyState, sources: np.ndarray, physics_cfg: dict) -> np.ndarray:
