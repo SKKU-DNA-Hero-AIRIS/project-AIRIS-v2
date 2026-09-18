@@ -21,3 +21,5 @@ data/models/*
 
 # SMPL-X 모델 파일은 재배포 금지라 저장소에 두지 않는다. MakeHuman(CC0) 자산은 data/meshes/makehuman/ 에 커밋 (E)
 data/meshes/smplx/
+# B 의 sim 메시(MakeHuman CC0 파생, scripts/build_sim_mesh.py)는 커밋한다 (위 *.npz 규칙의 예외)
+!data/meshes/makehuman/sim_mesh.npz

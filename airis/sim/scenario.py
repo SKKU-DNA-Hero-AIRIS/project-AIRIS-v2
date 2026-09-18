@@ -17,6 +17,18 @@ def load_scenarios(path: Path | None = None) -> dict[str, Scenario]:
     return {name: _resolve(name, raw) for name in raw}
 
 
+def scenario_mesh_targets(name: str, path: Path | None = None) -> dict[str, float]:
+    """시나리오의 `mesh_targets` {MakeHuman 타깃 이름: 가중치} (상속 포함). Scenario 타입 밖의 메시 전용 설정."""
+    path = path or _ROOT / "configs" / "scenarios.yaml"
+    raw = yaml.safe_load(path.read_text(encoding="utf-8"))
+    node, out = raw.get(name, {}), {}
+    parent = node.get("inherits")
+    if parent:
+        out.update(raw.get(parent, {}).get("mesh_targets", {}) or {})
+    out.update(node.get("mesh_targets", {}) or {})
+    return {str(k): float(v) for k, v in out.items()}
+
+
 def _resolve(name: str, raw: dict) -> Scenario:
     node = dict(raw[name])
     parent = node.pop("inherits", None)

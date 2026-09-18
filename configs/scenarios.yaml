@@ -26,6 +26,10 @@ pregnant:
     shoulder_abduction: 0.6
   nozzle_strength_cap:
     torso_front: 0.6
+  # 메시 몸(body.model: mesh)에 적용할 MakeHuman 모디파이어 타깃 {파일 이름: 가중치}. 파일은 data/meshes/makehuman/.
+  # 파일이 없으면 적용하지 않는다 (stomach-pregnant-incr.target 다운로드는 사용자 승인 대기).
+  mesh_targets:
+    stomach-pregnant-incr: 1.0
 
 wheelchair:
   inherits: default
