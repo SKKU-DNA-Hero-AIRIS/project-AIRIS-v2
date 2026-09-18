@@ -268,7 +268,8 @@ def test_slot_layout_front_facing_wall_increases_front_removal(sim, slot_nozzles
     """슬롯 배치의 "마주 봄" 항목: 정면이 측면 바(벽)를 보면(yaw ±90) 정면 제거율이 yaw 0보다 크다.
 
     측면 바가 몸과 같은 x에 좌우 대칭이라 원형 배치의 "등지면 하락"은 정의되지 않는다. 통합 관리
-    결정으로 이 항목을 슬롯 배치의 E1으로 둔다. 충돌 보정 후 약 2.7배 (0.047 -> 0.126).
+    결정으로 이 항목을 슬롯 배치의 E1으로 둔다. 충돌 보정 후 K=3에서 0.015 -> 0.114 (슬롯 중심 한 점
+    판정일 때는 0.047 -> 0.126).
     """
     along = _eval(sim, PoseParams(torso_yaw=0.0), slot_nozzles)
     facing_wall = _eval(sim, PoseParams(torso_yaw=wall_yaw), slot_nozzles)
