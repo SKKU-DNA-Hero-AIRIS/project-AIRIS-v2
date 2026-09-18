@@ -903,3 +903,67 @@ def test_head_on_jet_detaches_only_with_impingement(scenario):
             ev.destroy()
     assert detached["on"] > detached["off"], detached
     assert detached["on"] >= 5, detached
+
+
+# ------------------------------------------------------------ 단계 12. 프레임 덤프
+def test_frame_dump_format_and_candidate_mapping(tmp_path, scenario):
+    """`dump_every` 스텝마다 frames/<step>.npz. interfaces.md 필드(pos, attached, part, candidate)와
+    내용이 그 스텝의 실제 입자 상태와 같고, candidate는 입력 순서 번호다 (불가 후보는 빠짐)."""
+    every, duration = 5, 0.1
+    ev = ParticleEvaluator(load_physics(), max_candidates=B_DEV, particles_per_candidate=N_DEV,
+                           duration_s=duration, dump_every=every, dump_dir=tmp_path)
+    body_a = cylinder_body(POSE_A)
+    out_y = _moved_patch(body_a, 0, [CENTER_X, BOOTH["width_m"] / 2 + 0.02, 1.0])
+    seen = {}
+
+    def grab(step, e, n):
+        if step % every == 0:
+            seen[step] = {"pos": e.f.pos.to_numpy()[:n * N_DEV],
+                          "state": e.f.state.to_numpy()[:n * N_DEV]}
+    try:
+        res = ev.batch_evaluate_states(
+            [out_y, body_a, cylinder_body(POSE_B)], [PoseParams(shoulder_abduction=30.0),
+                                                     POSE_A, POSE_B],
+            grazing_nozzles(), scenario, step_callback=grab)
+    finally:
+        ev.destroy()
+    assert res[0].extra["infeasible"] and not res[1].extra["infeasible"]
+
+    n_steps = round(duration / ev.dt)
+    files = sorted((tmp_path / "frames").glob("*.npz"))
+    assert [f.stem for f in files] == [f"{k:05d}" for k in range(0, n_steps, every)]
+    for f in files:
+        with np.load(f) as fr:
+            step = int(fr["step"])
+            assert fr["pos"].shape == (2 * N_DEV, 3) and fr["pos"].dtype == np.float32
+            np.testing.assert_array_equal(fr["pos"], seen[step]["pos"])
+            np.testing.assert_array_equal(fr["state"], seen[step]["state"])
+            np.testing.assert_array_equal(fr["attached"], seen[step]["state"] == 0)
+            np.testing.assert_array_equal(fr["candidate"], np.repeat([1, 2], N_DEV))
+            assert fr["part"].shape == fr["part_init"].shape == (2 * N_DEV,)
+            assert float(fr["t_s"]) == pytest.approx(step * ev.dt)
+    with np.load(files[-1]) as last:
+        assert (~last["attached"]).any(), "마지막 프레임까지 이탈이 하나도 없으면 공허한 덤프"
+
+
+def test_frame_dump_off_and_missing_dir(tmp_path, scenario):
+    """dump_every = 0이면 아무것도 쓰지 않고, > 0인데 디렉터리가 없으면 막는다."""
+    body = cylinder_body(POSE_A)
+    ev = ParticleEvaluator(load_physics(), max_candidates=1, particles_per_candidate=10,
+                           duration_s=0.02, dump_every=0, dump_dir=tmp_path)
+    try:
+        ev.batch_evaluate_states([body], [POSE_A], grazing_nozzles(), scenario)
+    finally:
+        ev.destroy()
+    assert not (tmp_path / "frames").exists()
+
+    ev = ParticleEvaluator(load_physics(), max_candidates=1, particles_per_candidate=10,
+                           duration_s=0.02, dump_every=2)
+    try:
+        with pytest.raises(ValueError, match="dump_dir"):
+            ev.batch_evaluate_states([body], [POSE_A], grazing_nozzles(), scenario)
+        ev.batch_evaluate_states([body], [POSE_A], grazing_nozzles(), scenario,
+                                 dump_dir=tmp_path / "call")
+    finally:
+        ev.destroy()
+    assert len(list((tmp_path / "call" / "frames").glob("*.npz"))) == 5
