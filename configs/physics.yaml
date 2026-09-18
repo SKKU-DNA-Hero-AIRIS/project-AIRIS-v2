@@ -20,11 +20,12 @@ jet:
     decay_constant: 5.8             # K_p. Rajaratnam 평면 제트 U_m/U0 = 2.4·sqrt(h/s) → K_p = 2.4² ≈ 5.8
     spread_rate: 0.10               # 평면 제트 반속도 반폭 확산율 (실험값 ≈ 0.10)
   impingement:
-    # 충돌 제트 보정은 B 단계 8 (2주차 옵션). 아직 구현되지 않았으므로 false 로 둔다.
-    # 구현되면 true 로 되돌린다. true 인 채로 surface_normals 를 넘기면 jet.py 가 막는다.
-    enabled: false
-    stagnation_radius_factor: 2.0 # 정체 영역 반경 (제트 반지름 배수)
-    wall_jet_start_factor: 2.9    # 벽면 제트 영역 시작
+    # 충돌 제트 → 벽면 제트 보정, 00_common.md 4.2b (B 단계 8, 총괄 ⑩ 으로 필수 격상).
+    # velocity_field(_per_nozzle) 에 surface_normals 를 넘길 때만 적용된다.
+    enabled: true
+    # 벽면 제트 진폭 k. 문헌(Beltaos & Rajaratnam 1974 등) 계수는 원문 미확인이라 근거로 쓰지 않는다.
+    # E3 민감도 스윕 변수 (0.5, 1, 2). 1.0 은 자유 제트 중심 속도를 그대로 쓰는 중립값이다.
+    wall_jet_gain: 1.0
   pulse:
     enabled: false
     period_s: 0.5
@@ -45,14 +46,15 @@ particles:
   drag_model: schiller_naumann
 
 adhesion:                         # rock'n'roll 모델 근사
-  # 실효 중앙값 tau_med = critical_shear_pa_median × fabric_roughness_factor (00_common.md 4.3) = 0.05 Pa.
-  # 미보정 작업값, E3 민감도 스윕 대상. 제거율은 이 곱에만 의존한다.
+  # 실효 중앙값 tau_med = critical_shear_pa_median × fabric_roughness_factor (00_common.md 4.3) = 0.125 Pa.
+  # 미보정 작업값, E3 민감도 스윕 대상 (jet.impingement.wall_jet_gain 과 함께). 제거율은 이 곱에만 의존한다.
   critical_shear_pa_median: 0.5   # 매끈한 표면, 20 µm 입자 이탈 전단 (Ibrahim, Dunn & Brach 2003, J. Aerosol Sci. 34:765)
   critical_shear_sigma_log: 0.8
-  # 1.0 → 0.1 (B, PR #10, 총괄 결정). 거친 표면에서 이탈 전단이 낮아지는 비율 (같은 논문의 거친 표면 결과 근거).
-  # 옷감 값으로 보정되지 않았다. 고정 노즐 배치에서 몸 표면 전단은 p99 약 0.1 Pa 라 실효 0.5 Pa 이면
-  # 제거율이 모든 자세에서 0 에 붙는다. Cf(friction_coeff)는 교과서값 그대로 둔다.
-  fabric_roughness_factor: 0.1
+  # 거친 표면에서 이탈 전단이 낮아지는 비율 (같은 논문의 거친 표면 결과 근거). 옷감 값으로 보정되지 않았다.
+  # 1.0 → 0.1 (PR #10) → 0.25 (B 단계 8). 4.2b 벽면 제트 보정(k = 1)을 켜고 퓨리움 부스(폭 1.46)에서
+  # 기준 자세 PoseParams() 전신 R ≈ 7.9% 가 되도록 맞췄다 (목표 5~10%, 7.5% 에 해당하는 값 0.26 을 반올림).
+  # 보정 없이(법선을 넘기지 않는 평가기) 이 값을 쓰면 기준 자세 R ≈ 1.6% 다.
+  fabric_roughness_factor: 0.25
   redeposition_prob: 0.05
 
 simulation:
