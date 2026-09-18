@@ -45,6 +45,8 @@ class OptResult:
     free_keys: list[str] = field(default_factory=list)
     n_infeasible: int = 0         # 불가 판정을 받은 후보 수 (전 세대 합)
     per_start: list[dict] = field(default_factory=list)  # 시작점별 요약 (start, best_score, ...)
+    # record_candidates=True 일 때만 채운다: 평가한 후보 전부 {"x": 정규화 벡터, "score", "infeasible", "start"}
+    candidates: list[dict] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -109,6 +111,7 @@ def run_cmaes(
     sigma0: float = 0.5,
     tol_stagnation_gens: int = 30,
     starts: Sequence[Start] | None = None,
+    record_candidates: bool = False,
     log_dir: Path | str | None = None,
     exp_id: str | None = None,
     tag: str = "opt",
@@ -148,6 +151,7 @@ def run_cmaes(
 
     history: list[dict] = []
     per_start: list[dict] = []
+    candidates: list[dict] = []
     best_score = -np.inf
     best_x: np.ndarray | None = None
     n_evals = 0
@@ -179,6 +183,12 @@ def run_cmaes(
             X = es.ask()
             poses = [enc.decode(x) for x in X]
             scores, infeasible = score_batch(evaluator, poses, nozzle, body, scenario)
+            if record_candidates:
+                candidates.extend(
+                    {"x": np.asarray(x, dtype=np.float64).copy(), "score": float(sc),
+                     "infeasible": bool(bad), "start": start.name}
+                    for x, sc, bad in zip(X, scores, infeasible)
+                )
 
             es.tell(X, (-scores).tolist())   # cma 는 최소화. 불가 후보도 벌점 점수 그대로 넘긴다.
 
@@ -259,4 +269,5 @@ def run_cmaes(
         free_keys=list(enc.free_keys),
         n_infeasible=n_infeasible,
         per_start=per_start,
+        candidates=candidates,
     )
