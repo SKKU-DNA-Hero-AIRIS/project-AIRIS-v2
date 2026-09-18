@@ -274,3 +274,168 @@ def test_render_frames_script_synthetic(tmp_path):
     assert (tmp_path / "t" / "anim.html").stat().st_size > 10_000
     meta = json.loads((tmp_path / "t" / "render_meta.json").read_text(encoding="utf-8"))
     assert meta["poses"][0]["torso_yaw"] == 90.0
+
+
+# ---------------------------------------------------------------------------
+# 사람 메시 (MakeHuman + 선형 블렌드 스키닝)
+# ---------------------------------------------------------------------------
+from airis.viz import human_mesh as hm  # noqa: E402
+
+MESH_POSES = [
+    PoseParams(),
+    PoseParams(shoulder_abduction=180.0, elbow_flexion=0.0),
+    PoseParams(torso_yaw=90.0),
+    PoseParams(40.0, 30.0, 60.0, 15.0, -45.0, 20.0, 25.0),
+    PoseParams(shoulder_abduction=10.0, shoulder_flexion=120.0, elbow_flexion=90.0, torso_pitch=-10.0),
+]
+_LEG_REST = 0.45 * np.array([0.0, 0.0889, -0.996])       # 합성 뼈대의 다리 구간 (약간 벌림)
+
+
+def _stick_rig() -> hm.HumanMesh:
+    """자산 없이 자세 매핑만 보는 작은 뼈대. 정점 = 관절 끝점, 각 정점은 한 뼈에 가중치 1.
+
+    기본 자세는 MakeHuman 처럼 A자다 (팔 40° 벌림, 팔꿈치 앞으로 굽힘, 다리 약간 벌림).
+    정점 순서는 쪽마다 [팔꿈치, 손목, 무릎, 발목, 어깨]."""
+    names = ["root", "spine05", "upperarm01.L", "lowerarm01.L", "wrist.L",
+             "upperarm01.R", "lowerarm01.R", "wrist.R",
+             "upperleg01.L", "lowerleg01.L", "upperleg01.R", "lowerleg01.R"]
+    parent = {"root": None, "spine05": "root", "upperarm01.L": "spine05", "lowerarm01.L": "upperarm01.L",
+              "wrist.L": "lowerarm01.L", "upperarm01.R": "spine05", "lowerarm01.R": "upperarm01.R",
+              "wrist.R": "lowerarm01.R", "upperleg01.L": "root", "lowerleg01.L": "upperleg01.L",
+              "upperleg01.R": "root", "lowerleg01.R": "upperleg01.R"}
+    a = np.deg2rad(40.0)
+    head = {"root": np.array([0.0, 0.0, 0.9]), "spine05": np.array([0.0, 0.0, 0.9])}
+    ankle = {}
+    for s, sg in (("L", 1.0), ("R", -1.0)):
+        sh = np.array([0.0, sg * 0.2, 1.4])
+        el = sh + 0.30 * np.array([0.0, sg * np.sin(a), -np.cos(a)])
+        wr = el + 0.25 * _unit([0.6, sg * 0.3, -0.74])
+        head[f"upperarm01.{s}"], head[f"lowerarm01.{s}"], head[f"wrist.{s}"] = sh, el, wr
+        hip = np.array([0.0, sg * 0.1, 0.9])
+        leg = _LEG_REST * np.array([1.0, sg, 1.0])
+        head[f"upperleg01.{s}"], head[f"lowerleg01.{s}"] = hip, hip + leg
+        ankle[s] = hip + 2 * leg
+    verts, owner = [], []
+    for s in ("L", "R"):
+        verts += [head[f"lowerarm01.{s}"], head[f"wrist.{s}"], head[f"lowerleg01.{s}"], ankle[s],
+                  head[f"upperarm01.{s}"]]
+        owner += [f"upperarm01.{s}", f"lowerarm01.{s}", f"upperleg01.{s}", f"lowerleg01.{s}", "spine05"]
+    W = np.zeros((len(verts), len(names)))
+    for i, o in enumerate(owner):
+        W[i, names.index(o)] = 1.0
+    heads = np.array([head[n] for n in names])
+    return hm.HumanMesh(
+        vertices=np.asarray(verts, float), faces=np.array([[0, 1, 2]]), bone_names=names,
+        bone_parent=np.array([names.index(parent[n]) if parent[n] else -1 for n in names]),
+        bone_head=heads, bone_tail=heads.copy(), weights=W)
+
+
+def _unit(v):
+    v = np.asarray(v, float)
+    return v / np.linalg.norm(v)
+
+
+@pytest.mark.parametrize("pose", MESH_POSES)
+def test_mesh_pose_mapping_matches_capsule_joint_directions(pose):
+    """메시 상완·전완 방향이 B의 `joint_positions`와 같다 (A자 기본 자세에서 출발해도).
+
+    다리는 기본 자세의 벌림을 유지하고 B와 같은 회전(yaw·고관절·무릎)만 넣는다."""
+    from airis.sim.body import joint_positions
+    rig = _stick_rig()
+    v = hm.pose_vertices(rig, pose)
+    joints, _, _ = joint_positions(BodyParams(), pose, SCENARIOS["default"])
+    r_yaw = hm._rot("z", pose.torso_yaw)
+    for k, (s, sg) in enumerate((("L", 1.0), ("R", -1.0))):
+        el, wr, kn, an, sh = v[5 * k: 5 * k + 5]
+        np.testing.assert_allclose(_unit(el - sh), _unit(joints[f"elbow_{s}"] - joints[f"shoulder_{s}"]),
+                                   atol=1e-9)
+        np.testing.assert_allclose(_unit(wr - el), _unit(joints[f"wrist_{s}"] - joints[f"elbow_{s}"]),
+                                   atol=1e-9)
+        leg = _LEG_REST * np.array([1.0, sg, 1.0])
+        r_thigh = r_yaw @ hm._rot("y", -pose.hip_flexion)
+        hip = rig.bone_head[rig.bone(f"upperleg01.{s}")]
+        np.testing.assert_allclose(kn - (r_yaw @ (hip - rig.hip_center) + rig.hip_center),
+                                   r_thigh @ leg, atol=1e-9)
+        np.testing.assert_allclose(an - kn, r_thigh @ hm._rot("y", pose.knee_flexion) @ leg, atol=1e-9)
+    # 몸통 회전(yaw·pitch)은 어깨점을 고관절 중심 기준으로 돌린다
+    R = hm._rot("z", pose.torso_yaw) @ hm._rot("y", pose.torso_pitch)
+    np.testing.assert_allclose(v[4], R @ (rig.bone_head[rig.bone("upperarm01.L")] - rig.hip_center)
+                               + rig.hip_center, atol=1e-9)
+
+
+def test_align_rotation():
+    rng = np.random.default_rng(0)
+    for _ in range(20):
+        a, b = rng.normal(size=3), rng.normal(size=3)
+        R = hm.align(a, b)
+        np.testing.assert_allclose(R @ _unit(a), _unit(b), atol=1e-9)
+        np.testing.assert_allclose(R @ R.T, np.eye(3), atol=1e-9)
+        assert np.linalg.det(R) == pytest.approx(1.0)
+    R = hm.align([0, 0, -1], [0, 0, 1])                  # 반대 방향 (팔 내림 → 만세)
+    np.testing.assert_allclose(R @ np.array([0, 0, -1]), [0, 0, 1], atol=1e-9)
+
+
+def test_resolve_pose_applies_wheelchair_fixed_pose():
+    p = hm.resolve_pose(PoseParams(hip_flexion=10.0), SCENARIOS["wheelchair"])
+    assert p.hip_flexion == 90.0 and p.knee_flexion == 90.0
+    assert hm.resolve_pose(PoseParams(hip_flexion=10.0), SCENARIOS["default"]).hip_flexion == 10.0
+
+
+# 아래는 실제 MakeHuman 자산(git 밖 data/meshes/makehuman/, CC0)이 있을 때만 돈다.
+_HAS_MH = all((hm.MAKEHUMAN_DIR / n).exists() for n in hm.MAKEHUMAN_FILES)
+needs_mh = pytest.mark.skipif(not _HAS_MH, reason="MakeHuman 자산 없음 (human_mesh.py 머리말 주소에서 받기)")
+
+
+@pytest.fixture(scope="module")
+def mh():
+    return hm.cached_makehuman()
+
+
+@needs_mh
+def test_makehuman_load(mh):
+    assert mh.vertices.shape == (13380, 3) and mh.faces.shape == (26756, 3)
+    assert len(mh.bone_names) == 163
+    np.testing.assert_allclose(mh.weights.sum(axis=1), 1.0, atol=1e-9)
+    assert mh.faces.min() == 0 and mh.faces.max() == mh.vertices.shape[0] - 1
+    v, f = mh.vertices, mh.faces                          # 면이 바깥을 향한다 (부호 있는 부피 > 0)
+    assert np.einsum("ij,ij->i", v[f[:, 0]], np.cross(v[f[:, 1]], v[f[:, 2]])).sum() > 0
+    assert mh.bone_head[mh.bone("upperarm01.L"), 1] > 0 > mh.bone_head[mh.bone("upperarm01.R"), 1]
+
+
+@needs_mh
+@pytest.mark.parametrize("scenario", ["default", "pregnant", "wheelchair"])
+@pytest.mark.parametrize("pose", MESH_POSES[:3])
+def test_makehuman_posed_in_booth(mh, scenario, pose):
+    sc = SCENARIOS[scenario]
+    v = hm.posed_in_booth(mh, BodyParams(), pose, sc, BOOTH)
+    assert v.shape == mh.vertices.shape and np.isfinite(v).all()
+    hip = hm.place_in_booth(mh.hip_center[None, :], mh, BodyParams(), BOOTH, sc)[0]
+    assert hip[0] == pytest.approx(BOOTH["length_m"] / 2.0) and hip[1] == pytest.approx(0.0)
+    if sc.seat_height_m is None:
+        assert v[:, 2].min() == pytest.approx(0.0, abs=1e-9)          # 발바닥이 바닥
+        if pose.shoulder_abduction < 90:
+            assert v[:, 2].max() == pytest.approx(1.70, abs=0.02)     # 키 1.70 m
+    else:
+        assert hip[2] == pytest.approx(sc.seat_height_m)              # 고관절 중심 = 좌석 높이
+        assert v[:, 2].min() > 0.0
+    assert np.abs(v[:, 1]).max() < BOOTH["width_m"] / 2.0            # 세 자세 모두 벽 안
+    assert v[:, 2].max() < BOOTH["height_m"]
+
+
+@needs_mh
+def test_makehuman_pose_speed(mh):
+    import time
+    hm.posed_in_booth(mh, BodyParams(), PoseParams(), SCENARIOS["default"], BOOTH)
+    t = time.perf_counter()
+    for _ in range(5):
+        hm.posed_in_booth(mh, BodyParams(), PoseParams(torso_yaw=90.0), SCENARIOS["default"], BOOTH)
+    assert (time.perf_counter() - t) / 5 < 0.2                        # 여유 있게 (실측 약 16 ms)
+
+
+@needs_mh
+def test_figure_from_mesh(mh):
+    v = hm.posed_in_booth(mh, BodyParams(), PoseParams(), SCENARIOS["default"], BOOTH)
+    state = build_body(BodyParams(), PoseParams(), SCENARIOS["default"], patches_per_m2=400)
+    fig = hm.figure_from_mesh(v, mh.faces, overlay_state=state, booth=BOOTH)
+    assert {"사람 메시", "캡슐 마네킹 (반투명)", "부스", "슬롯 바 12개"} <= _names(fig)
+    fig.to_dict()

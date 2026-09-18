@@ -18,3 +18,6 @@ data/datasets/*
 # 학습 산출물·YOLO 가중치 (E, C)
 data/models/*
 !data/models/.gitkeep
+
+# 사람 메시 후보 (MakeHuman CC0 자산, SMPL-X 모델 파일은 재배포 금지) (E)
+data/meshes/*
