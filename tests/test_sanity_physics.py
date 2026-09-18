@@ -42,7 +42,7 @@ from airis.sim.patch_baseline import (
 )
 from airis.sim.scenario import load_nozzle_layout, load_nozzles, load_physics, load_scenarios
 from airis.sim.types import PART_NAMES, BodyParams, BodyState, NozzleConfig, PoseParams, Scenario
-from tests.fakes import fake_body, fake_nozzles
+from tests.fakes import fake_body, fake_mesh_body, fake_nozzles
 
 # E1 방향 검증용 원형 노즐 비교 배치. 근거는 모듈 docstring.
 _E1_LAYOUT = "layout"
@@ -79,6 +79,26 @@ def select_body_fn(build=build_body, scenario: Scenario | None = None):
     return real
 
 
+def mesh_body_fn(build=build_body, scenario: Scenario | None = None):
+    """(pose, scenario) -> 메시 BodyState. B의 메시 `build_body`가 없으면 None.
+
+    체형은 `body=None`으로 넘겨 메시 기본 체형(`human_mesh.MESH_DEFAULT_BODY`)을 쓴다. 전역
+    `BodyParams()`는 아직 캡슐 시절 값이라 메시에 넣으면 팔이 길어진다 (docs/mesh_transition.md).
+    """
+    scenario = scenario or load_scenarios()["default"]
+    try:
+        state = build(None, PoseParams(), scenario, model="mesh")
+    except (TypeError, NotImplementedError, ImportError):
+        return None
+    if state.mesh_vertices is None:
+        return None
+
+    def mesh(pose, scen):
+        return build(None, pose, scen, model="mesh")
+    mesh.uses_fake = False
+    return mesh
+
+
 def select_nozzles(load=load_nozzles) -> NozzleConfig:
     try:
         return load()
@@ -99,9 +119,15 @@ def scenarios() -> dict[str, Scenario]:
     return load_scenarios()
 
 
-@pytest.fixture(scope="module")
-def sim(physics, scenarios):
-    make_body = select_body_fn(scenario=scenarios["default"])
+@pytest.fixture(scope="module", params=["capsule", "mesh"])
+def sim(request, physics, scenarios):
+    """E1용 평가기. 캡슐 몸과 메시 몸(B 메시 병합 후) 두 모델로 같은 테스트를 돌린다."""
+    if request.param == "mesh":
+        make_body = mesh_body_fn(scenario=scenarios["default"])
+        if make_body is None:
+            pytest.skip("B의 메시 build_body(model='mesh') 미병합")
+    else:
+        make_body = select_body_fn(scenario=scenarios["default"])
     booth = dict(load_nozzle_layout()["booth"])
     booth["width_m"] *= _E1_BOOTH_SCALE
     booth["height_m"] *= _E1_BOOTH_SCALE
@@ -114,7 +140,7 @@ def sim(physics, scenarios):
     return SimpleNamespace(evaluator=evaluator,
                            nozzles=select_nozzles(partial(load_nozzles, layout=_E1_LAYOUT)),
                            scenario=scenarios["default"], uses_fake_body=make_body.uses_fake,
-                           cfg=physics)
+                           cfg=physics, model=request.param)
 
 
 def _eval(sim, pose: PoseParams, nozzle: NozzleConfig | None = None):
@@ -292,13 +318,14 @@ def test_slot_occlusion_does_not_kill_flank_under_raised_arm(sim, slot_nozzles):
     assert _flank_removal(sim, PoseParams(shoulder_abduction=90.0), slot_nozzles) > 0.0
 
 
-@pytest.mark.parametrize("pose", [PoseParams(), PoseParams(shoulder_abduction=90.0, torso_yaw=30.0),
+@pytest.mark.parametrize("pose", [PoseParams(), PoseParams(shoulder_abduction=60.0, torso_yaw=30.0),
                                   PoseParams(shoulder_abduction=160.0, elbow_flexion=0.0)])
 def test_slot_occlusion_converges_in_point_count(sim, slot_nozzles, pose):
     """슬롯 점 수를 늘리면 총 제거율이 K=9 결과로 수렴한다.
 
-    기본 K=3은 10% 안, 검증용 K=5는 5% 안. 무작위 자세 60개(400/m², 충돌 보정 켬)에서 K=9 대비
-    최대 상대 차가 K=3 8.9%, K=5 5.2%, 여기 세 자세에서는 K=3 6.3%, K=5 2.5%였다 (PR 본문).
+    기본 K=3은 15% 안, 검증용 K=5는 5% 안. 부스 안 무작위 자세 200개(400/m², 충돌 보정 켬)에서
+    K=9 대비 상대 차: K=3 최대 캡슐 9.2%·메시 11.6%(p99 8.8%·8.3%, 순위 상관 0.995),
+    K=5 최대 3.4%·4.4%. 팔 45~60°에 yaw 30° 부근이 메시 K=3에서 가장 크다(10~12%).
     """
     assert SLOT_OCCLUSION_POINTS == 3
 
@@ -310,7 +337,7 @@ def test_slot_occlusion_converges_in_point_count(sim, slot_nozzles, pose):
 
     r3, r5, r9 = removal_with(3), removal_with(5), removal_with(9)
     assert r9 > 0.0
-    assert abs(r3 - r9) / r9 < 0.10
+    assert abs(r3 - r9) / r9 < 0.15
     assert abs(r5 - r9) / r9 < 0.05
 
 
@@ -818,3 +845,155 @@ def test_occlusion_sources_spread_along_slot():
     src, owner = occlusion_sources(round_nz)
     assert np.array_equal(owner, np.arange(round_nz.count))
     assert np.allclose(src, round_nz.positions)
+
+
+# --- 메시 가림 (D 단계 8, docs/mesh_transition.md 결정 5) -----------------------
+
+def _ray_hits_brute_force(origin: np.ndarray, target: np.ndarray, tri: np.ndarray,
+                          skip_face: int | None) -> bool:
+    """선분 origin -> target이 삼각형 하나라도 지나면 True (Möller–Trumbore, float64)."""
+    d = target - origin
+    v0, e1, e2 = tri[:, 0], tri[:, 1] - tri[:, 0], tri[:, 2] - tri[:, 0]
+    h = np.cross(d, e2)
+    a = np.einsum("ij,ij->i", e1, h)
+    ok = np.abs(a) > 1e-14
+    f = np.where(ok, 1.0 / np.where(ok, a, 1.0), 0.0)
+    s = origin - v0
+    u = f * np.einsum("ij,ij->i", s, h)
+    q = np.cross(s, e1)
+    v = f * (q @ d)
+    t = f * np.einsum("ij,ij->i", e2, q)
+    hit = ok & (u >= 0.0) & (v >= 0.0) & (u + v <= 1.0) & (t > 0.0) & (t < 1.0)
+    if skip_face is not None:
+        hit[skip_face] = False
+    return bool(hit.any())
+
+
+def _mesh_occlusion_brute_force(state: BodyState, nozzle: NozzleConfig, physics: dict,
+                                patches: np.ndarray) -> np.ndarray:
+    delta = physics["air"]["wall_offset_m"]
+    pos = state.patch_pos.astype(np.float64)
+    normal = state.patch_normal.astype(np.float64)
+    tri = state.mesh_vertices.astype(np.float64)[state.mesh_faces]
+    out = np.zeros((nozzle.count, len(patches)))
+    for m, pts_m in enumerate(_brute_force_sources(nozzle, SLOT_OCCLUSION_POINTS)):
+        for j, i in enumerate(patches):
+            clear = 0
+            for src in pts_m:
+                if (src - pos[i]) @ normal[i] <= 0.0:
+                    continue
+                start = pos[i] + delta * normal[i]
+                clear += not _ray_hits_brute_force(start, src, tri, int(state.patch_face[i]))
+            out[m, j] = clear / len(pts_m)
+    return out
+
+
+@pytest.mark.parametrize("arms_up, yaw_deg, layout", [
+    (False, 30.0, "slot_bars"), (True, 0.0, "slot_bars"), (True, 180.0, "layout"),
+])
+def test_mesh_occlusion_matches_brute_force(physics, arms_up, yaw_deg, layout):
+    """Open3D 광선 판정을 float64 Möller–Trumbore 전수 판정과 대조한다 (가짜 메시 몸)."""
+    state = fake_mesh_body(arms_up=arms_up, yaw_deg=yaw_deg)
+    nz = load_nozzles(layout=layout)
+    patches = np.random.default_rng(1).choice(state.patch_pos.shape[0], 150, replace=False)
+    fast = occlusion(state, nz, physics)[:, patches]
+    slow = _mesh_occlusion_brute_force(state, nz, physics, patches)
+    step = 1.0 / SLOT_OCCLUSION_POINTS
+    # 모서리를 스치는 광선은 float32(Open3D)와 float64에서 갈릴 수 있다. 광원 점 하나 차이까지 허용.
+    assert np.abs(fast - slow).max() <= step + 1e-9
+    assert (fast != slow).mean() < 0.01
+    assert ((fast > 0.0) & (fast < 1.0)).any() or layout == "layout"
+    assert (fast == 0.0).any() and (fast == 1.0).any()
+
+
+def _square_mesh(center, half: float, normal_axis: int) -> tuple[np.ndarray, np.ndarray]:
+    """축 normal_axis에 수직인 정사각형 (삼각형 2개). 반환 (정점, 면)."""
+    c = np.asarray(center, dtype=np.float64)
+    a, b = [k for k in range(3) if k != normal_axis]
+    corners = []
+    for du, dv in ((-1, -1), (1, -1), (1, 1), (-1, 1)):
+        p = c.copy()
+        p[a] += du * half
+        p[b] += dv * half
+        corners.append(p)
+    return np.array(corners), np.array([[0, 1, 2], [0, 2, 3]])
+
+
+def _mesh_state(patch_pos, patch_normal, patch_face, verts, faces, capsules=None, capsule_part=None):
+    n = len(patch_pos)
+    return BodyState(
+        patch_pos=np.asarray(patch_pos, np.float32), patch_normal=np.asarray(patch_normal, np.float32),
+        patch_area=np.full(n, 1e-3, np.float32), patch_part=np.full(n, _FRONT, np.int32),
+        capsules=np.zeros((0, 7), np.float32) if capsules is None else np.asarray(capsules, np.float32),
+        capsule_part=None if capsule_part is None else np.asarray(capsule_part, np.int32),
+        mesh_vertices=np.asarray(verts, np.float32), mesh_faces=np.asarray(faces, np.int32),
+        mesh_face_part=np.full(len(faces), _FRONT, np.int32),
+        patch_face=np.asarray(patch_face, np.int32))
+
+
+def _floor_with_patch_and_wall(wall_center):
+    """바닥 정사각형(면 0, 1)과 그 위에 뜬 작은 정사각형 벽(면 2, 3)."""
+    floor_v, floor_f = _square_mesh([0.0, 0.0, 0.0], 1.0, 2)
+    wall_v, wall_f = _square_mesh(wall_center, 0.1, 2)
+    verts = np.vstack([floor_v, wall_v])
+    faces = np.vstack([floor_f, wall_f + 4])
+    return verts, faces
+
+
+def test_mesh_occlusion_wall_between_blocks_and_beside_does_not(physics):
+    verts, faces = _floor_with_patch_and_wall([0.0, 0.0, 0.5])
+    state = _mesh_state([[0.0, 0.0, 0.0]], [[0.0, 0.0, 1.0]], [0], verts, faces)
+    above = _nozzle_at([0.0, 0.0, 1.0])
+    beside = _nozzle_at([0.5, 0.0, 1.0])            # 벽(|x| <= 0.1 at z 0.5)을 비껴가는 광선
+    behind_nozzle = _nozzle_at([0.0, 0.0, 0.4])     # 벽이 노즐 너머
+    assert occlusion(state, above, physics).tolist() == [[0.0]]
+    assert occlusion(state, beside, physics).tolist() == [[1.0]]
+    assert occlusion(state, behind_nozzle, physics).tolist() == [[1.0]]
+
+
+def test_mesh_occlusion_ignores_own_face(physics):
+    """광선이 자기 면(`patch_face`)을 지나면 가림으로 치지 않는다.
+
+    평평한 면에서 법선 = 면 법선이면 광선이 자기 면에 닿을 수 없어서, 법선을 면에서 기울여
+    광선이 자기 면 평면을 뚫고 나가게 만든다. 자기 면 정보를 지우면 같은 광선이 막힌다.
+    """
+    import dataclasses
+
+    verts, faces = _square_mesh([0.0, 0.0, 0.0], 2.0, 2)
+    tilted = np.array([0.3, 0.0, 1.0]) / np.linalg.norm([0.3, 0.0, 1.0])
+    state = _mesh_state([[0.3, -0.3, 0.0]], [tilted], [0], verts, faces)
+    nozzle = _nozzle_at([2.3, -0.3, -0.1])      # 기울인 법선 기준 앞면, 광선은 z = 0 을 지난다
+    assert occlusion(state, nozzle, physics).tolist() == [[1.0]]
+    assert occlusion(dataclasses.replace(state, patch_face=None), nozzle, physics).tolist() == [[0.0]]
+
+
+def test_mesh_occlusion_uses_frame_capsules_but_not_bone_capsules(physics):
+    """메시 모델: 휠체어 프레임(capsule_part -1)은 가리고, 뼈 근사 캡슐은 가리지 않는다."""
+    verts, faces = _square_mesh([0.0, 0.0, 0.0], 1.0, 2)
+    blocker = [-0.5, 0.0, 0.5, 0.5, 0.0, 0.5, 0.05]     # 패치와 노즐 사이를 가로지르는 캡슐
+    above = _nozzle_at([0.0, 0.0, 1.0])
+    bone = _mesh_state([[0.0, 0.0, 0.0]], [[0.0, 0.0, 1.0]], [0], verts, faces,
+                       capsules=[blocker], capsule_part=[_FRONT])
+    frame = _mesh_state([[0.0, 0.0, 0.0]], [[0.0, 0.0, 1.0]], [0], verts, faces,
+                        capsules=[blocker], capsule_part=[-1])
+    assert occlusion(bone, above, physics).tolist() == [[1.0]]
+    assert occlusion(frame, above, physics).tolist() == [[0.0]]
+
+
+def test_mesh_occlusion_backface_is_invisible(physics):
+    verts, faces = _square_mesh([0.0, 0.0, 0.0], 1.0, 2)
+    state = _mesh_state([[0.0, 0.0, 0.0]], [[0.0, 0.0, 1.0]], [0], verts, faces)
+    assert occlusion(state, _nozzle_at([0.0, 0.0, -1.0], [0.0, 0.0, 1.0]), physics).tolist() == [[0.0], [1.0]]
+
+
+def test_evaluator_runs_on_fake_mesh_body(physics, scenarios):
+    """PatchEvaluator가 메시 BodyState를 받아 EvalResult를 채운다 (B 메시 병합 전 대체)."""
+    scen = scenarios["default"]
+    ev = PatchEvaluator(physics, build_body=lambda body, pose, s: fake_mesh_body(
+        arms_up=pose.shoulder_abduction > 60, yaw_deg=pose.torso_yaw))
+    result = ev.evaluate(PoseParams(), load_nozzles(), BodyParams(), scen)
+    n = fake_mesh_body().patch_pos.shape[0]
+    assert not result.extra["infeasible"]
+    assert result.extra["removal"].shape == (n,)
+    assert 0.0 < result.extra["visible_frac"] < 1.0
+    assert 0.0 < result.total_removal < 1.0

@@ -7,7 +7,7 @@ import pytest
 
 from airis.sim.scenario import load_nozzle_layout
 from airis.sim.types import PART_NAMES, BodyState, NozzleConfig
-from tests.fakes import fake_body, fake_nozzles
+from tests.fakes import fake_body, fake_mesh_body, fake_nozzles
 
 
 @pytest.fixture(scope="module")
@@ -138,6 +138,65 @@ def test_fake_body_is_deterministic():
 
 
 # --- fake_nozzles ------------------------------------------------------------
+
+# --- fake_mesh_body ----------------------------------------------------------
+
+@pytest.mark.parametrize("arms_up", [False, True])
+@pytest.mark.parametrize("yaw_deg", [0.0, 30.0, 180.0])
+def test_fake_mesh_body_fills_mesh_contract(arms_up, yaw_deg):
+    """B가 정한 메시 필드 형식: 정점 f32 (V,3), 면 i32 (F,3), 면 부위 i32 (F,), patch_face i32 (N,)."""
+    st = fake_mesh_body(arms_up=arms_up, yaw_deg=yaw_deg)
+    n, f = st.patch_pos.shape[0], st.mesh_faces.shape[0]
+    assert st.mesh_vertices.dtype == np.float32 and st.mesh_vertices.shape[1] == 3
+    assert st.mesh_faces.dtype == np.int32 and st.mesh_faces.shape == (f, 3)
+    assert st.mesh_faces.min() >= 0 and st.mesh_faces.max() < st.mesh_vertices.shape[0]
+    assert st.mesh_face_part.dtype == np.int32 and st.mesh_face_part.shape == (f,)
+    assert st.patch_face.dtype == np.int32 and st.patch_face.shape == (n,)
+    assert st.patch_capsule is None
+    assert st.capsules.shape[1] == 7 and st.capsule_part.shape == (st.capsules.shape[0],)
+    assert np.array_equal(st.patch_part, st.mesh_face_part[st.patch_face])
+    assert set(np.unique(st.patch_part)) == set(range(len(PART_NAMES)))
+
+
+def test_fake_mesh_body_patches_lie_on_their_faces_with_outward_normals():
+    st = fake_mesh_body(arms_up=True, yaw_deg=30.0)
+    tri = st.mesh_vertices[st.mesh_faces[st.patch_face]].astype(np.float64)
+    cross = np.cross(tri[:, 1] - tri[:, 0], tri[:, 2] - tri[:, 0])
+    assert np.allclose(st.patch_pos, tri.mean(axis=1), atol=1e-6)
+    # 정점이 float32라 면 법선을 다시 구하면 1e-5 수준으로 어긋난다.
+    assert np.allclose(st.patch_normal, cross / np.linalg.norm(cross, axis=1, keepdims=True), atol=1e-4)
+    assert np.allclose(np.linalg.norm(st.patch_normal, axis=1), 1.0, atol=1e-6)
+    assert np.allclose(st.patch_area, 0.5 * np.linalg.norm(cross, axis=1), rtol=1e-5)
+    # 닫힌 상자들의 부호 부피(발산 정리)가 양수면 면이 바깥을 향한다.
+    signed_volume = float((tri.mean(axis=1) * cross).sum() / 6.0)
+    assert signed_volume > 0.0
+
+
+def test_fake_mesh_body_matches_fake_body_layout(booth):
+    """부스 중앙에 서고, 부스 안이며, 팔을 들면 팔 패치가 위로 간다."""
+    down, up = fake_mesh_body(arms_up=False), fake_mesh_body(arms_up=True)
+    assert abs(float(down.patch_pos[:, 0].mean()) - booth["length_m"] / 2.0) < 1e-3
+    for st in (down, up):
+        assert np.abs(st.patch_pos[:, 1]).max() < booth["width_m"] / 2.0
+        assert st.patch_pos[:, 2].max() < booth["height_m"]
+    arms = PART_NAMES.index("arms")
+    assert up.patch_pos[up.patch_part == arms, 2].mean() > down.patch_pos[down.patch_part == arms, 2].mean()
+
+
+def test_fake_mesh_body_yaw_rotates_about_booth_center(booth):
+    a, b = fake_mesh_body(yaw_deg=0.0), fake_mesh_body(yaw_deg=90.0)
+    c = np.array([booth["length_m"] / 2.0, 0.0])
+    ra = a.mesh_vertices[:, :2] - c
+    rb = b.mesh_vertices[:, :2] - c
+    assert np.allclose(np.stack([-ra[:, 1], ra[:, 0]], axis=1), rb, atol=1e-5)
+    assert np.array_equal(a.patch_part, b.patch_part)
+
+
+def test_fake_mesh_body_is_deterministic():
+    a, b = fake_mesh_body(True, 45.0), fake_mesh_body(True, 45.0)
+    assert np.array_equal(a.mesh_vertices, b.mesh_vertices)
+    assert np.array_equal(a.patch_pos, b.patch_pos)
+
 
 def test_fake_nozzles_fills_nozzleconfig_contract(booth):
     nz = fake_nozzles()
