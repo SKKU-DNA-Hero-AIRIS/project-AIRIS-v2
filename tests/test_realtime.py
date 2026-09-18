@@ -1,6 +1,10 @@
 """포즈 추정 → 체형, 추천 자세 테스트. 소유자: E. (`docs/tracks/E_realtime.md` 단계 3~4)
 
-실제 카메라는 열지 않는다. 합성 키포인트 = B의 `joint_positions`를 정면 핀홀 카메라에 투영한 것.
+실제 카메라는 열지 않는다. 합성 키포인트 = 몸 모델 관절을 정면 핀홀 카메라에 투영한 것.
+
+전역 기본값(`BodyParams()`, `configs/physics.yaml` `body.model`)과 독립이다. 캡슐 기준 테스트는
+`model="capsule"`·`profile="capsule"`과 캡슐 시절 체형(`CAPSULE_BODY`)을, 메시 기준 테스트는 `model="mesh"`와
+`MESH_DEFAULT_BODY`를 명시한다 (5단계 BodyParams 기본값 교체·body.model 전환에서 깨지지 않게).
 """
 from __future__ import annotations
 
@@ -30,8 +34,13 @@ from airis.sim.types import BodyParams, PoseParams
 SCENARIOS = load_scenarios()
 BOOTH = load_nozzle_layout()["booth"]
 
+#: 캡슐 마네킹 시절 기본 체형 (캡슐 기준 테스트의 정답. 전역 BodyParams() 기본값과 무관하게 고정)
+CAPSULE_BODY = BodyParams(1.70, 0.42, 0.22, 0.62, 0.85)
+CAP = dict(model="capsule")          # synthetic_keypoints
+CAPP = dict(profile="capsule")       # estimate_body / BodyEstimator
+
 BODIES = {
-    "기본": BodyParams(),
+    "기본": CAPSULE_BODY,
     "작은 체형": BodyParams(1.55, 0.36, 0.20, 0.55, 0.74),
     "큰 체형": BodyParams(1.90, 0.48, 0.25, 0.70, 0.97),
 }
@@ -50,8 +59,8 @@ def _rel_err(est: BodyParams, true: BodyParams) -> dict[str, float]:
 def test_recover_body_from_synthetic_keypoints_with_height(name, pose):
     """키 입력 보정: 체형 5개를 ±5% 안에 복원한다."""
     body = BODIES[name]
-    kp, conf = pe.synthetic_keypoints(body, pose, SCENARIOS["default"])
-    est = pe.estimate_body(kp, conf, height_m=body.height_m, image_size=(1280, 720))
+    kp, conf = pe.synthetic_keypoints(body, pose, SCENARIOS["default"], **CAP)
+    est = pe.estimate_body(kp, conf, height_m=body.height_m, image_size=(1280, 720), **CAPP)
     assert est.ok, est.message
     err = _rel_err(est.body, body)
     assert max(err.values()) < 0.05, err
@@ -62,13 +71,13 @@ def test_recover_body_with_marker_scale(name):
     """마커 보정: 키를 모를 때 m/px 스케일로 키까지 ±5% 안에 복원한다."""
     body = BODIES[name]
     cam = pe.PinholeCamera(distance_m=2.5, focal_px=900.0)
-    kp, conf = pe.synthetic_keypoints(body, PoseParams(), SCENARIOS["default"], cam)
+    kp, conf = pe.synthetic_keypoints(body, PoseParams(), SCENARIOS["default"], cam, **CAP)
     # 사람 발 옆 바닥(카메라에서 같은 거리)에 놓인 0.20 m 마커를 비스듬히 본 네 꼭짓점
     cx = BOOTH["length_m"] / 2.0
     corners3 = np.array([[cx + 0.1, 0.3, 0.0], [cx + 0.1, 0.5, 0.0],
                          [cx - 0.1, 0.5, 0.0], [cx - 0.1, 0.3, 0.0]])
     scale = pe.scale_from_marker(cam.project(corners3, cx), 0.20)
-    est = pe.estimate_body(kp, conf, scale_m_per_px=scale)
+    est = pe.estimate_body(kp, conf, scale_m_per_px=scale, **CAPP)
     assert est.ok, est.message
     err = _rel_err(est.body, body)
     assert max(err.values()) < 0.05, err
@@ -77,10 +86,10 @@ def test_recover_body_with_marker_scale(name):
 def test_recover_body_robust_to_pixel_noise():
     """키포인트에 ±2 px 잡음을 넣어도 여러 프레임 중앙값은 ±5% 안."""
     body = BODIES["기본"]
-    stab = pe.BodyEstimator(height_m=body.height_m, window=30)
+    stab = pe.BodyEstimator(height_m=body.height_m, window=30, **CAPP)
     for seed in range(15):
         kp, conf = pe.synthetic_keypoints(body, PoseParams(), SCENARIOS["default"],
-                                          noise_px=2.0, seed=seed)
+                                          noise_px=2.0, seed=seed, **CAP)
         stab.add(kp, conf, (1280, 720))
     est = stab.body()
     assert est is not None
@@ -89,18 +98,18 @@ def test_recover_body_robust_to_pixel_noise():
 
 def test_seated_wheelchair_uses_height_and_leg_ratio():
     body = BODIES["기본"]
-    kp, conf = pe.synthetic_keypoints(body, PoseParams(), SCENARIOS["wheelchair"])
-    est = pe.estimate_body(kp, conf, height_m=body.height_m, seated=True)
+    kp, conf = pe.synthetic_keypoints(body, PoseParams(), SCENARIOS["wheelchair"], **CAP)
+    est = pe.estimate_body(kp, conf, height_m=body.height_m, seated=True, **CAPP)
     assert est.ok, est.message
     assert max(_rel_err(est.body, body).values()) < 0.05
-    no_height = pe.estimate_body(kp, conf, scale_m_per_px=0.003, seated=True)
+    no_height = pe.estimate_body(kp, conf, scale_m_per_px=0.003, seated=True, **CAPP)
     assert not no_height.ok and "키" in no_height.message
 
 
 def test_scale_required():
-    kp, conf = pe.synthetic_keypoints(BodyParams(), PoseParams(), SCENARIOS["default"])
+    kp, conf = pe.synthetic_keypoints(CAPSULE_BODY, PoseParams(), SCENARIOS["default"], **CAP)
     with pytest.raises(ValueError):
-        pe.estimate_body(kp, conf)
+        pe.estimate_body(kp, conf, **CAPP)
 
 
 def test_scale_from_marker_uses_horizontal_edges():
@@ -114,16 +123,16 @@ def test_scale_from_marker_uses_horizontal_edges():
 # ---------------------------------------------------------------------------
 @pytest.fixture
 def kp_default():
-    return pe.synthetic_keypoints(BodyParams(), PoseParams(), SCENARIOS["default"])
+    return pe.synthetic_keypoints(CAPSULE_BODY, PoseParams(), SCENARIOS["default"], **CAP)
 
 
 def test_low_confidence_side_replaced_by_other_side(kp_default):
     kp, conf = kp_default
     conf = conf.copy()
     conf[[pe.L_ELBOW, pe.L_WRIST, pe.R_KNEE, pe.R_ANKLE]] = 0.05     # 왼팔·오른다리 흐림
-    est = pe.estimate_body(kp, conf, height_m=1.70)
+    est = pe.estimate_body(kp, conf, height_m=1.70, **CAPP)
     assert est.ok, est.message
-    assert max(_rel_err(est.body, BodyParams()).values()) < 0.05
+    assert max(_rel_err(est.body, CAPSULE_BODY).values()) < 0.05
     assert "left_elbow" in est.missing
 
 
@@ -132,17 +141,17 @@ def test_foreshortened_limb_uses_longer_side(kp_default):
     kp, conf = kp_default
     kp = kp.copy()
     kp[pe.L_WRIST] = kp[pe.L_ELBOW] + 0.3 * (kp[pe.L_WRIST] - kp[pe.L_ELBOW])
-    est = pe.estimate_body(kp, conf, height_m=1.70)
-    assert abs(est.body.arm_length_m / BodyParams().arm_length_m - 1.0) < 0.05
+    est = pe.estimate_body(kp, conf, height_m=1.70, **CAPP)
+    assert abs(est.body.arm_length_m / CAPSULE_BODY.arm_length_m - 1.0) < 0.05
 
 
 def test_nose_missing_falls_back_to_eyes(kp_default):
     kp, conf = kp_default
     conf = conf.copy()
     conf[pe.NOSE] = 0.0
-    est = pe.estimate_body(kp, conf, scale_m_per_px=None, height_m=1.70)
+    est = pe.estimate_body(kp, conf, scale_m_per_px=None, height_m=1.70, **CAPP)
     assert est.ok
-    assert max(_rel_err(est.body, BodyParams()).values()) < 0.05
+    assert max(_rel_err(est.body, CAPSULE_BODY).values()) < 0.05
 
 
 @pytest.mark.parametrize("drop,word", [
@@ -155,10 +164,10 @@ def test_missing_keypoints_return_none_with_message(kp_default, drop, word):
     kp, conf = kp_default
     conf = conf.copy()
     conf[list(drop)] = 0.0
-    est = pe.estimate_body(kp, conf, height_m=1.70)
+    est = pe.estimate_body(kp, conf, height_m=1.70, **CAPP)
     assert est.body is None
     assert word in est.message
-    assert pe.keypoints_to_body(kp, conf, height_m=1.70) is None
+    assert pe.keypoints_to_body(kp, conf, height_m=1.70, **CAPP) is None
 
 
 def test_offscreen_keypoints_are_missing(kp_default):
@@ -166,24 +175,24 @@ def test_offscreen_keypoints_are_missing(kp_default):
     kp, conf = kp_default
     kp = kp.copy()
     kp[[pe.L_ANKLE, pe.R_ANKLE], 1] = 800.0            # 이미지 높이 720 밖
-    est = pe.estimate_body(kp, conf, height_m=1.70, image_size=(1280, 720))
+    est = pe.estimate_body(kp, conf, height_m=1.70, image_size=(1280, 720), **CAPP)
     assert est.body is None and "발목" in est.message
     zero = kp.copy()
     zero[[pe.L_ANKLE, pe.R_ANKLE]] = 0.0               # ultralytics 의 (0, 0) 누락 표기
-    assert pe.estimate_body(zero, conf, height_m=1.70).body is None
+    assert pe.estimate_body(zero, conf, height_m=1.70, **CAPP).body is None
 
 
 def test_implausible_estimate_rejected(kp_default):
     kp, conf = kp_default
-    est = pe.estimate_body(kp, conf, scale_m_per_px=0.05)    # 스케일 10배 → 키 수 m
+    est = pe.estimate_body(kp, conf, scale_m_per_px=0.05, **CAPP)    # 스케일 10배 → 키 수 m
     assert est.body is None and "범위" in est.message
 
 
 def test_median_body_and_estimator_window():
     a, b, c = BodyParams(1.6), BodyParams(1.7), BodyParams(3.0)
     assert pe.median_body([a, b, c]).height_m == 1.7
-    stab = pe.BodyEstimator(height_m=1.7, min_frames=2)
-    kp, conf = pe.synthetic_keypoints(BodyParams(), PoseParams(), SCENARIOS["default"])
+    stab = pe.BodyEstimator(height_m=1.7, min_frames=2, **CAPP)
+    kp, conf = pe.synthetic_keypoints(CAPSULE_BODY, PoseParams(), SCENARIOS["default"], **CAP)
     stab.add(kp, conf)
     assert stab.body() is None                          # 프레임 부족
     bad = conf.copy()
@@ -198,7 +207,7 @@ def test_median_body_and_estimator_window():
 # YOLO 결과 파싱 (모델 없이 가짜 Results)
 # ---------------------------------------------------------------------------
 def _fake_result(n_people: int = 2):
-    kp, conf = pe.synthetic_keypoints(BodyParams(), PoseParams(), SCENARIOS["default"])
+    kp, conf = pe.synthetic_keypoints(CAPSULE_BODY, PoseParams(), SCENARIOS["default"], **CAP)
     xy = np.stack([kp * (0.5 + 0.5 * i) for i in range(n_people)])      # 뒤 사람이 더 크다
     cf = np.stack([conf] * n_people)
     boxes = np.stack([np.r_[x.min(axis=0), x.max(axis=0)] for x in xy])
@@ -265,7 +274,7 @@ def test_stub_first_entry_is_e4_best_for_default_body(scenario, arms_up):
     from airis.optimize.encoding import PoseEncoder
     from airis.realtime.recommend import E4_SOURCE
     sc = SCENARIOS[scenario]
-    rec = recommend(BodyParams(), sc, use_model=False)
+    rec = recommend(CAPSULE_BODY, sc, use_model=False, model="capsule")
     first = STUB_TABLE[scenario][0]
     assert rec.source == f"stub: {E4_SOURCE}"
     assert rec.label == first.label and rec.pose == PoseEncoder(sc).clip_pose(first.pose)
@@ -277,11 +286,11 @@ def test_tall_body_falls_back_to_arms_down_peak():
     """키가 커서 만세가 천장(2.15 m) 밖이면 다음 봉우리(팔 내림)로 넘어간다."""
     tall = BodyParams(1.95, 0.48, 0.25, 0.72, 1.00)
     sc = SCENARIOS["default"]
-    assert not is_inside_booth(tall, STUB_TABLE["default"][0].pose, sc)
-    rec = recommend(tall, sc, use_model=False)
+    assert not is_inside_booth(tall, STUB_TABLE["default"][0].pose, sc, "capsule")
+    rec = recommend(tall, sc, use_model=False, model="capsule")
     assert rec.label == STUB_TABLE["default"][1].label
     assert rec.notes and "부스" in rec.notes[0]
-    assert is_inside_booth(tall, rec.pose, sc)
+    assert is_inside_booth(tall, rec.pose, sc, "capsule")
 
 
 def test_recommend_uses_model_when_available(monkeypatch):
@@ -289,10 +298,11 @@ def test_recommend_uses_model_when_available(monkeypatch):
     import airis.realtime.recommend as rmod
     sc = SCENARIOS["default"]
     monkeypatch.setattr(rmod, "_model_predict", lambda b, s: PoseParams(torso_yaw=60.0))
-    rec = recommend(BodyParams(), sc)
+    rec = recommend(CAPSULE_BODY, sc, model="capsule")
     assert rec.source == "model" and rec.pose.torso_yaw == 60.0
+    # 팔 수평(90°)은 캡슐 체형(팔 0.62 m)에서 옆벽 밖이다
     monkeypatch.setattr(rmod, "_model_predict", lambda b, s: PoseParams(shoulder_abduction=90.0))
-    rec = recommend(BodyParams(), sc)
+    rec = recommend(CAPSULE_BODY, sc, model="capsule")
     assert rec.source.startswith("stub") and "회귀 모델" in rec.notes[0]
 
 
@@ -314,11 +324,12 @@ def test_compare_with_baselines_matches_run_baselines(scenario):
     spec.loader.exec_module(rb)
 
     sc = SCENARIOS[scenario]
-    rows = compare_with_baselines(BodyParams(), sc, recommend_pose(BodyParams(), sc))
+    rec_pose = recommend(CAPSULE_BODY, sc, model="capsule").pose
+    rows = compare_with_baselines(CAPSULE_BODY, sc, rec_pose, model="capsule")
     by = {r.name: r for r in rows}
     for mine, theirs in (("B0 기본", "B0"), ("B1 몸 회전", "B1"), ("B2 만세", "B2")):
-        ref = rb.evaluate_condition(patch_evaluator(), rb.BASELINES[theirs], PoseEncoder(sc),
-                                    _nozzles(), BodyParams(), sc)
+        ref = rb.evaluate_condition(patch_evaluator("capsule"), rb.BASELINES[theirs], PoseEncoder(sc),
+                                    _nozzles(), CAPSULE_BODY, sc)
         assert by[mine].score == pytest.approx(ref["score"], abs=1e-9)
         assert by[mine].n_feasible == ref["n_feasible"]
         assert by[mine].infeasible == ref["infeasible"]
@@ -347,11 +358,11 @@ def test_stub_ranks_candidates_by_score_for_this_body(monkeypatch):
             return SimpleNamespace(score=1.0 if pose.shoulder_abduction < 90 else 0.5)
 
     monkeypatch.setattr(rmod, "patch_evaluator", lambda model=None: Flipped())
-    rec = recommend(BodyParams(), sc, use_model=False)
+    rec = recommend(CAPSULE_BODY, sc, use_model=False, model="capsule")
     assert rec.label == STUB_TABLE["default"][1].label
     assert "점수가 높아" in rec.notes[0]
-    assert recommend(BodyParams(), sc, use_model=False, rank_by_score=False).label == \
-        STUB_TABLE["default"][0].label
+    assert recommend(CAPSULE_BODY, sc, use_model=False, rank_by_score=False,
+                     model="capsule").label == STUB_TABLE["default"][0].label
 
 
 def test_pose_instructions():
@@ -423,7 +434,8 @@ MESH_BODIES = {
 def test_profiles():
     cap, mesh = pe.profile_for("capsule"), pe.profile_for("mesh")
     assert cap is pe.CAPSULE_PROFILE and mesh.name == "mesh"
-    assert pe.profile_for(None).name == "capsule"                    # 설정 파일 body.model (5단계 전)
+    from airis.sim.body import _configured_body_model
+    assert pe.profile_for(None).name == _configured_body_model()      # 설정 파일 body.model 을 따른다
     assert mesh.torso_depth_per_height == pytest.approx(0.194 / 1.70)
     assert mesh.seated_leg_per_height == pytest.approx(0.883 / 1.70)
     assert 0.08 < mesh.nose_below_top < 0.11 and 0.06 < mesh.eye_below_top < mesh.nose_below_top

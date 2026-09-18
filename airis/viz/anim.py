@@ -101,8 +101,9 @@ def synthetic_frames(state: BodyState, booth: Mapping | None = None, *,
     """패치 위에서 시작해 +y 벽으로 날아가는 가짜 입자 프레임. 물리 계산이 아니다.
 
     - 입자는 패치 면적 비례로 뿌린다. `detach_fraction`만큼이 무작위 시각에 이탈해
-      +y(와 약간의 위아래 흔들림)로 `speed_mps`로 움직이고, 벽(|y| > width/2)을 넘으면
-      그 자리에서 멈춘다(제거, "마지막 위치").
+      +y(와 약간의 앞뒤·위아래 흔들림)로 `speed_mps`로 움직이고, 부스 경계(옆벽 |y| > width/2,
+      출입구 x < 0 또는 x > length, 천장 z > height) 중 먼저 닿는 곳을 넘으면 그 바로 밖(+2 cm)에서
+      멈춘다(제거, "마지막 위치"). 메시 몸은 패치가 앞쪽까지 있어 출입구로 나가는 입자도 있다.
     - 후보 `n_candidates`개를 이어붙인다(후보마다 시드가 달라 궤적이 다르다).
     - 키는 계약 키 4개. `include_state=True`면 A처럼 `state`도 넣는다.
     """
@@ -130,17 +131,28 @@ def synthetic_frames(state: BodyState, booth: Mapping | None = None, *,
     vel = np.concatenate(vel_all)
 
     half_w = float(booth["width_m"]) / 2.0
+    length, height = float(booth["length_m"]), float(booth["height_m"])
+    # 경계별 도달 시각 (옆벽 +y, 출입구 x=0·x=length, 천장). 가장 이른 것이 나가는 곳이다.
+    with np.errstate(divide="ignore", invalid="ignore"):
+        t_side = np.where(vel[:, 1] > 0, (half_w - pos0[:, 1]) / vel[:, 1], np.inf)
+        t_door = np.where(vel[:, 0] > 0, (length - pos0[:, 0]) / vel[:, 0],
+                          np.where(vel[:, 0] < 0, -pos0[:, 0] / vel[:, 0], np.inf))
+        t_ceil = np.where(vel[:, 2] > 0, (height - pos0[:, 2]) / vel[:, 2], np.inf)
+    t_exit = np.minimum(np.minimum(t_side, t_door), t_ceil)
+    exit_axis = np.argmin(np.stack([t_door, t_side, t_ceil], axis=1), axis=1)   # 0 x, 1 y, 2 z
+    exit_sign = np.sign(vel[np.arange(vel.shape[0]), exit_axis])
+
     frames: list[Frame] = []
     for i in range(n_frames):
         step = i * dump_every
         t = step * dt_s
         fly = np.clip(t - t_det, 0.0, None)[:, None]            # inf → 0 (부착 유지)
         fly = np.where(np.isfinite(fly), fly, 0.0)
-        # 벽(y = width/2)을 넘는 시각에서 멈추고 벽 바로 밖(+2 cm)에 둔다: 그 뒤로는 마지막 위치 유지
-        t_wall = np.where(vel[:, 1] > 0, (half_w - pos0[:, 1]) / vel[:, 1], np.inf)
-        stopped = fly[:, 0] >= t_wall
-        pos = pos0 + vel * np.minimum(fly, t_wall[:, None])
-        pos[stopped, 1] += 0.02
+        # 경계를 넘는 시각에서 멈추고 그 바로 밖(+2 cm)에 둔다: 그 뒤로는 마지막 위치 유지
+        stopped = fly[:, 0] >= t_exit
+        pos = pos0 + vel * np.minimum(fly, t_exit[:, None])
+        rows = np.flatnonzero(stopped)
+        pos[rows, exit_axis[rows]] += 0.02 * exit_sign[rows]
         attached = t < t_det
         frame = {
             "pos": pos.astype(np.float32),
@@ -150,7 +162,7 @@ def synthetic_frames(state: BodyState, booth: Mapping | None = None, *,
         }
         if include_state:
             st = np.where(attached, ATTACHED, AIRBORNE).astype(np.int8)
-            st[~attached & (np.abs(pos[:, 1]) > half_w)] = REMOVED
+            st[~attached & stopped] = REMOVED
             frame["state"] = st
         frames.append((step, frame))
     return frames

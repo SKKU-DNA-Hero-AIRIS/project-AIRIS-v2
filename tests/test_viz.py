@@ -116,7 +116,7 @@ def test_slot_bars_drawn_at_nozzle_positions():
 def test_patch_values_color_mesh():
     """values 를 주면 부위 색 대신 intensity 메시 하나로 그리고, 길이가 다르면 ValueError."""
     sc = SCENARIOS["default"]
-    state = build_body(BodyParams(), PoseParams(), sc, patches_per_m2=400)
+    state = build_body(BodyParams(), PoseParams(), sc, patches_per_m2=400, model="capsule")
     values = state.patch_pos[:, 2] / state.patch_pos[:, 2].max()
     fig = figure_from_state(state, values, load_nozzles())
     meshes = [tr for tr in fig.data if tr.type == "mesh3d" and tr.intensity is not None]
@@ -128,9 +128,9 @@ def test_patch_values_color_mesh():
 
 
 def test_torso_mesh_flattened_to_patch_ellipse():
-    """몸통 메시는 패치 타원 단면(앞뒤 반축 = torso_depth/2)까지 눌린다."""
+    """캡슐 몸통 메시는 패치 타원 단면(앞뒤 반축 = torso_depth/2)까지 눌린다."""
     body = BodyParams()
-    state = build_body(body, PoseParams(), SCENARIOS["default"], patches_per_m2=400)
+    state = build_body(body, PoseParams(), SCENARIOS["default"], patches_per_m2=400, model="capsule")
     fig = figure_from_state(state)
     torso = next(tr for tr in fig.data if tr.name == "torso_front")
     x = np.asarray(torso.x) - BOOTH["length_m"] / 2.0
@@ -166,7 +166,7 @@ def test_figure_compare_marks_infeasible():
 # ---------------------------------------------------------------------------
 @pytest.fixture(scope="module")
 def state_default():
-    return build_body(BodyParams(), PoseParams(), SCENARIOS["default"], patches_per_m2=400)
+    return build_body(BodyParams(), PoseParams(), SCENARIOS["default"], patches_per_m2=400, model="capsule")
 
 
 def test_synthetic_frames_roundtrip_and_animation(state_default, tmp_path):
@@ -191,11 +191,14 @@ def test_synthetic_frames_roundtrip_and_animation(state_default, tmp_path):
     fig.to_dict()
 
 
-def test_particle_status_inferred_without_state_key(state_default):
-    """A의 `state` 키가 없어도 부착·부유·제거를 나누고, 있으면 그대로 쓴다."""
-    fr = anim.synthetic_frames(state_default, BOOTH, n_particles=800, n_frames=31)
-    fr_st = anim.synthetic_frames(state_default, BOOTH, n_particles=800, n_frames=31,
-                                  include_state=True)
+@pytest.mark.parametrize("model", ["capsule", "mesh"])
+def test_particle_status_inferred_without_state_key(model):
+    """A의 `state` 키가 없어도 부착·부유·제거를 나누고, 있으면 그대로 쓴다.
+
+    메시 몸은 패치가 앞쪽까지 있어 합성 입자가 옆벽보다 먼저 출입구(x)로 나가기도 한다."""
+    state = build_body(None, PoseParams(), SCENARIOS["default"], patches_per_m2=400, model=model)
+    fr = anim.synthetic_frames(state, BOOTH, n_particles=800, n_frames=31)
+    fr_st = anim.synthetic_frames(state, BOOTH, n_particles=800, n_frames=31, include_state=True)
     first = anim.particle_status(fr[0][1], BOOTH)
     last = anim.particle_status(fr[-1][1], BOOTH)
     assert np.all(first == anim.ATTACHED)
