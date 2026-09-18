@@ -720,16 +720,25 @@ def test_outside_booth_is_infeasible_per_slot(ev_batch, ev_single, scenario):
 
 
 def test_outside_booth_matches_patch_evaluator(ev_batch, scenario):
-    """실제 몸: 어깨 벌림 90도는 팔이 옆벽 밖 -> 불가. 불가 여부가 D의 패치판과 같다.
-    (점수 값은 D가 등급제 벌점(PR #25)을 반영하기 전이라 비교하지 않는다.)"""
+    """실제 몸: 불가 여부와 등급제 벌점 값이 D의 패치판과 같다 (00_common.md 5절).
+
+    어깨 벌림 90/120도는 팔 끝이 옆벽을 넘고, 180도(만세)는 체형에 따라 천장에 닿는다.
+    """
     from airis.sim.patch_baseline import PatchEvaluator
 
     body, nozzle = BodyParams(), load_nozzles()
-    poses = [PoseParams(shoulder_abduction=90.0), PoseParams()]
+    poses = [PoseParams(shoulder_abduction=90.0), PoseParams(shoulder_abduction=120.0),
+             PoseParams(shoulder_abduction=180.0, elbow_flexion=0.0), PoseParams()]
     scores = ev_batch.batch_evaluate([(p, nozzle) for p in poses], body, scenario)
-    assert scores[0] < -1.0 and scores[1] > -1.0         # 팔 끝이 벽을 0.13 m 넘는다
+    assert scores[0] < -1.0 and scores[1] < -1.0 and scores[3] > -1.0
 
     patch = PatchEvaluator(load_physics())
     for pose, score in zip(poses, scores):
-        infeasible = patch.evaluate(pose, nozzle, body, scenario).extra["infeasible"]
-        assert infeasible == (score <= -1.0)
+        ref = patch.evaluate(pose, nozzle, body, scenario)
+        assert ref.extra["infeasible"] == (score <= -1.0)
+        if ref.extra["infeasible"]:
+            # batch_evaluate는 float32로 돌려준다
+            assert score == pytest.approx(ref.score, abs=1e-6)
+            single = ev_batch.evaluate(pose, nozzle, body, scenario)
+            assert single.score == pytest.approx(ref.score, abs=1e-12)
+            assert single.discomfort == pytest.approx(ref.discomfort, abs=1e-12)
