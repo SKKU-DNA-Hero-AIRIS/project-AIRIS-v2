@@ -152,3 +152,14 @@ pelvis
 ## 병합 후 알림
 
 병합되면 D, C, A 세션에 "B 병합됨. `tests/fakes.py`의 `fake_body`, `fake_nozzles`를 `build_body`, `load_nozzles`로 교체하라"고 전달한다.
+
+## 단계 10. 사람 메시 몸 (③, 2026-09-18 총괄 확정, `docs/mesh_transition.md`)
+
+E의 `airis/viz/human_mesh.py`(MakeHuman 로드·스키닝)를 `airis/sim/human_mesh.py`로 이관해 소유하고 확장한다.
+1. `BodyParams` 5개(키·어깨 관절 간격·가슴 두께·어깨→손목·고관절 높이) → 뼈 길이별 축척. 임산부는 `stomach-pregnant` 타깃(추가 다운로드는 사용자 승인).
+2. sim 메시: 원본을 약 5~6k 삼각형으로 1회 데시메이션(정점별 뼈 가중치 보존), 좌우 대칭 면 맵·면 → 부위 맵과 함께 `data/meshes/makehuman/`에 커밋. 생성 스크립트 포함.
+3. 패치 샘플링: 면적 비례, 면 법선, y → −y 대칭 쌍, 부위는 뼈 가중치 최댓값 기준(torso front/back은 기존 법선 규칙).
+4. 뼈에 맞춘 근사 캡슐(약 30개) + 휠체어 프레임 → `capsules`/`capsule_part`.
+5. `build_body(..., model=None)`: `physics.yaml body.model` (`capsule` 기본 → E5 기록 후 `mesh`). 캡슐 경로는 유지.
+6. `tests/test_human_mesh.py`: 자산 로드, 체형 축척 정확도(측정값 ±1 cm), 대칭, 부위 비율, 부스 밖 판정, 시간(자세+패치 20 ms 이하, 부하 대비 비율 판정).
+완료 후 D·A·E에 알린다. BodyParams 기본값 교체는 통합이 types.py PR로 처리한다.

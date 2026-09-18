@@ -839,31 +839,61 @@ def test_every_jet_config_key_is_read():
     assert not missing, f"읽히지 않는 jet 키: {sorted(missing)}"
 
 
+# ---------------------------------------------------------------------------
+# 성능 판정: 절대 시간 우선, 초과하면 기준 연산 대비 비율로 판정 (CPU 경쟁에 강하게)
+# ---------------------------------------------------------------------------
+# 다른 세션이 CPU 를 쓰면(예: C 의 8 프로세스 스윕) 15회 최솟값도 절대 시간 기준을 넘는다.
+# 같은 순간의 CPU 상태를 반영하도록, 측정마다 같은 성격(행렬곱 + exp)의 고정 numpy 연산을
+# 번갈아 재고 그 비율을 본다. 부하는 둘 다 느리게 하지만, 알고리즘 퇴행은 비율을 키운다.
+# 비율 상한은 부하 0·8·16 프로세스에서 관측한 최대 비율의 약 2배다 (PR 본문 표).
+_REF_RNG = np.random.default_rng(12345)
+_REF_A = _REF_RNG.random((16, 3600))
+_REF_D = _REF_RNG.random((16, 3))
+_REF_X = _REF_RNG.random((3600, 3))
+
+
+def _reference_workload() -> float:
+    s = _REF_D @ _REF_X.T
+    return float(np.exp(-(_REF_A * _REF_A) / (1.0 + s * s)).sum())
+
+
+def _assert_time_budget(fn, budget_s: float, max_ratio: float, label: str, reps: int = 15) -> None:
+    """fn 의 최솟값 시간이 budget_s 이하면 통과. 넘으면 기준 연산 대비 비율이 max_ratio 이하여야 한다."""
+    fn()
+    _reference_workload()
+    best = best_ref = float("inf")
+    for _ in range(reps):
+        t0 = time.perf_counter()
+        _reference_workload()
+        best_ref = min(best_ref, time.perf_counter() - t0)
+        t0 = time.perf_counter()
+        fn()
+        best = min(best, time.perf_counter() - t0)
+    if best < budget_s:
+        return
+    ratio = best / best_ref
+    assert ratio < max_ratio, (
+        f"{label} {best * 1e3:.2f} ms > {budget_s * 1e3:.0f} ms 이고, 기준 연산 "
+        f"{best_ref * 1e3:.2f} ms 대비 {ratio:.1f}배 > {max_ratio}배 (부하가 아니라 느려졌다)"
+    )
+
+
 @pytest.mark.parametrize("layout", ["slot_bars", "layout"])
 def test_velocity_field_with_impingement_under_25ms(layout):
-    """4.2b 보정 켬: 패치 3,600개 × 노즐(슬롯 12 / 원형 16) 25 ms 이하 (보정 없는 경로의 약 4배 여유)."""
+    """4.2b 보정 켬: 패치 3,600개 × 노즐(슬롯 12 / 원형 16) 25 ms 이하 (부하 시 기준 연산 대비 40배 이하)."""
     nz = load_nozzles(layout=layout)
     state = build_body(BodyParams(), PoseParams(), load_scenarios()["default"], patches_per_m2=3600 / 2.21)
     n = state.patch_normal
     pts = (state.patch_pos + CFG["air"]["wall_offset_m"] * n).astype(np.float32)
-    velocity_field_per_nozzle(pts, nz, 0.0, CFG, surface_normals=n)
-    best = float("inf")
-    for _ in range(10):
-        t0 = time.perf_counter()
-        velocity_field_per_nozzle(pts, nz, 0.0, CFG, surface_normals=n)
-        best = min(best, time.perf_counter() - t0)
-    assert best < 0.025, f"보정 켠 velocity_field_per_nozzle {best * 1e3:.2f} ms (P = {len(pts)})"
+    _assert_time_budget(lambda: velocity_field_per_nozzle(pts, nz, 0.0, CFG, surface_normals=n),
+                        budget_s=0.025, max_ratio=40.0,
+                        label=f"보정 켠 velocity_field_per_nozzle (P = {len(pts)})")
 
 
 @pytest.mark.parametrize("layout", ["slot_bars", "layout"])
 def test_velocity_field_under_5ms(layout):
-    """완료 기준: 패치 3,600개 × 노즐(슬롯 10 / 원형 16) 5 ms 이하. 타이밍 잡음을 피하려고 최솟값을 쓴다."""
+    """완료 기준: 패치 3,600개 × 노즐(슬롯 12 / 원형 16) 5 ms 이하 (부하 시 기준 연산 대비 10배 이하)."""
     nz = load_nozzles(layout=layout)
     pts = _booth_points(np.random.default_rng(1), 3600)
-    velocity_field(pts, nz, 0.0, CFG)
-    best = float("inf")
-    for _ in range(15):
-        t0 = time.perf_counter()
-        velocity_field(pts, nz, 0.0, CFG)
-        best = min(best, time.perf_counter() - t0)
-    assert best < 0.005, f"velocity_field {best * 1e3:.2f} ms"
+    _assert_time_budget(lambda: velocity_field(pts, nz, 0.0, CFG),
+                        budget_s=0.005, max_ratio=10.0, label="velocity_field")

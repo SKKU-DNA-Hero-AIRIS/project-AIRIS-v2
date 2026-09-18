@@ -6,8 +6,8 @@
 
 | 트랙 | 수정 가능 | 절대 수정 금지 |
 |---|---|---|
-| B | `airis/sim/body.py`, `jet.py`, `scenario.py`, `airis/viz/debug3d.py`, `configs/*.yaml`, `tests/test_body.py`, `tests/test_jet.py` | |
-| D | `airis/sim/patch_baseline.py`, `airis/sim/scoring.py`, `tests/test_sanity_physics.py`, `tests/fakes.py`, `scripts/compare_evaluators.py` | `configs/` |
+| B | `airis/sim/body.py`, `human_mesh.py`, `jet.py`, `scenario.py`, `airis/viz/debug3d.py`, `configs/*.yaml`, `data/meshes/*`, `scripts/build_sim_mesh.py`, `tests/test_body.py`, `tests/test_jet.py`, `tests/test_human_mesh.py` | |
+| D | `airis/sim/patch_baseline.py`, `airis/sim/scoring.py`, `tests/test_sanity_physics.py`, `tests/fakes.py`, `scripts/compare_evaluators.py`, `scripts/compare_bodies.py` | `configs/` |
 | C | `airis/optimize/*`, `scripts/run_optimize.py`, `scripts/run_baselines.py`, `scripts/run_e4.py`, `tests/test_encoding.py`, `tests/test_cmaes_dummy.py` | `configs/` |
 | A | `airis/sim/particles.py`, `airis/sim/kernels/*`, `tests/test_particles.py` | `configs/` |
 | E | `airis/realtime/*`, `airis/viz/*`(단 `debug3d.py`는 B), `scripts/run_dashboard.py`, `scripts/render_frames.py`, `tests/test_realtime.py`, `tests/test_viz.py`, `docs/figures/*` | `configs/`, `airis/sim/*` |
@@ -150,6 +150,7 @@ v_p(t+dt) = v_air + (v_p(t) − v_air) · exp(−dt/τ_p) + g·dt
 - x: 진행 방향, y: 좌우(중심 0), z: 상하(바닥 0). 단위 m, 각도 degree.
 - 부스 크기는 `configs/nozzles.yaml`의 `booth`. 입자가 부스 밖으로 나가면 제거 확정.
 - 마네킹은 부스 중앙 `(booth.length_m/2, 0, 0)`에 선다.
+- **몸 모델**: `configs/physics.yaml` `body.model`이 `mesh`면 MakeHuman 사람 메시(`airis/sim/human_mesh.py`, `docs/mesh_transition.md`), `capsule`이면 캡슐 마네킹. 두 모델 모두 `BodyState`의 패치 필드는 같고, 메시 모델은 `mesh_*`·`patch_face`를 추가로 채우며 `capsules`에는 뼈에 맞춘 근사 캡슐을 담는다. 가림은 메시 모델에서 광선-삼각형(D), 입자 충돌은 근사 캡슐(A).
 - **부스 밖 자세는 불가.** `BodyState.patch_pos`가 하나라도 `|y| > booth.width_m/2` 또는 `z > booth.height_m`이면 (x 방향은 열린 문이라 허용) 그 후보는 평가하지 않고 `removal_by_part = 0`, `total_removal = 0`, `extra["infeasible"] = True`, 그리고 **벽을 넘은 거리에 비례한 벌점** `score = −1 − 10·d_out`을 돌려준다. `d_out = max(0, max_i(|y_i| − width/2), max_i(z_i − height))` (m). 조금 닿으면 −1에 가깝고 많이 닿을수록 낮아져 CMA-ES가 부스 안으로 돌아올 기울기를 얻는다. 계수 10 /m은 고정이다. C는 `score ≤ −1.0` 또는 `extra["infeasible"]`로 불가를 판정한다. D와 A가 동일하게 구현한다. 사람마다 체형이 달라 `pose_bounds`로는 막을 수 없고, 벽 밖으로 나간 팔의 먼지가 공짜로 제거되는 것을 막기 위한 규칙이다.
 
 ## 6. 테스트와 PR
@@ -161,5 +162,5 @@ v_p(t+dt) = v_air + (v_p(t) − v_air) · exp(−dt/τ_p) + g·dt
 ## 7. 개발 중 성능 설정
 
 - A의 Taichi 테스트는 입자 1,000개, 후보 2개로 돌린다. 2만 × 100은 성능 측정 때만.
-- D의 패치 수는 500~2,000개. 1회 평가 5 ms 이하가 목표.
+- D의 패치 밀도는 최적화 400/m²(약 1,000개), 재채점 2,000/m². 1회 평가 중앙값(저부하) 캡슐 모델 30 ms, 메시 모델 100 ms 이하가 기준 (총괄 결정, `docs/mesh_transition.md` 7).
 - 여러 세션이 GPU를 공유하므로 A 외의 트랙은 `ti.init`을 호출하지 않는다.
