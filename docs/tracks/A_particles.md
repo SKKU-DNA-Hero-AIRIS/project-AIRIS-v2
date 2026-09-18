@@ -196,3 +196,9 @@ def batch_evaluate(self, candidates, body, scenario):
 - 개발 기본 백엔드는 **cuda**. 0.5 ms < 1 ms 기준이므로 GPU가 정상적으로 잡혔다.
 - `ParticleEvaluator(arch=...)`는 `"gpu"`를 받으면 cuda → vulkan → cpu 순으로 시도한다.
 - 다른 세션과 GPU를 공유하므로 개발 중 설정은 `N=1000, B=2, duration 0.5 s`로 유지한다 (`00_common.md` 7절).
+
+## 단계 13. 메시 몸 대응 (③, 2026-09-18 총괄 확정, `docs/mesh_transition.md`)
+
+1. 입자 충돌·재부착은 `capsules`(메시 모델에서는 뼈 근사 캡슐 약 30개 + 휠체어 프레임)를 그대로 쓴다. `max_capsules` 상향, `capsule_part` 부위 판정이 근사 캡슐에서도 맞는지 테스트.
+2. 가림은 D의 `occlusion`을 재사용하므로 자동으로 메시 판정이 된다. 초기화 시간이 늘면(광선 교차) 기록한다.
+3. SDF 격자 충돌로의 전환은 E5 결과와 입자판 vs 패치판 순위 상관(E2 재실행)을 보고 결정한다.
