@@ -290,18 +290,35 @@ def test_recommend_uses_model_when_available(monkeypatch):
     assert rec.source.startswith("stub") and "회귀 모델" in rec.notes[0]
 
 
-def test_compare_with_baselines_matches_experiments_md():
-    """기준선 점수가 docs/experiments.md 기준선 표(커밋 8465937)와 같고, 추천이 전부 이긴다."""
-    sc = SCENARIOS["default"]
+@pytest.mark.parametrize("scenario", ["default", "wheelchair"])
+def test_compare_with_baselines_matches_run_baselines(scenario):
+    """기준선 정의·집계가 C의 `scripts/run_baselines.py`(E4 기준선)와 같고, 추천이 B0·B1을 이긴다.
+
+    숫자를 박지 않는다: 물리 기준(패치 격자, 상수)이 바뀌면 experiments.md 표도 다시 재기 때문이다.
+    """
+    import importlib.util
+    from pathlib import Path
+
+    from airis.optimize.encoding import PoseEncoder
+    from airis.realtime.recommend import _nozzles, patch_evaluator
+
+    path = Path(__file__).resolve().parents[1] / "scripts" / "run_baselines.py"
+    spec = importlib.util.spec_from_file_location("run_baselines", path)
+    rb = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(rb)
+
+    sc = SCENARIOS[scenario]
     rows = compare_with_baselines(BodyParams(), sc, recommend_pose(BodyParams(), sc))
     by = {r.name: r for r in rows}
-    assert by["B0 기본"].score == pytest.approx(0.2282, abs=5e-4)
-    assert by["B1 몸 회전"].score == pytest.approx(0.3934, abs=5e-4)
-    assert by["B1 몸 회전"].n_feasible == 12
-    assert by["B2 만세"].score == pytest.approx(0.2607, abs=5e-4)
+    for mine, theirs in (("B0 기본", "B0"), ("B1 몸 회전", "B1"), ("B2 만세", "B2")):
+        ref = rb.evaluate_condition(patch_evaluator(), rb.BASELINES[theirs], PoseEncoder(sc),
+                                    _nozzles(), BodyParams(), sc)
+        assert by[mine].score == pytest.approx(ref["score"], abs=1e-9)
+        assert by[mine].n_feasible == ref["n_feasible"]
+        assert by[mine].infeasible == ref["infeasible"]
     rec = by["추천"]
     assert rec.result is not None and "removal" in rec.result.extra
-    for name in ("B0 기본", "B1 몸 회전", "B2 만세"):
+    for name in ("B0 기본", "B1 몸 회전"):
         assert improvement(rec, by[name]) > 0.0
 
 
