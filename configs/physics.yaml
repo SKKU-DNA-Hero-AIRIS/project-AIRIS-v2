@@ -32,9 +32,9 @@ jet:
     duty: 0.5
 
 body:
-  # 몸 모델 (docs/mesh_transition.md). capsule = 캡슐 마네킹, mesh = MakeHuman 사람 메시 (airis/sim/human_mesh.py).
-  # B·D·A 메시 PR 이 모두 병합되고 E5(캡슐판 vs 메시판) 가 기록되면 mesh 로 바꾼다 (B PR).
-  model: capsule
+  # 몸 모델 (docs/mesh_transition.md). mesh = MakeHuman 사람 메시 (airis/sim/human_mesh.py), capsule = 캡슐 마네킹.
+  # capsule → mesh (5단계, E5 기록 후). 캡슐 경로는 build_body(..., model="capsule") 폴백으로 남긴다 (E5 재현·비교용).
+  model: mesh
 
 air:
   density: 1.2                    # kg/m^3
