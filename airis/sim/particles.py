@@ -6,6 +6,8 @@
   결정론이 깨진다 (`docs/tracks/A_particles.md` 단계 3)
 - 스텝: 이탈 판정 -> 부유 입자 적분 -> 캡슐 충돌/재부착 -> 부스 이탈 제거
 - 제트: 원형 노즐은 00_common.md 4.1, 슬롯 노즐은 4.1b (노즐별 판정은 `jet.slot_mask`)
+- 부착 입자의 이탈 판정에는 4.2b 충돌 제트 보정을 더한다 (`jet.impingement.enabled`).
+  부유 입자는 자유 제트 그대로
 - 부스 밖 자세(00_common.md 5절)는 시뮬레이션하지 않고 score = -1 - 10·d_out (벽 초과 거리 벌점)
 
 구현 상태 (A_particles.md 기준)
@@ -205,6 +207,21 @@ class ParticleEvaluator(Evaluator):
             "state": self.f.state.to_numpy()[sl],
             "part_init": self.f.part_init.to_numpy()[sl],
         }
+
+    def probe_surface_velocity(self, points: np.ndarray, normals: np.ndarray,
+                               nozzle: NozzleConfig, t: float = 0.0) -> np.ndarray:
+        """부착 입자가 이탈 판정에 쓰는 속도 (자유 제트 + 4.2b 보정)를 (점, 법선)에서 -> (P,3).
+
+        B의 `velocity_field(points, nozzle, t, cfg, surface_normals=normals)`와 같은 양이다.
+        """
+        self._upload_nozzles(nozzle)
+        pts = np.ascontiguousarray(points, dtype=np.float32)
+        nrm = np.asarray(normals, dtype=np.float64)
+        nrm = np.ascontiguousarray(nrm / np.linalg.norm(nrm, axis=1, keepdims=True),
+                                   dtype=np.float32)
+        out = np.zeros_like(pts)
+        self.f.k_probe_surface_velocity(pts, nrm, out, pts.shape[0], float(t))
+        return out
 
     def probe_velocity(self, points: np.ndarray, nozzle: NozzleConfig,
                        t: float = 0.0) -> np.ndarray:
