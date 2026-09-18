@@ -5,20 +5,16 @@
 
 입력
 - 격리 테스트: 기하를 완전히 통제하려고 원통 캡슐 BodyState를 여기서 만든다
-  (`cylinder_body`, 후보마다 캡슐 수가 다르게). 노즐은 원통을 스치는 4개.
-- 실제 경로: B의 `build_body` + `load_nozzles(layout="layout")`(원형 16개)로
-  `evaluate`/`batch_evaluate`를 C가 부르는 그대로 호출한다. D의 `fake_body`/`fake_nozzles`도
-  한 번 돌린다.
-- 슬롯(4.1b) 노즐: A의 Taichi 커널(⑤b)이 아직 없어 제트 테스트는 전부 4.1 원형 검증이다.
-  기준 배치(`load_nozzles()` = 퓨리움 슬롯 바)는 입자판이 NotImplementedError로 막는지만 본다.
+  (`cylinder_body`, 후보마다 캡슐 수가 다르게). 노즐은 원통을 스치는 원형 4개.
+- 실제 경로: B의 `build_body` + `load_nozzles()`(기준 장비 슬롯 바)로 `evaluate`/`batch_evaluate`를
+  C가 부르는 그대로 호출한다. D의 `fake_body`/`fake_nozzles`도 한 번 돌린다.
+- 물리 상수는 전부 `configs/physics.yaml` 원본이다 (B PR #10 이후 덮어쓰기 없음). 제거율이
+  실제로 0보다 큰지 함께 단언해 격리 테스트가 "전부 0 == 전부 0"으로 공허하게 통과하지 않게 한다.
 
-물리 상수 오버라이드 (`_sim_physics`)
-- configs/physics.yaml 그대로(노즐 지름 4 mm)면 몸 위치(노즐에서 0.45 m)의 중심 속도가
-  약 1.5 m/s, 전단 약 0.007 Pa로 임계 전단 중앙값 0.5 Pa보다 두 자릿수 작다. 제거율이
-  사실상 0이 되어 격리 테스트가 "전부 0 == 전부 0"으로 공허하게 통과한다.
-- 그래서 시뮬레이션 테스트는 노즐 지름과 임계 전단만 바꾼 사본을 쓰고, 제거율이 실제로
-  0보다 큰지 함께 단언한다. configs/는 수정하지 않는다 (PR에 B 앞 제안으로 남김).
-- 제트 일치 테스트는 오버라이드 없이 physics.yaml 원본을 쓴다 (D와 맞춰야 하는 값).
+제트 일치 (단계 4)
+- 원형(4.1), 슬롯(4.1b), 둘이 섞인 배치를 각각 정상 상태와 펄스로 돌린다. 기준값은 이 파일의
+  numpy float64 독립 구현(`_jet_velocity_numpy`)이고 상대 오차 1e-4. B의 `jet.velocity_field`
+  (float64)와도 1e-4로 대조한다.
 """
 from __future__ import annotations
 
@@ -31,7 +27,8 @@ import pytest
 
 ti = pytest.importorskip("taichi")
 
-from airis.sim.jet import velocity_field  # noqa: E402
+from airis.sim.jet import slot_mask, velocity_field  # noqa: E402
+from airis.sim import scoring  # noqa: E402
 from airis.sim.particles import ParticleEvaluator  # noqa: E402
 from airis.sim.scenario import (  # noqa: E402
     load_nozzle_layout, load_nozzles, load_physics, load_scenarios,
@@ -86,7 +83,8 @@ def cylinder_body(pose: PoseParams | None = None) -> BodyState:
     if pose.shoulder_abduction >= 45:
         ab = math.radians(pose.shoulder_abduction)
         shoulder = top + np.array([0.0, -(r_torso + 0.05), -0.05])
-        hand = shoulder + 0.6 * np.array([0.0, -math.sin(ab), -math.cos(ab)])
+        # 팔 길이 0.45 m: abduction 90도에서도 손끝 y = -0.65로 부스 옆벽(±0.73) 안에 남는다
+        hand = shoulder + 0.45 * np.array([0.0, -math.sin(ab), -math.cos(ab)])
         caps.append((shoulder, hand, 0.05, ARMS))
 
     pieces = [_capsule_patches(p0, p1, r, part) for p0, p1, r, part in caps]
@@ -113,6 +111,13 @@ def grazing_nozzles(strength: float = 1.0) -> NozzleConfig:
     return NozzleConfig(pos, dirs, np.full(4, strength, dtype=np.float32))
 
 
+def slot_nozzles() -> NozzleConfig:
+    """B의 기준 장비 배치 (퓨리움 슬롯 바 12개, 전부 4.1b)."""
+    nz = load_nozzles(layout="slot_bars")
+    assert nz.slot_axis is not None and slot_mask(nz).all()
+    return nz
+
+
 def round_nozzles() -> NozzleConfig:
     """B의 원형 비교 배치 (16개, 전부 4.1). 기준 배치(`active`)는 슬롯이라 명시해서 부른다."""
     nz = load_nozzles(layout="layout")
@@ -120,24 +125,32 @@ def round_nozzles() -> NozzleConfig:
     return nz
 
 
-def layout_nozzles(rng: np.random.Generator) -> NozzleConfig:
-    """원형 비교 배치에 무작위 세기와 펄스 위상을 입힌 것.
+def layout_nozzles(rng: np.random.Generator, kind: str = "round") -> NozzleConfig:
+    """제트 테스트용 배치에 무작위 세기와 펄스 위상을 입힌 것.
 
-    TODO(A, ⑤b): 4.1b 커널이 들어오면 슬롯 배치(slot_axis/slot_length 포함)로도 돌린다.
-    지금은 slot_axis=None을 명시해 "4.1 원형 검증"임을 드러낸다.
+    - "round": 원형 비교 배치 16개 (slot_axis = None)
+    - "slot":  기준 장비 슬롯 바 12개 (slot_axis/slot_length 그대로)
+    - "mixed": 둘을 이어 붙인 28개. 원형 행은 slot_axis = 0벡터, slot_length = 0 (행 단위 규약)
     """
-    nz = round_nozzles()
-    return NozzleConfig(nz.positions, nz.directions,
-                        rng.uniform(0.3, 1.0, nz.count).astype(np.float32),
-                        pulse_phase=rng.random(nz.count).astype(np.float32),
-                        slot_axis=None, slot_length=None)
-
-
-def _sim_physics() -> dict:
-    cfg = copy.deepcopy(load_physics())
-    cfg["jet"]["nozzle_diameter_m"] = 0.05
-    cfg["adhesion"]["critical_shear_pa_median"] = 0.1
-    return cfg
+    rnd, slt = round_nozzles(), slot_nozzles()
+    if kind == "round":
+        pos, dirs, axis, length = rnd.positions, rnd.directions, None, None
+    elif kind == "slot":
+        pos, dirs = slt.positions, slt.directions
+        axis, length = slt.slot_axis, slt.slot_length
+    elif kind == "mixed":
+        pos = np.concatenate([rnd.positions, slt.positions])
+        dirs = np.concatenate([rnd.directions, slt.directions])
+        axis = np.concatenate([np.zeros((rnd.count, 3), np.float32), slt.slot_axis])
+        length = np.concatenate([np.zeros(rnd.count, np.float32), slt.slot_length])
+    else:
+        raise ValueError(kind)
+    m = len(pos)
+    return NozzleConfig(np.asarray(pos, np.float32), np.asarray(dirs, np.float32),
+                        rng.uniform(0.3, 1.0, m).astype(np.float32),
+                        pulse_phase=rng.random(m).astype(np.float32),
+                        slot_axis=None if axis is None else np.asarray(axis, np.float32),
+                        slot_length=None if length is None else np.asarray(length, np.float32))
 
 
 # ----------------------------------------------------------------- 픽스처
@@ -148,7 +161,7 @@ def scenario():
 
 @pytest.fixture(scope="module")
 def ev_batch():
-    ev = ParticleEvaluator(_sim_physics(), max_candidates=B_DEV,
+    ev = ParticleEvaluator(load_physics(), max_candidates=B_DEV,
                            particles_per_candidate=N_DEV, duration_s=DURATION_DEV)
     yield ev
     ev.destroy()
@@ -157,14 +170,16 @@ def ev_batch():
 @pytest.fixture(scope="module")
 def ev_single():
     """B=1로 따로 할당한 평가기. 필드 크기와 커널 인스턴스가 배치 평가기와 다르다."""
-    ev = ParticleEvaluator(_sim_physics(), max_candidates=1,
+    ev = ParticleEvaluator(load_physics(), max_candidates=1,
                            particles_per_candidate=N_DEV, duration_s=DURATION_DEV)
     yield ev
     ev.destroy()
 
 
 POSE_A = PoseParams()                                                  # 캡슐 1개
-POSE_B = PoseParams(shoulder_abduction=90.0, torso_pitch=15.0)        # 기울임 + 팔, 캡슐 2개
+# 기울임 + 팔, 캡슐 2개. 기울기를 크게 하면 몸통이 스치는 제트에서 벗어나 제거가 0이 되어
+# (tau_med 0.125 Pa 기준 15도에서 0) 격리 테스트가 공허해진다. 3도에서 A와 제거 개수가 다르다.
+POSE_B = PoseParams(shoulder_abduction=90.0, torso_pitch=3.0)
 
 
 def _assert_same(r1, r2):
@@ -240,52 +255,91 @@ def test_zero_strength_removes_nothing(ev_batch, scenario):
     assert all(c[0] == B_DEV * N_DEV for c in counts)
 
 
-def _jet_velocity_numpy(points, nozzle, cfg, t=0.0):
-    """00_common.md 4.1을 numpy float64로 독립 재구현. Taichi 코드를 참조하지 않는다."""
-    jet = cfg["jet"]
-    big_d = jet["nozzle_diameter_m"]
-    k = jet["decay_constant"]
-    u_exit = jet["exit_velocity_mps"]
-    spread = jet["halfwidth_spread_rate"]
-    pulse = jet.get("pulse") or {}
+def _is_slot_row(nozzle: NozzleConfig) -> np.ndarray:
+    """00_common.md 4.1b 행 단위 규약을 이 파일에서 따로 구현 (B의 slot_mask를 쓰지 않는다)."""
+    if nozzle.slot_axis is None:
+        return np.zeros(nozzle.count, dtype=bool)
+    axis = np.asarray(nozzle.slot_axis, np.float64)
+    return (np.asarray(nozzle.slot_length, np.float64) > 0) & (np.abs(axis).sum(axis=1) > 0)
 
-    p = np.asarray(points, np.float64)[:, None, :]                    # (P,1,3)
-    n = np.asarray(nozzle.positions, np.float64)[None]                # (1,M,3)
-    d = np.asarray(nozzle.directions, np.float64)
-    d = (d / np.linalg.norm(d, axis=1, keepdims=True))[None]
-    r = p - n
-    s = np.sum(r * d, axis=-1)                                        # (P,M)
-    rho = np.linalg.norm(r - s[..., None] * d, axis=-1)
-    u0 = u_exit * np.asarray(nozzle.strengths, np.float64)[None]
-    l_core = k * big_d
-    with np.errstate(divide="ignore", invalid="ignore", over="ignore"):
-        u_c = np.where(s <= l_core, u0, u0 * k * big_d / s)
-        sigma = 0.5 * big_d / 1.177 + spread * s / 1.177
-        mag = u_c * np.exp(-rho ** 2 / (2 * sigma ** 2))
-    mag = np.where(s > 0, mag, 0.0)
-    if pulse.get("enabled", False):
-        phase = np.zeros(nozzle.count) if nozzle.pulse_phase is None else nozzle.pulse_phase
-        gate = (np.mod(t / pulse["period_s"] + np.asarray(phase, np.float64), 1.0)
-                < pulse["duty"]).astype(np.float64)
-        mag = mag * gate[None]
-    return np.sum(mag[..., None] * d, axis=1)                         # (P,3)
+
+def _jet_velocity_numpy(points, nozzle, cfg, t=0.0):
+    """00_common.md 4.1(원형) / 4.1b(슬롯)을 numpy float64로 독립 재구현.
+
+    Taichi 코드와 B의 jet.py를 참조하지 않는다. 노즐마다 식을 고르고 벡터 합한다.
+    """
+    jet = cfg["jet"]
+    pulse = jet.get("pulse") or {}
+    p = np.asarray(points, np.float64)
+    u = np.zeros_like(p)
+    slot_rows = _is_slot_row(nozzle)
+    phase = (np.zeros(nozzle.count) if nozzle.pulse_phase is None
+             else np.asarray(nozzle.pulse_phase, np.float64))
+    for m in range(nozzle.count):
+        d = np.asarray(nozzle.directions[m], np.float64)
+        d = d / np.linalg.norm(d)
+        r = p - np.asarray(nozzle.positions[m], np.float64)
+        s = r @ d
+        u0_strength = float(nozzle.strengths[m])
+        with np.errstate(divide="ignore", invalid="ignore", over="ignore"):
+            if slot_rows[m]:
+                sl = jet["slot"]
+                h, kp, spread = sl["height_m"], sl["decay_constant"], sl["spread_rate"]
+                e = np.asarray(nozzle.slot_axis[m], np.float64)
+                e = e / np.linalg.norm(e)
+                rho_e = r @ e
+                rho_n = np.linalg.norm(r - s[:, None] * d - rho_e[:, None] * e, axis=1)
+                u0 = sl["exit_velocity_mps"] * u0_strength
+                l_core = kp * h
+                u_c = np.where(s <= l_core, u0, u0 * np.sqrt(kp * h / s))
+                sigma = 0.5 * h / 1.177 + spread * s / 1.177
+                rho_e_out = np.maximum(np.abs(rho_e) - float(nozzle.slot_length[m]) / 2, 0.0)
+                mag = (u_c * np.exp(-rho_n ** 2 / (2 * sigma ** 2))
+                       * np.exp(-rho_e_out ** 2 / (2 * sigma ** 2)))
+            else:
+                big_d, k = jet["nozzle_diameter_m"], jet["decay_constant"]
+                rho = np.linalg.norm(r - s[:, None] * d, axis=1)
+                u0 = jet["exit_velocity_mps"] * u0_strength
+                l_core = k * big_d
+                u_c = np.where(s <= l_core, u0, u0 * k * big_d / s)
+                sigma = 0.5 * big_d / 1.177 + jet["halfwidth_spread_rate"] * s / 1.177
+                mag = u_c * np.exp(-rho ** 2 / (2 * sigma ** 2))
+        mag = np.where(s > 0, mag, 0.0)
+        if pulse.get("enabled", False):
+            gate = float(np.mod(t / pulse["period_s"] + phase[m], 1.0) < pulse["duty"])
+            mag = mag * gate
+        u += mag[:, None] * d
+    return u
 
 
 def _jet_points(nozzle, cfg, rng, n=1000):
-    """무작위 점 1000개: 절반은 부스 안 균일, 절반은 제트 축 근처 (값이 큰 곳).
+    """무작위 점 1000개: 절반은 부스 안 균일, 절반은 제트 근처 (값이 큰 곳).
 
-    축 근처 점은 그 거리의 제트 폭 sigma(s)에 비례해 흩뿌려 코어/감쇠 구간,
-    가우시안 중심/꼬리, 노즐 뒤(s <= 0)를 고루 지나게 한다.
+    제트 근처 점은 그 거리의 제트 폭 sigma(s)에 비례해 흩뿌려 코어/감쇠 구간,
+    가우시안 중심/꼬리, 노즐 뒤(s <= 0)를 고루 지나게 한다. 슬롯 노즐은 슬롯 길이
+    방향으로 끝 바깥까지 (+-(L/2 + 0.15 m)) 퍼뜨려 끝단 감쇠 구간도 지나게 한다.
     """
     jet = cfg["jet"]
     half = n // 2
     box = rng.uniform([0.0, -BOOTH["width_m"] / 2, 0.0],
                       [BOOTH["length_m"], BOOTH["width_m"] / 2, BOOTH["height_m"]], (half, 3))
+    slot_rows = _is_slot_row(nozzle)
     m = rng.integers(0, nozzle.count, n - half)
-    s = rng.uniform(-0.05, 0.8, n - half)            # 음수 = 노즐 뒤 (u = 0 분기)
-    sigma = (0.5 * jet["nozzle_diameter_m"] + jet["halfwidth_spread_rate"] * np.abs(s)) / 1.177
-    off = rng.normal(0.0, 1.0, (n - half, 3)) * 1.5 * sigma[:, None]
-    near = nozzle.positions[m] + s[:, None] * nozzle.directions[m] + off
+    s = rng.uniform(-0.05, 1.0, n - half)            # 음수 = 노즐 뒤 (u = 0 분기)
+    near = np.empty((n - half, 3))
+    for i, (mi, si) in enumerate(zip(m, s)):
+        d = nozzle.directions[mi] / np.linalg.norm(nozzle.directions[mi])
+        base = nozzle.positions[mi] + si * d
+        if slot_rows[mi]:
+            sl = jet["slot"]
+            sigma = (0.5 * sl["height_m"] + sl["spread_rate"] * abs(si)) / 1.177
+            e = nozzle.slot_axis[mi] / np.linalg.norm(nozzle.slot_axis[mi])
+            reach = nozzle.slot_length[mi] / 2 + 0.15
+            near[i] = base + rng.uniform(-reach, reach) * e + rng.normal(0, 1.5 * sigma, 3)
+        else:
+            sigma = (0.5 * jet["nozzle_diameter_m"]
+                     + jet["halfwidth_spread_rate"] * abs(si)) / 1.177
+            near[i] = base + rng.normal(0, 1.5 * sigma, 3)
     return np.concatenate([box, near]).astype(np.float32)
 
 
@@ -297,11 +351,13 @@ def _relative_error(u_ti, u_np):
     return np.linalg.norm(u_ti - u_np, axis=1) / np.maximum(mag, floor)
 
 
+@pytest.mark.parametrize("kind", ["round", "slot", "mixed"])
 @pytest.mark.parametrize("pulse_t", [None, 0.37], ids=["steady", "pulse"])
-def test_jet_matches_numpy_reference(pulse_t):
+def test_jet_matches_numpy_reference(kind, pulse_t):
     """제트 일치: Taichi ti.func vs numpy 재구현, 무작위 점 1000개, 상대 오차 1e-4 이내.
 
-    D의 패치판과 점수를 맞추는 핵심. physics.yaml 원본 상수를 쓴다.
+    D의 패치판과 점수를 맞추는 핵심. physics.yaml 원본 상수를 쓴다. 원형(4.1),
+    슬롯(4.1b), 둘이 섞인 배치(행 단위 규약)를 각각 돌린다.
     """
     cfg = copy.deepcopy(load_physics())
     t = 0.0
@@ -309,7 +365,9 @@ def test_jet_matches_numpy_reference(pulse_t):
         cfg["jet"]["pulse"]["enabled"] = True
         t = pulse_t
     rng = np.random.default_rng(1234)
-    nozzle = layout_nozzles(rng)
+    nozzle = layout_nozzles(rng, kind)
+    if kind != "round":
+        assert _is_slot_row(nozzle).sum() == slot_nozzles().count
     points = _jet_points(nozzle, cfg, rng)
 
     ev = ParticleEvaluator(cfg, max_candidates=1, particles_per_candidate=1, duration_s=0.0)
@@ -329,8 +387,11 @@ def test_jet_matches_numpy_reference(pulse_t):
 
 
 def _subset(nozzle: NozzleConfig, rows: np.ndarray) -> NozzleConfig:
-    return NozzleConfig(nozzle.positions[rows], nozzle.directions[rows], nozzle.strengths[rows],
-                        pulse_phase=nozzle.pulse_phase[rows])
+    return NozzleConfig(
+        nozzle.positions[rows], nozzle.directions[rows], nozzle.strengths[rows],
+        pulse_phase=nozzle.pulse_phase[rows],
+        slot_axis=None if nozzle.slot_axis is None else nozzle.slot_axis[rows],
+        slot_length=None if nozzle.slot_length is None else nozzle.slot_length[rows])
 
 
 def _assert_pulse_gate(points, nozzle, cfg, t, u_ti_all):
@@ -359,20 +420,17 @@ def _assert_pulse_gate(points, nozzle, cfg, t, u_ti_all):
     assert rel.max() < 1e-4, f"켜진 노즐 합 대비 최대 상대 오차 {rel.max():.3e}"
 
 
-def test_jet_matches_b_velocity_field():
-    """제트 일치 (B 기준값): Taichi vs `airis.sim.jet.velocity_field`, 몸 주변 점 1000개.
+@pytest.mark.parametrize("kind", ["round", "slot", "mixed"])
+def test_jet_matches_b_velocity_field(kind):
+    """제트 일치 (B 기준값): Taichi vs `airis.sim.jet.velocity_field`, 몸 주변 점 1000개, 1e-4.
 
-    점은 부스 중앙 몸 주변이며 모든 노즐에서 0.1 m 이상 떨어져 있다 (통합 관리자 안내).
-    B 구현은 float32로 rho^2 = |r|^2 - s^2를 계산해, 좌표 크기(~1 m)의 반올림 오차가 가는
-    제트의 지수에서 증폭된다. 정확한 float64 수식 대비 최대 약 4e-4 어긋난다 (측정값).
-    Taichi는 rho = |r - s*d|를 직접 계산해 float64 대비 1e-4 안에 든다. 그래서
-    - Taichi vs float64 독립 구현: 1e-4 (엄격)
-    - Taichi vs B: 1e-3. B가 정밀도를 고치면 1e-4로 조인다 (PR 본문에 제안).
+    점은 부스 중앙 몸 주변이며 모든 노즐 중심에서 0.1 m 이상 떨어져 있다. B의 jet.py가
+    float64로 바뀌어 (B PR #21) 이전의 1e-3 완화를 없앴다. float64 독립 구현과도 1e-4.
     """
     cfg = load_physics()
     rng = np.random.default_rng(99)
-    nozzle = layout_nozzles(rng)
-    cand = rng.uniform([CENTER_X - 0.3, -0.4, 0.2], [CENTER_X + 0.3, 0.4, 1.9], (20000, 3))
+    nozzle = layout_nozzles(rng, kind)
+    cand = rng.uniform([0.1, -0.5, 0.2], [BOOTH["length_m"] - 0.1, 0.5, 1.95], (20000, 3))
     d_min = np.linalg.norm(cand[:, None] - nozzle.positions[None], axis=2).min(axis=1)
     points = cand[d_min >= 0.1][:1000].astype(np.float32)
     assert len(points) == 1000
@@ -388,13 +446,46 @@ def test_jet_matches_b_velocity_field():
     assert (np.linalg.norm(u_exact, axis=1) > 0.1).sum() >= 150
     assert _relative_error(u_ti, u_exact).max() < 1e-4
     rel_b = _relative_error(u_ti, u_b)
-    assert rel_b.max() < 1e-3, f"Taichi vs B 최대 상대 오차 {rel_b.max():.3e}"
+    assert rel_b.max() < 1e-4, f"Taichi vs B 최대 상대 오차 {rel_b.max():.3e}"
+
+
+def test_slot_nozzle_validation():
+    """슬롯 노즐 입력 검사: 축이 분사 방향에 수직이 아니면, 또는 jet.slot 상수가 없으면 막는다.
+    slot_axis 영벡터 / slot_length 0인 행은 원형(4.1)으로 계산한다 (행 단위 규약)."""
+    cfg = load_physics()
+    ev = ParticleEvaluator(cfg, max_candidates=1, particles_per_candidate=1, duration_s=0.0)
+    try:
+        slt = slot_nozzles()
+        bent = NozzleConfig(slt.positions, slt.directions, slt.strengths,
+                            slot_axis=slt.slot_axis + 0.2 * slt.directions,
+                            slot_length=slt.slot_length)
+        with pytest.raises(ValueError, match="수직"):
+            ev.probe_velocity(np.zeros((1, 3), np.float32), bent)
+
+        rnd = round_nozzles()
+        as_round = NozzleConfig(rnd.positions, rnd.directions, rnd.strengths,
+                                slot_axis=np.zeros((rnd.count, 3), np.float32),
+                                slot_length=np.ones(rnd.count, np.float32))
+        pts = (rnd.positions + rnd.directions * 0.3).astype(np.float32)
+        np.testing.assert_array_equal(ev.probe_velocity(pts, as_round),
+                                      ev.probe_velocity(pts, rnd))
+    finally:
+        ev.destroy()
+
+    no_slot = copy.deepcopy(cfg)
+    del no_slot["jet"]["slot"]
+    ev = ParticleEvaluator(no_slot, max_candidates=1, particles_per_candidate=1, duration_s=0.0)
+    try:
+        with pytest.raises(ValueError, match="jet.slot"):
+            ev.probe_velocity(np.zeros((1, 3), np.float32), slot_nozzles())
+    finally:
+        ev.destroy()
 
 
 def test_torso_redeposition_splits_front_back():
     """재부착 부위: 몸통 캡슐(capsule_part = torso_front)에 부딪히면 충돌 법선과 몸 전방
     (cos yaw, sin yaw, 0)의 부호로 torso_front / torso_back을 가른다."""
-    cfg = _sim_physics()
+    cfg = copy.deepcopy(load_physics())
     cfg["adhesion"]["redeposition_prob"] = 1.0               # 충돌하면 반드시 재부착
     ev = ParticleEvaluator(cfg, max_candidates=2, particles_per_candidate=4, duration_s=0.0)
     scenario = load_scenarios()["default"]
@@ -443,7 +534,7 @@ def test_particles_detach_fly_and_leave_booth(scenario):
 
     그림: outputs/debug/particles_escape.png (위에서 본 x-y, 정면 y-z).
     """
-    ev = ParticleEvaluator(_sim_physics(), max_candidates=1,
+    ev = ParticleEvaluator(load_physics(), max_candidates=1,
                            particles_per_candidate=N_DEV, duration_s=DURATION_DEV)
     x_graze = CENTER_X - 0.15
     nozzle = NozzleConfig(np.array([[x_graze, -BOOTH["width_m"] / 2, 1.05]], np.float32),
@@ -539,9 +630,10 @@ def _save_escape_plot(frames, final, body, nozzle, result):
 # ------------------------------------------------- 실제 입력 (B build_body, D fakes)
 def test_batch_evaluate_with_build_body_matches_evaluate(ev_batch, scenario):
     """C가 부르는 그대로: batch_evaluate([(PoseParams, NozzleConfig)], body, scenario)
-    -> (B,) float32, 입력 순서 유지, 각 원소 == evaluate(...).score."""
+    -> (B,) float32, 입력 순서 유지, 각 원소 == evaluate(...).score. 기준 장비 슬롯 배치."""
     body = BodyParams()
-    nozzle = round_nozzles()
+    nozzle = load_nozzles()
+    assert slot_mask(nozzle).all()
     poses = [PoseParams(shoulder_abduction=120.0, torso_yaw=30.0), PoseParams()]
     scores = ev_batch.batch_evaluate([(p, nozzle) for p in poses], body, scenario)
     assert scores.dtype == np.float32 and scores.shape == (2,)
@@ -549,8 +641,10 @@ def test_batch_evaluate_with_build_body_matches_evaluate(ev_batch, scenario):
     np.testing.assert_array_equal(scores, np.array([r.score for r in singles], np.float32))
     reversed_scores = ev_batch.batch_evaluate([(p, nozzle) for p in poses[::-1]], body, scenario)
     np.testing.assert_array_equal(reversed_scores, scores[::-1])
-    assert singles[0].total_removal > 0.0
-    assert singles[0].extra["count_init"].sum() == N_DEV
+    for r in singles:
+        assert r.extra["infeasible"] is False
+        assert r.total_removal > 0.0
+        assert r.extra["count_init"].sum() == N_DEV
 
 
 def test_fake_body_batch_isolation(ev_batch, scenario):
@@ -566,24 +660,85 @@ def test_fake_body_batch_isolation(ev_batch, scenario):
         assert 0.0 <= res.total_removal <= 1.0
 
 
-# ---------------------------------------------- 슬롯(4.1b) 노즐 방어 (⑤b 전까지)
-def test_slot_nozzles_raise_until_kernel_exists(ev_batch, scenario):
-    """기준 배치(퓨리움 슬롯 바)를 받으면 원형으로 조용히 계산하지 않고 막는다.
+# ------------------------------------------------------ 부스 밖 자세 불가 (00_common 5절)
+def _moved_patch(state: BodyState, index: int, xyz) -> BodyState:
+    """패치 하나를 옮긴 사본. 나머지는 그대로."""
+    pos = state.patch_pos.copy()
+    pos[index] = xyz
+    return BodyState(pos, state.patch_normal, state.patch_area, state.patch_part,
+                     state.capsules, state.capsule_part, state.patch_capsule)
 
-    TODO(A, ⑤b): 4.1b 커널이 들어오면 이 테스트를 슬롯 제트 일치 테스트로 바꾼다.
+
+def test_outside_booth_is_infeasible_per_slot(ev_batch, ev_single, scenario):
+    """패치가 하나라도 옆벽(|y| > W/2)이나 천장(z > H) 밖이면 그 후보만 불가.
+
+    - 불가 후보: score = -1 - 10·d_out, removal 0, total 0, extra["infeasible"] = True,
+      시뮬레이션 안 함 (d_out = 벽/천장 초과 거리 m)
+    - 가능 후보: 불가 후보가 섞여도 단독 평가와 결과가 같다 (슬롯이 밀려도 격리 유지)
+    - x 방향은 열린 문이라 패치가 x < 0이어도 가능
     """
-    slot = load_nozzles()
-    assert slot.slot_axis is not None and slot.slot_length is not None
-    with pytest.raises(NotImplementedError, match="4.1b"):
-        ev_batch.batch_evaluate([(PoseParams(), slot)], BodyParams(), scenario)
-    with pytest.raises(NotImplementedError, match="4.1b"):
-        ev_batch.probe_velocity(np.zeros((1, 3), np.float32), slot)
+    nz = grazing_nozzles()
+    half_w, height = BOOTH["width_m"] / 2, BOOTH["height_m"]
+    body_a, body_b = cylinder_body(POSE_A), cylinder_body(POSE_B)
+    out_y = _moved_patch(body_a, 0, [CENTER_X, -(half_w + 0.02), 1.0])      # d_out = 0.02
+    out_z = _moved_patch(body_a, 0, [CENTER_X, 0.0, height + 0.05])         # d_out = 0.05
+    out_x = _moved_patch(body_a, 0, [-0.05, 0.0, 1.0])
+    pose_y, pose_z = PoseParams(shoulder_abduction=30.0), PoseParams(torso_pitch=10.0)
 
-    # 행 단위 규약: slot_length = 0 또는 slot_axis = 0벡터인 행은 원형이라 통과해야 한다.
-    rnd = round_nozzles()
-    mixed = NozzleConfig(rnd.positions, rnd.directions, rnd.strengths,
-                         slot_axis=np.zeros((rnd.count, 3), np.float32),
-                         slot_length=np.ones(rnd.count, np.float32))
-    np.testing.assert_array_equal(
-        ev_batch.probe_velocity(rnd.positions + rnd.directions * 0.3, mixed),
-        ev_batch.probe_velocity(rnd.positions + rnd.directions * 0.3, rnd))
+    solo_a = ev_single.batch_evaluate_states([body_a], [POSE_A], nz, scenario)[0]
+    solo_b = ev_single.batch_evaluate_states([body_b], [POSE_B], nz, scenario)[0]
+
+    calls = []
+    mixed = ev_batch.batch_evaluate_states(
+        [out_y, body_a, out_z, body_b], [pose_y, POSE_A, pose_z, POSE_B], nz, scenario,
+        step_callback=lambda step, ev, n: calls.append(n))
+    assert set(calls) == {2}, "가능 후보 2개만 시뮬레이션해야 한다"
+    _assert_same(solo_a, mixed[1])
+    _assert_same(solo_b, mixed[3])
+    for res, pose, d_out in ((mixed[0], pose_y, 0.02), (mixed[2], pose_z, 0.05)):
+        assert res.score == pytest.approx(-1.0 - 10.0 * d_out, abs=1e-5)
+        assert res.extra["d_out_m"] == pytest.approx(d_out, abs=1e-6)
+        assert res.total_removal == 0.0
+        np.testing.assert_array_equal(res.removal_by_part, 0.0)
+        assert res.extra["infeasible"] is True
+        assert res.discomfort == scoring.discomfort(pose, scenario)
+    assert mixed[1].extra["infeasible"] is False and solo_a.total_removal > 0.0
+
+    x_ok = ev_batch.batch_evaluate_states([out_x], [POSE_A], nz, scenario)[0]
+    assert x_ok.extra["infeasible"] is False
+
+    calls.clear()
+    all_out = ev_batch.batch_evaluate_states([out_y, out_z], [pose_y, pose_z], nz, scenario,
+                                             step_callback=lambda step, ev, n: calls.append(n))
+    assert calls == [] and all(r.score <= -1.0 for r in all_out)
+
+    # 벽 바로 안쪽은 가능. (patch_pos가 float32라 벽과 "같은" 값은 반올림으로 밖이 될 수 있어
+    # 0.1 mm 안쪽으로 둔다. D의 outside_booth도 같은 float32 패치를 받는다.)
+    near_wall = _moved_patch(body_a, 0, [CENTER_X, half_w - 1e-4, height - 1e-4])
+    assert ev_batch.batch_evaluate_states([near_wall], [POSE_A], nz, scenario)[0].extra[
+        "infeasible"] is False
+
+
+def test_outside_booth_matches_patch_evaluator(ev_batch, scenario):
+    """실제 몸: 불가 여부와 등급제 벌점 값이 D의 패치판과 같다 (00_common.md 5절).
+
+    어깨 벌림 90/120도는 팔 끝이 옆벽을 넘고, 180도(만세)는 체형에 따라 천장에 닿는다.
+    """
+    from airis.sim.patch_baseline import PatchEvaluator
+
+    body, nozzle = BodyParams(), load_nozzles()
+    poses = [PoseParams(shoulder_abduction=90.0), PoseParams(shoulder_abduction=120.0),
+             PoseParams(shoulder_abduction=180.0, elbow_flexion=0.0), PoseParams()]
+    scores = ev_batch.batch_evaluate([(p, nozzle) for p in poses], body, scenario)
+    assert scores[0] < -1.0 and scores[1] < -1.0 and scores[3] > -1.0
+
+    patch = PatchEvaluator(load_physics())
+    for pose, score in zip(poses, scores):
+        ref = patch.evaluate(pose, nozzle, body, scenario)
+        assert ref.extra["infeasible"] == (score <= -1.0)
+        if ref.extra["infeasible"]:
+            # batch_evaluate는 float32로 돌려준다
+            assert score == pytest.approx(ref.score, abs=1e-6)
+            single = ev_batch.evaluate(pose, nozzle, body, scenario)
+            assert single.score == pytest.approx(ref.score, abs=1e-12)
+            assert single.discomfort == pytest.approx(ref.discomfort, abs=1e-12)
