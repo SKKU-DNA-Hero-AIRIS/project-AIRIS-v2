@@ -133,27 +133,48 @@ def test_sample_bodies_mesh_model():
         dataset.sample_bodies(1, seed=0, model="stick")
 
 
-def test_build_dataset_stamps_and_checks_body_model(tmp_path, monkeypatch):
+@pytest.mark.parametrize("model, other", [("capsule", "mesh"), ("mesh", "capsule")])
+def test_build_dataset_stamps_and_checks_body_model(tmp_path, monkeypatch, model, other):
+    """physics.yaml body.model 이 무엇이든(monkeypatch 로 고정) 그 모델로 찍고, 다른 모델과는 섞지 않는다."""
+    monkeypatch.setattr(dataset, "configured_body_model", lambda: model)
     out = tmp_path / "ds.parquet"
     dataset.build_dataset(out, n_bodies=1, scenarios=["default"], cfg=SMALL, log=lambda *_: None)
-    assert set(pd.read_parquet(out)["body_model"]) == {"capsule"}
+    df = pd.read_parquet(out)
+    assert set(df["body_model"]) == {model}
+    expected = dataset.sample_bodies(1, seed=SMALL.body_seed, model=model)[0]
+    assert df["body_shoulder_width_m"].iloc[0] == pytest.approx(expected.shoulder_width_m)
 
     # 평가기(physics.yaml)와 다른 몸 모델 분포는 거부한다.
-    mesh_cfg = dataset.DatasetConfig(evaluator="dummy", max_evals=40, popsize=10, body_model="mesh")
+    other_cfg = dataset.DatasetConfig(evaluator="dummy", max_evals=40, popsize=10, body_model=other)
     with pytest.raises(ValueError, match="body.model"):
-        dataset.build_dataset(tmp_path / "m.parquet", n_bodies=1, scenarios=["default"], cfg=mesh_cfg,
+        dataset.build_dataset(tmp_path / "o.parquet", n_bodies=1, scenarios=["default"], cfg=other_cfg,
                               log=lambda *_: None)
 
-    # physics 가 mesh 로 바뀐 뒤에는 캡슐판 파일에 이어 쓰지 않는다.
-    monkeypatch.setattr(dataset, "configured_body_model", lambda: "mesh")
+    # physics 몸 모델이 바뀐 뒤에는 이전 파일에 이어 쓰지 않는다.
+    monkeypatch.setattr(dataset, "configured_body_model", lambda: other)
     with pytest.raises(ValueError, match="body_model"):
         dataset.build_dataset(out, n_bodies=2, scenarios=["default"], cfg=SMALL, log=lambda *_: None)
 
 
-def test_legacy_file_without_body_model_is_capsule(tmp_path):
+def _legacy_file(tmp_path, monkeypatch):
+    """body_model 열이 생기기 전(캡슐판) 파일을 흉내 낸다."""
+    monkeypatch.setattr(dataset, "configured_body_model", lambda: "capsule")
     out = tmp_path / "old.parquet"
     dataset.build_dataset(out, n_bodies=1, scenarios=["default"], cfg=SMALL, log=lambda *_: None)
-    df = pd.read_parquet(out).drop(columns=["body_model"])
-    df.to_parquet(out, index=False)
+    pd.read_parquet(out).drop(columns=["body_model"]).to_parquet(out, index=False)
+    return out
+
+
+def test_legacy_file_without_body_model_is_capsule(tmp_path, monkeypatch):
+    out = _legacy_file(tmp_path, monkeypatch)
     info = dataset.build_dataset(out, n_bodies=2, scenarios=["default"], cfg=SMALL, log=lambda *_: None)
     assert info["n_new"] == 1
+    assert set(pd.read_parquet(out)["body_model"]) == {"capsule"}
+
+
+def test_legacy_capsule_file_refused_under_mesh(tmp_path, monkeypatch):
+    """body.model 이 mesh 면 열 없는 옛 파일(캡슐판)에 이어 쓰지 않는다 (의도된 거부)."""
+    out = _legacy_file(tmp_path, monkeypatch)
+    monkeypatch.setattr(dataset, "configured_body_model", lambda: "mesh")
+    with pytest.raises(ValueError, match="body_model"):
+        dataset.build_dataset(out, n_bodies=2, scenarios=["default"], cfg=SMALL, log=lambda *_: None)
