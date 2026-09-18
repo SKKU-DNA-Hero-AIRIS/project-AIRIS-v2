@@ -467,19 +467,267 @@ def test_pulse_gate():
     assert _speed([LCS, 0, 0], _single_slot(), t=0.3, cfg=cfg)[0] == 0.0
 
 
-def test_impingement_not_silently_ignored():
-    """단계 8 미구현: 설정은 꺼져 있고, 켜진 채 법선을 넘기면 조용히 자유 제트를 돌려주지 않는다."""
-    pts = np.array([[LC, 0, 0]], dtype=np.float32)
-    normals = np.array([[-1.0, 0, 0]], dtype=np.float32)
-    assert CFG["jet"]["impingement"]["enabled"] is False
-    velocity_field(pts, _single(), 0.0, CFG, surface_normals=normals)   # 꺼져 있으면 무시
+# ---------------------------------------------------------------------------
+# 4.2b 충돌 제트 → 벽면 제트 보정
+# ---------------------------------------------------------------------------
+K_WALL = P.wall_jet_gain
+S_WALL = 0.4                                   # 노즐 → 벽 거리 (원거리, 코어 밖)
 
+
+def _wall_points(offsets_y, offsets_z=None, s=S_WALL):
+    """x = s 인 벽(노즐을 마주 봄, 법선 −x) 위의 점과 법선."""
+    offsets_z = np.zeros(len(offsets_y)) if offsets_z is None else offsets_z
+    pts = np.stack([np.full(len(offsets_y), s), offsets_y, offsets_z], 1).astype(np.float32)
+    normals = np.tile([-1.0, 0.0, 0.0], (len(pts), 1)).astype(np.float32)
+    return pts, normals
+
+
+def _correction_only(pts, normals, nozzle, cfg=CFG, t=0.0):
+    """(M,P,3) 보정 성분만 = 보정 켬 − 보정 없음."""
+    on = velocity_field_per_nozzle(pts, nozzle, t, cfg, surface_normals=normals).astype(np.float64)
+    off = velocity_field_per_nozzle(pts, nozzle, t, cfg).astype(np.float64)
+    return on - off
+
+
+def _tangential(u, normals):
+    n = np.asarray(normals, np.float64)
+    return u - (u * n).sum(-1, keepdims=True) * n
+
+
+def _round_centre_sigma(s):
+    uc = U0 * min(1.0, LC / s)
+    return uc, (0.5 * P.nozzle_diameter_m + P.halfwidth_spread_rate * s) / HALFWIDTH_TO_SIGMA
+
+
+def _slot_centre_sigma(s):
+    return U0S * min(1.0, float(np.sqrt(LCS / s))), _slot_sigma(s)
+
+
+def test_impingement_enabled_in_config():
+    assert CFG["jet"]["impingement"]["enabled"] is True
+    assert "stagnation_radius_factor" not in CFG["jet"]["impingement"]
+    assert "wall_jet_start_factor" not in CFG["jet"]["impingement"]
+
+
+def test_impingement_off_or_without_normals_is_free_jet():
+    """enabled=false 이거나 법선이 없으면 4.1 / 4.1b 그대로."""
+    pts, normals = _wall_points(np.linspace(-0.2, 0.2, 21))
+    for nz in (_single(), _single_slot(axis=(0.0, 0.0, 1.0))):
+        free = velocity_field_per_nozzle(pts, nz, 0.0, CFG)
+        np.testing.assert_array_equal(velocity_field_per_nozzle(pts, nz, 0.0, CFG, surface_normals=None), free)
+        cfg = copy.deepcopy(CFG)
+        cfg["jet"]["impingement"]["enabled"] = False
+        np.testing.assert_array_equal(velocity_field_per_nozzle(pts, nz, 0.0, cfg, surface_normals=normals), free)
+        np.testing.assert_array_equal(velocity_field(pts, nz, 0.0, cfg, surface_normals=normals),
+                                      velocity_field(pts, nz, 0.0, CFG))
+
+
+def test_stagnation_point_has_no_tangential_velocity():
+    """정체점(ρ_w = 0)에서 보정 0, 접선 속도 0 → τ = 0."""
+    pts, normals = _wall_points([0.0])
+    u = velocity_field_per_nozzle(pts, _single(), 0.0, CFG, surface_normals=normals).astype(np.float64)
+    assert np.abs(_correction_only(pts, normals, _single())).max() == 0.0
+    assert np.linalg.norm(_tangential(u, normals)) < 1e-6
+
+
+@pytest.mark.parametrize("xi", [0.3, 1.0, 1.585, 3.0, 10.0])
+def test_round_wall_jet_matches_formula(xi):
+    """정면 충돌(cosθ = 1): 보정 = k·U_c(H)·(1 − e^{−ξ²/2})/ξ, 방사 방향."""
+    uc, sig = _round_centre_sigma(S_WALL)
+    pts, normals = _wall_points([xi * sig])
+    corr = _correction_only(pts, normals, _single())[0, 0]
+    expected = K_WALL * uc * (1 - np.exp(-xi**2 / 2)) / xi
+    assert corr[1] == pytest.approx(expected, rel=1e-4)                  # +y 방향 (방사)
+    assert abs(corr[0]) < 1e-6 and abs(corr[2]) < 1e-6
+
+
+def test_round_wall_jet_ring_peak_and_outer_decay():
+    """접선 속도가 정체점 0 → ξ ≈ 1.585 고리에서 최대 → 바깥에서 1/ξ 로 감쇠."""
+    _, sig = _round_centre_sigma(S_WALL)
+    xis = np.linspace(0.05, 12.0, 2400)
+    pts, normals = _wall_points(xis * sig)
+    ut = np.linalg.norm(_tangential(
+        velocity_field(pts, _single(), 0.0, CFG, surface_normals=normals).astype(np.float64), normals), axis=1)
+    peak = xis[int(np.argmax(ut))]
+    assert 1.4 < peak < 1.8
+    assert ut[0] < 0.1 * ut.max()
+    far = xis > 8
+    np.testing.assert_allclose(ut[far] * xis[far], (ut[far] * xis[far]).mean(), rtol=0.02)   # ∝ 1/ξ
+
+
+def test_slot_line_impingement():
+    """슬롯(축 +z)이 x = s 벽에 선으로 부딪힌다: 슬롯 방향(z)으로는 보정이 없고 두께 방향(y)으로 퍼진다.
+
+    슬롯 길이 안에서는 z 에 따라 같고, 끝 밖은 exp(−ρ_e'²/2σ²) 로 줄며, 두께 방향 모양은
+    (1 − e^{−ξ²/2})/√ξ (봉우리 ξ ≈ 2.16).
+    """
+    nz = _single_slot(axis=(0.0, 0.0, 1.0))
+    uc, sig = _slot_centre_sigma(S_WALL)
+    # 슬롯 선 위(y = 0)는 z 에 상관없이 보정 0
+    pts, normals = _wall_points(np.zeros(5), np.linspace(-0.25, 0.25, 5))
+    assert np.abs(_correction_only(pts, normals, nz)).max() == 0.0
+    # 두께 방향 모양과 값
+    for xi in (0.5, 2.162, 6.0):
+        pts, normals = _wall_points([xi * sig, xi * sig], [0.0, 0.2])
+        corr = _correction_only(pts, normals, nz)[0]
+        expected = K_WALL * uc * (1 - np.exp(-xi**2 / 2)) / np.sqrt(xi)
+        np.testing.assert_allclose(corr[:, 1], expected, rtol=1e-4)
+        assert np.abs(corr[:, 2]).max() < 1e-6                              # 슬롯 방향 성분 없음
+    # 끝 밖 감쇠
+    xi = 2.0
+    inside, _ = _wall_points([xi * sig], [0.0])
+    outside, normals = _wall_points([xi * sig], [0.5 * SLOT_LEN + sig])
+    c_in = _correction_only(inside, normals, nz)[0, 0, 1]
+    c_out = _correction_only(outside, normals, nz)[0, 0, 1]
+    assert c_out == pytest.approx(c_in * np.exp(-0.5), rel=1e-4)
+
+
+def test_oblique_scales_with_cos_and_back_face_is_zero():
+    """비스듬한 면은 cosθ 배. 제트를 등진 면(cosθ ≤ 0)과 노즐 뒤 평면(H ≤ 0)은 보정 0."""
+    uc, sig = _round_centre_sigma(S_WALL)
+    theta = np.deg2rad(40.0)
+    n_tilt = np.array([[-np.cos(theta), np.sin(theta), 0.0]], np.float32)
+    # 제트 축 위 x = S_WALL 을 지나는 기울어진 평면. 충돌점은 (S_WALL, 0, 0), 면내 z 방향으로 ξσ 떨어진 점.
+    xi = 1.2
+    pt = np.array([[S_WALL, 0.0, xi * sig]], np.float32)
+    corr = _correction_only(pt, n_tilt, _single())[0, 0]
+    expected = K_WALL * np.cos(theta) * uc * (1 - np.exp(-xi**2 / 2)) / xi
+    assert corr[2] == pytest.approx(expected, rel=1e-4)
+    # 등진 면
+    back = np.array([[1.0, 0.0, 0.0]], np.float32)
+    assert np.abs(_correction_only(np.array([[S_WALL, 0.05, 0.0]], np.float32), back, _single())).max() == 0.0
+    # 노즐 뒤 평면 (법선 −x, 점이 x < 0)
+    behind = np.array([[-0.2, 0.05, 0.0]], np.float32)
+    assert np.abs(_correction_only(behind, np.array([[-1.0, 0, 0]], np.float32), _single())).max() == 0.0
+
+
+def test_wall_jet_gain_and_strength_scale_linearly():
+    pts, normals = _wall_points([0.02, 0.05])
+    base = _correction_only(pts, normals, _single())
     cfg = copy.deepcopy(CFG)
-    cfg["jet"]["impingement"]["enabled"] = True
-    with pytest.raises(NotImplementedError):
-        velocity_field(pts, _single(), 0.0, cfg, surface_normals=normals)
-    with pytest.raises(NotImplementedError):
-        velocity_field(pts, _single_slot(), 0.0, cfg, surface_normals=normals)
+    cfg["jet"]["impingement"]["wall_jet_gain"] = 2.5 * K_WALL
+    np.testing.assert_allclose(_correction_only(pts, normals, _single(), cfg), 2.5 * base, rtol=1e-5)
+    np.testing.assert_allclose(_correction_only(pts, normals, _single(0.4)), 0.4 * base, rtol=1e-5, atol=1e-7)
+
+
+def test_impingement_respects_pulse_gate():
+    cfg = copy.deepcopy(CFG)
+    cfg["jet"]["pulse"].update(enabled=True, period_s=0.5, duty=0.5)
+    pts, normals = _wall_points([0.03])
+    assert np.abs(_correction_only(pts, normals, _single(), cfg, t=0.0)).max() > 0.1
+    assert np.abs(velocity_field(pts, _single(), 0.3, cfg, surface_normals=normals)).max() == 0.0
+
+
+def test_normals_shape_must_match_points():
+    pts, normals = _wall_points([0.0, 0.1])
+    with pytest.raises(ValueError):
+        velocity_field(pts, _single(), 0.0, CFG, surface_normals=normals[:1])
+
+
+def _reference_impingement(points, normals, nozzle, t, cfg):
+    """00_common.md 4.2b 를 글자 그대로 옮긴 독립 참고 구현 (float64, 노즐·점 이중 루프). (M,P,3) 보정만."""
+    jet, imp = cfg["jet"], cfg["jet"]["impingement"]
+    k = float(imp["wall_jet_gain"])
+    D, K, kr = float(jet["nozzle_diameter_m"]), float(jet["decay_constant"]), float(jet["halfwidth_spread_rate"])
+    sl = jet["slot"]
+    h, Kp, kp = float(sl["height_m"]), float(sl["decay_constant"]), float(sl["spread_rate"])
+    pulse = jet["pulse"]
+    out = np.zeros((nozzle.count, len(points), 3))
+    for m in range(nozzle.count):
+        nm = np.asarray(nozzle.positions[m], float)
+        d = np.asarray(nozzle.directions[m], float)
+        d /= np.linalg.norm(d)
+        is_slot = (nozzle.slot_axis is not None and float(nozzle.slot_length[m]) > 0
+                   and np.linalg.norm(nozzle.slot_axis[m]) > 0)
+        gate = 1.0
+        if pulse["enabled"]:
+            ph = 0.0 if nozzle.pulse_phase is None else float(nozzle.pulse_phase[m])
+            gate = 1.0 if ((t / float(pulse["period_s"]) + ph) % 1.0) < float(pulse["duty"]) else 0.0
+        for i, (x, n) in enumerate(zip(np.asarray(points, float), np.asarray(normals, float))):
+            n = n / np.linalg.norm(n)
+            cos = -d @ n
+            if cos <= 0:
+                continue
+            H = ((x - nm) @ n) / (d @ n)
+            if H <= 0:
+                continue
+            c = nm + H * d
+            r = x - c
+            r = r - (r @ n) * n
+            end = 1.0
+            if is_slot:
+                e = np.asarray(nozzle.slot_axis[m], float)
+                e /= np.linalg.norm(e)
+                et = e - (e @ n) * n
+                if np.linalg.norm(et) > 0:
+                    et /= np.linalg.norm(et)
+                    rho_e = r @ et
+                    r = r - rho_e * et
+                else:
+                    rho_e = 0.0
+                sig = 0.5 * h / 1.177 + kp * H / 1.177
+                uh = float(sl["exit_velocity_mps"]) * (1.0 if H <= Kp * h else np.sqrt(Kp * h / H))
+                end = np.exp(-max(abs(rho_e) - float(nozzle.slot_length[m]) / 2, 0.0) ** 2 / (2 * sig**2))
+            else:
+                sig = 0.5 * D / 1.177 + kr * H / 1.177
+                uh = float(jet["exit_velocity_mps"]) * (1.0 if H <= K * D else K * D / H)
+            uh *= float(nozzle.strengths[m])
+            rho = np.linalg.norm(r)
+            xi = rho / sig
+            if xi < 1e-6:
+                continue
+            F = (1 - np.exp(-xi**2 / 2)) / (np.sqrt(xi) if is_slot else xi)
+            out[m, i] = k * cos * uh * F * end * gate * r / rho
+    return out
+
+
+@pytest.mark.parametrize("layout", ["slot_bars", "layout"])
+def test_impingement_matches_reference_on_mannequin(layout):
+    """마네킹 패치(가림 없음)에서 4.2b 독립 참고 구현과 일치. 무작위 세기·위상, 펄스 켬."""
+    rng = np.random.default_rng(11)
+    base = load_nozzles(layout=layout)
+    nz = NozzleConfig(base.positions, base.directions,
+                      (0.5 + rng.random(base.count)).astype(np.float32),
+                      pulse_phase=rng.random(base.count).astype(np.float32),
+                      slot_axis=base.slot_axis, slot_length=base.slot_length)
+    cfg = copy.deepcopy(CFG)
+    cfg["jet"]["pulse"]["enabled"] = True
+    state = build_body(BodyParams(), PoseParams(shoulder_abduction=45), load_scenarios()["default"])
+    idx = rng.choice(len(state.patch_pos), 400, replace=False)
+    normals = state.patch_normal[idx]
+    pts = (state.patch_pos[idx] + CFG["air"]["wall_offset_m"] * normals).astype(np.float32)
+    for t in (0.0, 0.21):
+        ours = _correction_only(pts, normals, nz, cfg, t)
+        ref = _reference_impingement(pts, normals, nz, t, cfg)
+        assert np.abs(ref).max() > 0.5                                      # 공허한 비교가 아니다
+        np.testing.assert_allclose(ours, ref, rtol=1e-4, atol=2e-5)
+
+
+def test_velocity_field_with_normals_is_sum_of_per_nozzle():
+    nz = load_nozzles()
+    state = build_body(BodyParams(), PoseParams(), load_scenarios()["default"])
+    n = state.patch_normal
+    pts = (state.patch_pos + CFG["air"]["wall_offset_m"] * n).astype(np.float32)
+    per = velocity_field_per_nozzle(pts, nz, 0.0, CFG, surface_normals=n)
+    np.testing.assert_allclose(velocity_field(pts, nz, 0.0, CFG, surface_normals=n), per.sum(0), atol=1e-4)
+
+
+def test_facing_wall_raises_front_tangential_speed():
+    """E1 방향: 기준 배치에서 앞면이 벽을 보면(yaw 90) 앞면 접선 속도가 보정으로 오른다 (가림 없음)."""
+    from airis.sim.types import PART_NAMES
+    front = PART_NAMES.index("torso_front")
+    nz = load_nozzles()
+
+    def front_ut(yaw, normals_on):
+        st = build_body(BodyParams(), PoseParams(torso_yaw=yaw), load_scenarios()["default"])
+        n = st.patch_normal.astype(np.float64)
+        pts = (st.patch_pos + CFG["air"]["wall_offset_m"] * n).astype(np.float32)
+        u = velocity_field(pts, nz, 0.0, CFG, surface_normals=n if normals_on else None).astype(np.float64)
+        m = st.patch_part == front
+        return float(np.linalg.norm(_tangential(u, n), axis=1)[m].mean())
+
+    assert front_ut(90.0, True) > 1.5 * front_ut(90.0, False)
+    assert front_ut(90.0, True) > front_ut(0.0, True)
 
 
 # ---------------------------------------------------------------------------
@@ -584,10 +832,27 @@ def test_every_jet_config_key_is_read():
     cfg = dict(CFG)
     cfg["jet"] = _Tracking(CFG["jet"], "jet", seen)
     pts = np.array([[LC, 0, 0]], dtype=np.float32)
-    velocity_field(pts, _single(), 0.0, cfg)
-    velocity_field(pts, _single_slot(), 0.0, cfg)
+    normals = np.array([[-1.0, 0.0, 0.0]], dtype=np.float32)
+    velocity_field(pts, _single(), 0.0, cfg, surface_normals=normals)
+    velocity_field(pts, _single_slot(), 0.0, cfg, surface_normals=normals)
     missing = _leaf_paths(CFG["jet"], "jet") - seen
     assert not missing, f"읽히지 않는 jet 키: {sorted(missing)}"
+
+
+@pytest.mark.parametrize("layout", ["slot_bars", "layout"])
+def test_velocity_field_with_impingement_under_25ms(layout):
+    """4.2b 보정 켬: 패치 3,600개 × 노즐(슬롯 12 / 원형 16) 25 ms 이하 (보정 없는 경로의 약 4배 여유)."""
+    nz = load_nozzles(layout=layout)
+    state = build_body(BodyParams(), PoseParams(), load_scenarios()["default"], patches_per_m2=3600 / 2.21)
+    n = state.patch_normal
+    pts = (state.patch_pos + CFG["air"]["wall_offset_m"] * n).astype(np.float32)
+    velocity_field_per_nozzle(pts, nz, 0.0, CFG, surface_normals=n)
+    best = float("inf")
+    for _ in range(10):
+        t0 = time.perf_counter()
+        velocity_field_per_nozzle(pts, nz, 0.0, CFG, surface_normals=n)
+        best = min(best, time.perf_counter() - t0)
+    assert best < 0.025, f"보정 켠 velocity_field_per_nozzle {best * 1e3:.2f} ms (P = {len(pts)})"
 
 
 @pytest.mark.parametrize("layout", ["slot_bars", "layout"])

@@ -31,6 +31,22 @@ U0 = jet.slot.exit_velocity_mps × strength
     u(p)   = U_c(s) · exp(-ρ_n² / (2σ²)) · exp(-ρ_e'² / (2σ²)) · d
 
 펄스가 켜져 있으면 gate(t) = 1 if ((t/period + phase) mod 1) < duty else 0 을 곱한다 (두 모델 공통).
+
+4.2b 충돌 보정 (surface_normals 가 주어지고 jet.impingement.enabled 일 때, 노즐별):
+점 p 와 바깥 법선 n. 정면으로 받는 면에서 법선 성분만 남던 제트를 방사상 벽면 제트로 바꾼다.
+
+    cosθ = −d·n                           (cosθ ≤ 0 이면 보정 0: 제트를 등진 면)
+    H    = ((p − n_m)·n) / (d·n)          제트 축이 p 의 접평면과 만나는 축 거리 (H ≤ 0 이면 보정 0)
+    c    = n_m + H·d                      충돌점,  r = p − c (접평면 안)
+    슬롯: 슬롯 축의 면내 성분 e_t 방향을 뺀다 (선 충돌).  ρ_e = r·ê_t,  r ← r − ρ_e·ê_t
+    ξ    = |r| / σ(H),  U_H = U_c(H)     (4.1 / 4.1b 의 σ, U_c 를 충돌 거리 H 에서, strength 포함)
+    F    = (1 − exp(−ξ²/2)) / ξ           원형 (방사상 벽면 제트, u ∝ 1/ρ)
+    F    = (1 − exp(−ξ²/2)) / sqrt(ξ)     슬롯 (평면 벽면 제트, u ∝ 1/√ρ)
+    슬롯 끝 밖은 exp(−ρ_e'²/(2σ²)),  ρ_e' = max(|ρ_e| − L/2, 0)
+    w    = k · cosθ · U_H · F · gate(t),  k = jet.impingement.wall_jet_gain   (ξ < 1e-6 이면 0)
+    u_corr = u + w · e_r,  e_r = r/|r|
+
+법선 성분을 지우지 않고 면내 방사 성분만 더하므로 4.2 의 접선 투영이 u_t + w·e_r 를 만든다.
 """
 from __future__ import annotations
 
@@ -43,6 +59,9 @@ from .types import NozzleConfig
 # 4.1 의 σ 식에 나오는 상수. 반속도 반경 r_1/2 를 가우시안 표준편차로 바꾸는 계수
 # (r_1/2 = sqrt(2 ln2) σ ≈ 1.177 σ). 물리 상수가 아니라 수식 자체의 일부라 여기 둔다.
 HALFWIDTH_TO_SIGMA = 1.177
+
+# 4.2b 에서 ξ 가 이보다 작으면 방사 방향 e_r 이 정의되지 않으므로 보정을 0 으로 둔다 (정체점).
+IMPINGEMENT_XI_MIN = 1e-6
 
 # 슬롯 축 e 와 분사 방향 d 의 수직 판정 허용치 |e·d| (단위 벡터 기준, 약 0.06도). 물리 상수가 아니라 입력 검증용.
 SLOT_AXIS_PERP_TOL = 1e-3
@@ -60,8 +79,7 @@ class JetParams:
     slot_decay_constant: float
     slot_spread_rate: float
     impingement_enabled: bool
-    stagnation_radius_factor: float
-    wall_jet_start_factor: float
+    wall_jet_gain: float
     pulse_enabled: bool
     pulse_period_s: float
     pulse_duty: float
@@ -96,8 +114,7 @@ def jet_params(cfg: dict) -> JetParams:
         slot_decay_constant=float(slot["decay_constant"]),
         slot_spread_rate=float(slot["spread_rate"]),
         impingement_enabled=bool(imp["enabled"]),
-        stagnation_radius_factor=float(imp["stagnation_radius_factor"]),
-        wall_jet_start_factor=float(imp["wall_jet_start_factor"]),
+        wall_jet_gain=float(imp["wall_jet_gain"]),
         pulse_enabled=bool(pulse["enabled"]),
         pulse_period_s=float(pulse["period_s"]),
         pulse_duty=float(pulse["duty"]),
@@ -131,8 +148,8 @@ def slot_mask(nozzle: NozzleConfig) -> np.ndarray:
     return (length > 0.0) & (np.linalg.norm(axis, axis=1) > 0.0)
 
 
-def _speed_per_nozzle(points: np.ndarray, nozzle: NozzleConfig, t: float, cfg: dict,
-                      surface_normals: np.ndarray | None) -> tuple[np.ndarray, np.ndarray]:
+def _speed_per_nozzle(points: np.ndarray, nozzle: NozzleConfig, t: float,
+                      cfg: dict) -> tuple[np.ndarray, np.ndarray]:
     """(M,P) 속도 크기와 (M,3) 방향. 4.1 / 4.1b 의 U_c·exp(...) 부분.
 
     s 와 거리 제곱을 (M,P,3) 중간 배열 없이 행렬곱으로 구한다 (패치 3,600 × 노즐 16 에서 ~3 ms).
@@ -147,14 +164,6 @@ def _speed_per_nozzle(points: np.ndarray, nozzle: NozzleConfig, t: float, cfg: d
     pos = np.asarray(nozzle.positions, dtype=np.float64)
     dirs = np.asarray(nozzle.directions, dtype=np.float64)
     dirs = dirs / np.linalg.norm(dirs, axis=1, keepdims=True)
-
-    if surface_normals is not None and p.impingement_enabled:
-        # 단계 8 (2주차 옵션). 아직 미구현이므로 조용히 자유 제트를 돌려주지 않고 명시적으로 막는다.
-        raise NotImplementedError(
-            "충돌 제트 보정은 B 단계 8 (2주차 옵션)이라 아직 없다. "
-            "configs/physics.yaml 의 jet.impingement.enabled 를 false 로 두거나 "
-            "surface_normals 를 넘기지 마라."
-        )
 
     strengths = np.asarray(nozzle.strengths, dtype=np.float64)
     s = dirs @ pts.T - np.einsum("mk,mk->m", pos, dirs)[:, None]                # (M,P)
@@ -202,18 +211,108 @@ def _speed_per_nozzle(points: np.ndarray, nozzle: NozzleConfig, t: float, cfg: d
     return mag, dirs
 
 
+def _impingement_per_nozzle(points: np.ndarray, normals: np.ndarray, nozzle: NozzleConfig,
+                            t: float, p: JetParams) -> np.ndarray:
+    """(M,P,3) 4.2b 벽면 제트 보정 w·e_r. 모듈 docstring 의 식 그대로.
+
+    제트를 마주 보고(cosθ > 0) 충돌점이 하류(H > 0)인 (노즐, 점) 쌍만 모아 1차원으로 계산한다.
+    몸 표면에서는 대략 절반만 해당하고, (M,P,3) 중간 배열을 여러 번 만들지 않아 빠르다.
+    """
+    x = np.asarray(points, dtype=np.float64).reshape(-1, 3)
+    n = np.asarray(normals, dtype=np.float64).reshape(-1, 3)
+    if n.shape != x.shape:
+        raise ValueError(f"surface_normals {n.shape} 가 points {x.shape} 와 맞지 않는다.")
+    n = n / np.sqrt(np.einsum("ij,ij->i", n, n))[:, None]
+    pos = np.asarray(nozzle.positions, dtype=np.float64)
+    d = np.asarray(nozzle.directions, dtype=np.float64)
+    d = d / np.sqrt(np.einsum("ij,ij->i", d, d))[:, None]
+    out = np.zeros((nozzle.count, x.shape[0], 3))
+
+    cos = -(d @ n.T)                                                   # (M,P) cosθ = −d·n
+    xn = np.einsum("ij,ij->i", x, n)[None, :] - pos @ n.T                          # (M,P) (x − n_m)·n
+    # H = ((x − n_m)·n) / (d·n) = −xn / cosθ.  cosθ > 0 이고 H > 0 ⇔ xn < 0
+    mi, pi = np.nonzero((cos > 0.0) & (xn < 0.0))
+    if mi.size == 0:
+        return out
+    c = cos[mi, pi]
+    H = -xn[mi, pi] / c
+    # r = x − c_m = (x − n_m) − H·d : 접평면 안 (해석적으로 r·n = 0)
+    r = x[pi] - pos[mi] - H[:, None] * d[mi]                          # (L,3)
+
+    slot_rows = slot_mask(nozzle)
+    sl = slot_rows[mi]
+    u_h = np.empty_like(H)
+    sigma = np.empty_like(H)
+    strengths = np.asarray(nozzle.strengths, dtype=np.float64)[mi]
+    if (~sl).any():
+        KD, h = p.potential_core_length_m, H[~sl]
+        u_h[~sl] = np.where(h <= KD, 1.0, KD / h) * p.exit_velocity_mps
+        sigma[~sl] = (0.5 * p.nozzle_diameter_m + p.halfwidth_spread_rate * h) / HALFWIDTH_TO_SIGMA
+    end = np.ones_like(H)
+    if sl.any():
+        Lc, h = p.slot_core_length_m, H[sl]
+        u_h[sl] = np.where(h <= Lc, 1.0, np.sqrt(Lc / h)) * p.slot_exit_velocity_mps
+        sigma[sl] = (0.5 * p.slot_height_m + p.slot_spread_rate * h) / HALFWIDTH_TO_SIGMA
+        e = np.asarray(nozzle.slot_axis, dtype=np.float64)[mi[sl]]
+        e = e / np.sqrt(np.einsum("ij,ij->i", e, e))[:, None]
+        ns = n[pi[sl]]
+        et = e - np.einsum("ij,ij->i", e, ns)[:, None] * ns                   # 슬롯 축의 면내 성분
+        et_len = np.sqrt(np.einsum("ij,ij->i", et, et))[:, None]
+        et = np.where(et_len > 0.0, et / np.where(et_len > 0.0, et_len, 1.0), 0.0)
+        rs = r[sl]
+        rho_e = np.einsum("ij,ij->i", rs, et)
+        r[sl] = rs - rho_e[:, None] * et                               # 선 충돌: 슬롯 방향 성분 제거
+        half = 0.5 * np.asarray(nozzle.slot_length, dtype=np.float64)[mi[sl]]
+        rho_e_out = np.maximum(np.abs(rho_e) - half, 0.0)
+        end[sl] = np.exp(-rho_e_out ** 2 / (2.0 * sigma[sl] ** 2))
+
+    rho = np.sqrt(np.einsum("ij,ij->i", r, r))
+    xi = rho / sigma
+    ok = xi >= IMPINGEMENT_XI_MIN
+    xi_safe = np.where(ok, xi, 1.0)
+    core = 1.0 - np.exp(-0.5 * xi_safe * xi_safe)
+    F = np.where(sl, core / np.sqrt(xi_safe), core / xi_safe)
+    gate = pulse_gate(t, nozzle, p).astype(np.float64)[mi]
+    w = np.where(ok, p.wall_jet_gain * c * u_h * strengths * F * end * gate, 0.0)
+    out[mi, pi] = (w / np.where(ok, rho, 1.0))[:, None] * r           # w · e_r
+    return out
+
+
+def _correction(points, nozzle, t, cfg, surface_normals) -> np.ndarray | None:
+    """보정이 켜져 있고 법선이 오면 (M,P,3) 보정, 아니면 None."""
+    if surface_normals is None:
+        return None
+    p = jet_params(cfg)
+    if not p.impingement_enabled:
+        return None
+    return _impingement_per_nozzle(points, surface_normals, nozzle, t, p)
+
+
 def velocity_field_per_nozzle(points: np.ndarray, nozzle: NozzleConfig, t: float,
                               cfg: dict, surface_normals: np.ndarray | None = None) -> np.ndarray:
-    """(P,3) → (M,P,3). 노즐별 기여. D가 가림 판정 후 합산한다. 수식: docs/tracks/00_common.md 4.1 / 4.1b"""
-    mag, dirs = _speed_per_nozzle(points, nozzle, t, cfg, surface_normals)
-    return (mag[..., None] * dirs[:, None, :]).astype(np.float32)
+    """(P,3) → (M,P,3). 노즐별 기여. D가 가림 판정 후 합산한다. 수식: docs/tracks/00_common.md 4.1 / 4.1b.
+
+    `surface_normals` (P,3) 가 주어지고 `jet.impingement.enabled` 이면 4.2b 벽면 제트 보정을 노즐별로
+    더한다. `points` 는 표면 위(또는 wall_offset_m 만큼 띄운) 조회점이고 법선은 그 점의 바깥 법선이다.
+    """
+    mag, dirs = _speed_per_nozzle(points, nozzle, t, cfg)
+    u = mag[..., None] * dirs[:, None, :]
+    corr = _correction(points, nozzle, t, cfg, surface_normals)
+    if corr is not None:
+        u = u + corr
+    return u.astype(np.float32)
 
 
 def velocity_field(points: np.ndarray, nozzle: NozzleConfig, t: float,
                    cfg: dict, surface_normals: np.ndarray | None = None) -> np.ndarray:
     """(P,3) → (P,3). velocity_field_per_nozzle의 합.
 
-    (M,P,3) 을 만들지 않고 바로 합산한다 (결과는 동일).
+    보정이 없으면 (M,P,3) 을 만들지 않고 바로 합산한다 (결과는 동일). 4.2b 보정이 켜지면
+    노즐별 방사 방향이 달라 (M,P,3) 을 만들어 합한다.
     """
-    mag, dirs = _speed_per_nozzle(points, nozzle, t, cfg, surface_normals)
-    return (mag.T @ dirs).astype(np.float32)
+    mag, dirs = _speed_per_nozzle(points, nozzle, t, cfg)
+    u = mag.T @ dirs
+    corr = _correction(points, nozzle, t, cfg, surface_normals)
+    if corr is not None:
+        u = u + corr.sum(0)
+    return u.astype(np.float32)
