@@ -10,7 +10,8 @@
     python scripts/render_frames.py --exp particle_demo --simulate --arch cpu --particles 5000 \
         --pose 180,3,5,0,90,1,0
 
-결과는 기본 outputs/<exp_id>/anim.html.
+결과는 기본 outputs/<exp_id>/anim.html. 몸은 `--model mesh`(사람 메시) | `capsule`, 생략하면
+`configs/physics.yaml` `body.model`. 체형을 주지 않으면 모델의 기본 체형(메시는 `MESH_DEFAULT_BODY`)이다.
 
 자세·체형·시나리오는 다음 순서로 정한다: `--pose`/`--scenario` 인자 → `outputs/<exp_id>/render_meta.json`
 (이 스크립트의 --synthetic/--simulate 가 씀) → C의 `meta.json` + `best.json` → 기본값.
@@ -39,16 +40,18 @@ def _parse_pose(text: str) -> PoseParams:
     return PoseParams(*vals)
 
 
-def resolve_setup(exp_dir: Path, args) -> tuple[BodyParams, list[PoseParams], str]:
-    """(체형, 후보별 자세 목록, 시나리오 이름)."""
-    body, poses, scenario = BodyParams(), [PoseParams()], "default"
+def resolve_setup(exp_dir: Path, args) -> tuple[BodyParams | None, list[PoseParams], str]:
+    """(체형 또는 None = 모델 기본 체형, 후보별 자세 목록, 시나리오 이름)."""
+    body, poses, scenario = None, [PoseParams()], "default"
     meta_path = exp_dir / "render_meta.json"
     c_meta, c_best = exp_dir / "meta.json", exp_dir / "best.json"
     if meta_path.exists():
         m = json.loads(meta_path.read_text(encoding="utf-8"))
-        body = BodyParams(**m["body"])
+        body = BodyParams(**m["body"]) if m.get("body") else None
         poses = [PoseParams(**p) for p in m["poses"]]
         scenario = m["scenario"]
+        if getattr(args, "model", None) is None and m.get("model"):
+            args.model = m["model"]
     elif c_meta.exists() and c_best.exists():
         m = json.loads(c_meta.read_text(encoding="utf-8"))
         b = json.loads(c_best.read_text(encoding="utf-8"))
@@ -62,11 +65,12 @@ def resolve_setup(exp_dir: Path, args) -> tuple[BodyParams, list[PoseParams], st
     return body, poses, scenario
 
 
-def write_render_meta(exp_dir: Path, body: BodyParams, poses: list[PoseParams], scenario: str,
-                      source: str) -> None:
+def write_render_meta(exp_dir: Path, body: BodyParams | None, poses: list[PoseParams], scenario: str,
+                      source: str, model: str | None = None) -> None:
     exp_dir.mkdir(parents=True, exist_ok=True)
     (exp_dir / "render_meta.json").write_text(json.dumps({
-        "source": source, "scenario": scenario, "body": vars(body),
+        "source": source, "scenario": scenario, "model": model,
+        "body": vars(body) if body is not None else None,
         "poses": [vars(p) for p in poses]}, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
@@ -80,6 +84,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--max-frames", type=int, default=60)
     ap.add_argument("--pose", default=None, help="자세 7개 쉼표 구분 (deg)")
     ap.add_argument("--scenario", default=None, choices=["default", "pregnant", "wheelchair"])
+    ap.add_argument("--model", default=None, choices=["capsule", "mesh"],
+                    help="몸 모델 (생략하면 configs/physics.yaml body.model)")
     gen = ap.add_mutually_exclusive_group()
     gen.add_argument("--synthetic", action="store_true", help="합성 프레임을 만들어 그린다 (가짜 데이터)")
     gen.add_argument("--simulate", action="store_true", help="A의 ParticleEvaluator 로 덤프를 만든다")
@@ -96,26 +102,27 @@ def main(argv: list[str] | None = None) -> int:
     booth = load_nozzle_layout()["booth"]
 
     if args.synthetic:
-        state = build_body(body, poses[0], scenario, patches_per_m2=400)
+        state = build_body(body, poses[0], scenario, patches_per_m2=400, model=args.model)
         frames = anim.synthetic_frames(state, booth, n_particles=args.particles)
         anim.write_frames(frames, exp_dir / "frames")
-        write_render_meta(exp_dir, body, poses[:1], scenario_name, "synthetic (가짜 궤적)")
+        write_render_meta(exp_dir, body, poses[:1], scenario_name, "synthetic (가짜 궤적)", args.model)
         print(f"합성 프레임 {len(frames)}개 → {exp_dir / 'frames'}")
     elif args.simulate:
         from airis.sim.particles import ParticleEvaluator     # A 소유. Taichi 초기화는 여기서 한다
         ev = ParticleEvaluator(load_physics(), arch=args.arch, max_candidates=max(1, len(poses)),
                                particles_per_candidate=args.particles, duration_s=args.duration,
                                dump_every=args.dump_every, dump_dir=exp_dir)
-        states = [build_body(body, p, scenario) for p in poses]
+        states = [build_body(body, p, scenario, model=args.model) for p in poses]
         res = ev.batch_evaluate_states(states, poses, load_nozzles(), scenario)
-        write_render_meta(exp_dir, body, poses, scenario_name, f"ParticleEvaluator arch={args.arch}")
+        write_render_meta(exp_dir, body, poses, scenario_name, f"ParticleEvaluator arch={args.arch}",
+                          args.model)
         for i, r in enumerate(res):
             print(f"후보 {i}: score {r.score:.4f}, total_removal {r.total_removal:.4f}")
 
     frames = anim.load_frames(exp_dir)
     cand = args.candidate
     pose = poses[cand] if cand < len(poses) else poses[0]
-    state = build_body(body, pose, scenario, patches_per_m2=400)
+    state = build_body(body, pose, scenario, patches_per_m2=400, model=args.model)
     fig = anim.animation(frames, state, booth, candidate=cand, max_points=args.max_points,
                          max_frames=args.max_frames, nozzle=load_nozzles(),
                          title=f"{args.exp} · {scenario_name} · 후보 {cand}")
