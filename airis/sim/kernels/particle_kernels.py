@@ -8,6 +8,8 @@ numpy 준비와 업로드만 한다.
 - 4.1 자유 제트 속도장  -> `ParticleFields.jet_velocity` (ti.func, 원형 노즐)
 - 4.1b 슬롯(평면) 제트 -> `ParticleFields.jet_velocity` (같은 함수, 슬롯 노즐)
 - 4.2 벽면 전단         -> `k_detach`
+- 4.2b 충돌 제트 보정  -> `ParticleFields.impingement` (ti.func). 부착 입자의 `k_detach`에만 더한다.
+                          부유 입자(`k_advect`)는 자유 제트 그대로 (00_common.md 4.2b 계약)
 - 4.3 이탈 판정         -> `k_detach` (입자별 tau_crit 비교)
 - 4.5 항력              -> `k_advect`
 
@@ -48,7 +50,11 @@ C_SLOT_H = 17        # jet.slot.height_m (4.1b h)
 C_SLOT_U0 = 18       # jet.slot.exit_velocity_mps (strength 곱하기 전)
 C_SLOT_K = 19        # jet.slot.decay_constant (K_p)
 C_SLOT_SPREAD = 20   # jet.slot.spread_rate
-NUM_CONST = 21
+C_IMP_ON = 21        # jet.impingement.enabled (0/1)
+C_IMP_K = 22         # jet.impingement.wall_jet_gain (4.2b k)
+NUM_CONST = 23
+
+IMPINGEMENT_XI_MIN = 1e-6   # 4.2b: xi < 1e-6 이면 w = 0 (정체점)
 
 # 부위 인덱스 (types.PART_NAMES 순서). 커널 안에서 컴파일 상수로 쓴다.
 PART_TORSO_FRONT = 1
@@ -231,13 +237,85 @@ class ParticleFields:
                 u += (mag * gate) * d
         return u
 
+    # --------------------------------------------- 4.2b 충돌 제트 -> 벽면 제트 보정
+    @ti.func
+    def impingement(self, x, n, t):
+        """00_common.md 4.2b를 그대로. 조회점 x, 바깥 단위 법선 n에서 노즐 M개의 w·e_r 합.
+
+        cosθ = max(−d·n, 0), H = ((x − n_m)·n)/(d·n) > 0인 노즐만 기여한다.
+        """
+        corr = ti.Vector([0.0, 0.0, 0.0], dt=ti.f32)
+        gain = self.cst[C_IMP_K]
+        big_d = self.cst[C_JET_D]
+        l_core = self.cst[C_JET_K] * big_d
+        slot_h = self.cst[C_SLOT_H]
+        slot_core = self.cst[C_SLOT_K] * slot_h
+        for m in range(self.n_noz[None]):
+            d = self.noz_dir[m]
+            cos_t = -d.dot(n)
+            xn = (x - self.noz_pos[m]).dot(n)
+            # d·n = −cosθ < 0 이므로 H = xn/(d·n) > 0 ⇔ xn < 0
+            if cos_t > 0.0 and xn < 0.0:
+                h_ax = -xn / cos_t                                   # H
+                r = x - self.noz_pos[m] - h_ax * d                   # x − c,  c = n_m + H·d
+                r = r - r.dot(n) * n                                 # 접평면 성분
+                gate = 1.0
+                if self.cst[C_PULSE_ON] > 0.5:
+                    ph = t / self.cst[C_PULSE_PERIOD] + self.noz_phase[m]
+                    frac = ph - ti.floor(ph)
+                    if frac >= self.cst[C_PULSE_DUTY]:
+                        gate = 0.0
+                u_h = 0.0
+                sig = 1.0
+                end = 1.0
+                is_slot = self.noz_slot[m] == 1
+                if is_slot:
+                    u_h = self.cst[C_SLOT_U0] * self.noz_strength[m]
+                    if h_ax > slot_core:
+                        u_h = u_h * ti.sqrt(slot_core / h_ax)
+                    sig = 0.5 * slot_h / SQRT2LN2 + self.cst[C_SLOT_SPREAD] * h_ax / SQRT2LN2
+                    # 선 충돌: 슬롯 축의 접평면 성분 e_t 방향을 r에서 뺀다
+                    e = self.noz_axis[m]
+                    e_t = e - e.dot(n) * n
+                    e_len = e_t.norm()
+                    rho_e = 0.0
+                    if e_len > 0.0:
+                        e_t = e_t / e_len
+                        rho_e = r.dot(e_t)
+                        r = r - rho_e * e_t
+                    rho_e_out = ti.max(ti.abs(rho_e) - 0.5 * self.noz_len[m], 0.0)
+                    end = ti.exp(-rho_e_out * rho_e_out / (2.0 * sig * sig))
+                else:
+                    u_h = self.cst[C_JET_U0] * self.noz_strength[m]
+                    if h_ax > l_core:
+                        u_h = u_h * l_core / h_ax
+                    sig = 0.5 * big_d / SQRT2LN2 + self.cst[C_JET_SPREAD] * h_ax / SQRT2LN2
+                rho = r.norm()
+                xi = rho / sig
+                if xi >= IMPINGEMENT_XI_MIN:
+                    core = 1.0 - ti.exp(-0.5 * xi * xi)
+                    f_shape = core / xi
+                    if is_slot:
+                        f_shape = core / ti.sqrt(xi)
+                    w = gain * cos_t * u_h * f_shape * end * gate
+                    corr += (w / rho) * r                            # w · e_r
+        return corr
+
+    @ti.func
+    def surface_velocity(self, x, n, t):
+        """부착 입자가 느끼는 공기 속도: 자유 제트(4.1/4.1b) + 켜져 있으면 4.2b 보정."""
+        u = self.jet_velocity(x, t)
+        if self.cst[C_IMP_ON] > 0.5:
+            u += self.impingement(x, n, t)
+        return u
+
     # ----------------------------------------------------------- 단계 5. 이탈
     @ti.kernel
     def k_detach(self, t: ti.f32, n_act: ti.i32):
         for i in range(n_act * self.N):
             if self.state[i] == 0:
                 nrm = self.normal[i]
-                u = self.jet_velocity(self.pos[i] + self.cst[C_WALL_OFF] * nrm, t)
+                u = self.surface_velocity(self.pos[i] + self.cst[C_WALL_OFF] * nrm, nrm, t)
                 u_t = u - u.dot(nrm) * nrm                          # 4.2 접선 성분
                 tau = 0.5 * self.cst[C_RHO_AIR] * self.cst[C_CF] * u_t.norm_sqr()
                 if tau > self.tau_crit[i]:
@@ -341,6 +419,18 @@ class ParticleFields:
 
     # ------------------------------------------------- 검증용 속도장 조회 커널
     @ti.kernel
+    def k_probe_surface_velocity(self, pts: ti.types.ndarray(), nrm: ti.types.ndarray(),
+                                 out: ti.types.ndarray(), n_pts: ti.i32, t: ti.f32):
+        """4.2b 검증용. k_detach와 같은 surface_velocity를 임의의 (점, 법선)에서 뽑는다."""
+        for i in range(n_pts):
+            u = self.surface_velocity(
+                ti.Vector([pts[i, 0], pts[i, 1], pts[i, 2]], dt=ti.f32),
+                ti.Vector([nrm[i, 0], nrm[i, 1], nrm[i, 2]], dt=ti.f32), t)
+            out[i, 0] = u[0]
+            out[i, 1] = u[1]
+            out[i, 2] = u[2]
+
+    @ti.kernel
     def k_probe_velocity(self, pts: ti.types.ndarray(), out: ti.types.ndarray(),
                          n_pts: ti.i32, t: ti.f32):
         """단계 4 검증용. 임의의 점에서 jet_velocity를 그대로 뽑는다."""
@@ -374,6 +464,9 @@ def pack_constants(cfg: dict, booth: dict) -> np.ndarray:
     c[C_BOOTH_W] = booth["width_m"]
     c[C_BOOTH_H] = booth["height_m"]
     c[C_GZ] = GRAVITY_Z
+    imp = jet.get("impingement") or {}
+    c[C_IMP_ON] = 1.0 if imp.get("enabled", False) else 0.0
+    c[C_IMP_K] = imp.get("wall_jet_gain", 1.0)
     slot = jet.get("slot")
     if slot:        # 없으면 0. 슬롯 노즐이 들어오면 호스트(_upload_nozzles)가 막는다.
         c[C_SLOT_H] = slot["height_m"]

@@ -15,6 +15,9 @@
 - 원형(4.1), 슬롯(4.1b), 둘이 섞인 배치를 각각 정상 상태와 펄스로 돌린다. 기준값은 이 파일의
   numpy float64 독립 구현(`_jet_velocity_numpy`)이고 상대 오차 1e-4. B의 `jet.velocity_field`
   (float64)와도 1e-4로 대조한다.
+- 4.2b 충돌 제트 보정: 부착 입자가 이탈 판정에 쓰는 속도(`probe_surface_velocity`)를 마네킹
+  패치에서 float64 독립 구현(`_impingement_numpy`)과 B의 `velocity_field(..., surface_normals=)`에
+  각각 1e-4로 대조한다.
 """
 from __future__ import annotations
 
@@ -29,6 +32,7 @@ ti = pytest.importorskip("taichi")
 
 from airis.sim.jet import slot_mask, velocity_field  # noqa: E402
 from airis.sim import scoring  # noqa: E402
+from airis.sim.body import build_body  # noqa: E402
 from airis.sim.particles import ParticleEvaluator  # noqa: E402
 from airis.sim.scenario import (  # noqa: E402
     load_nozzle_layout, load_nozzles, load_physics, load_scenarios,
@@ -742,3 +746,160 @@ def test_outside_booth_matches_patch_evaluator(ev_batch, scenario):
             single = ev_batch.evaluate(pose, nozzle, body, scenario)
             assert single.score == pytest.approx(ref.score, abs=1e-12)
             assert single.discomfort == pytest.approx(ref.discomfort, abs=1e-12)
+
+
+# ------------------------------------------------ 4.2b 충돌 제트 -> 벽면 제트 보정
+def _impingement_numpy(points, normals, nozzle, cfg, t=0.0):
+    """00_common.md 4.2b를 numpy float64로 독립 재구현 (B의 jet.py, Taichi 코드 참조 없음).
+
+    조회점 x, 바깥 법선 n마다 노즐별 w·e_r을 합한 (P,3) 보정을 돌려준다.
+    """
+    jet = cfg["jet"]
+    k = jet["impingement"]["wall_jet_gain"]
+    pulse = jet.get("pulse") or {}
+    slot_rows = _is_slot_row(nozzle)
+    phase = (np.zeros(nozzle.count) if nozzle.pulse_phase is None
+             else np.asarray(nozzle.pulse_phase, np.float64))
+    x_all = np.asarray(points, np.float64)
+    n_all = np.asarray(normals, np.float64)
+    n_all = n_all / np.linalg.norm(n_all, axis=1, keepdims=True)
+    out = np.zeros_like(x_all)
+    for m in range(nozzle.count):
+        n_m = np.asarray(nozzle.positions[m], np.float64)
+        d = np.asarray(nozzle.directions[m], np.float64)
+        d = d / np.linalg.norm(d)
+        gate = 1.0
+        if pulse.get("enabled", False):
+            gate = float(np.mod(t / pulse["period_s"] + phase[m], 1.0) < pulse["duty"])
+        strength = float(nozzle.strengths[m])
+        for i in range(len(x_all)):
+            x, n = x_all[i], n_all[i]
+            cos_t = max(-(d @ n), 0.0)
+            if cos_t == 0.0:
+                continue
+            h_ax = ((x - n_m) @ n) / (d @ n)
+            if h_ax <= 0.0:
+                continue
+            c = n_m + h_ax * d
+            r = (x - c) - ((x - c) @ n) * n
+            end = 1.0
+            if slot_rows[m]:
+                sl = jet["slot"]
+                h, kp = sl["height_m"], sl["decay_constant"]
+                sigma = 0.5 * h / 1.177 + sl["spread_rate"] * h_ax / 1.177
+                u_h = sl["exit_velocity_mps"] * strength * (
+                    1.0 if h_ax <= kp * h else np.sqrt(kp * h / h_ax))
+                e = np.asarray(nozzle.slot_axis[m], np.float64)
+                e = e / np.linalg.norm(e)
+                e_t = e - (e @ n) * n
+                rho_e = 0.0
+                if np.linalg.norm(e_t) > 0.0:
+                    e_t = e_t / np.linalg.norm(e_t)
+                    rho_e = r @ e_t
+                    r = r - rho_e * e_t
+                end = np.exp(-max(abs(rho_e) - float(nozzle.slot_length[m]) / 2, 0.0) ** 2
+                             / (2 * sigma ** 2))
+            else:
+                big_d, kd = jet["nozzle_diameter_m"], jet["decay_constant"]
+                sigma = 0.5 * big_d / 1.177 + jet["halfwidth_spread_rate"] * h_ax / 1.177
+                u_h = jet["exit_velocity_mps"] * strength * (
+                    1.0 if h_ax <= kd * big_d else kd * big_d / h_ax)
+            rho = np.linalg.norm(r)
+            xi = rho / sigma
+            if xi < 1e-6:
+                continue
+            core = 1.0 - np.exp(-xi ** 2 / 2)
+            shape = core / np.sqrt(xi) if slot_rows[m] else core / xi
+            out[i] += k * cos_t * u_h * shape * end * gate * r / rho
+    return out
+
+
+def _mannequin_probe(pose: PoseParams, scenario, cfg):
+    """실제 마네킹 패치의 조회점 (x = 패치 + δ·n)과 법선."""
+    st = build_body(BodyParams(), pose, scenario)
+    n = np.asarray(st.patch_normal, np.float64)
+    x = st.patch_pos + cfg["air"]["wall_offset_m"] * n
+    return x.astype(np.float32), n.astype(np.float32)
+
+
+@pytest.mark.parametrize("kind", ["round", "slot", "mixed"])
+@pytest.mark.parametrize("pulse_t", [None, 0.37], ids=["steady", "pulse"])
+def test_impingement_matches_references(kind, pulse_t, scenario):
+    """4.2b: 부착 입자의 이탈 판정 속도 (자유 제트 + 보정)가 float64 독립 구현 및 B와 1e-4.
+
+    마네킹 두 자세(정면, 옆으로 90도)의 패치 전체에서 본다. 무작위 세기와 펄스 위상.
+    """
+    cfg = copy.deepcopy(load_physics())
+    assert cfg["jet"]["impingement"]["enabled"]
+    t = 0.0
+    if pulse_t is not None:
+        cfg["jet"]["pulse"]["enabled"] = True
+        t = pulse_t
+    nozzle = layout_nozzles(np.random.default_rng(7), kind)
+    ev = ParticleEvaluator(cfg, max_candidates=1, particles_per_candidate=1, duration_s=0.0)
+    try:
+        for yaw in (0.0, 90.0):
+            x, n = _mannequin_probe(PoseParams(torso_yaw=yaw), scenario, cfg)
+            u_ti = ev.probe_surface_velocity(x, n, nozzle, t).astype(np.float64)
+            corr = _impingement_numpy(x, n, nozzle, cfg, t)
+            u_ref = _jet_velocity_numpy(x, nozzle, cfg, t) + corr
+            u_b = velocity_field(x, nozzle, t, cfg, surface_normals=n).astype(np.float64)
+
+            assert np.linalg.norm(corr, axis=1).max() > 0.5, "보정이 거의 0이면 공허한 비교"
+            rel = _relative_error(u_ti, u_ref)
+            assert rel.max() < 1e-4, f"yaw {yaw}: float64 독립 구현 대비 {rel.max():.3e}"
+            rel_b = _relative_error(u_ti, u_b)
+            assert rel_b.max() < 1e-4, f"yaw {yaw}: B 대비 {rel_b.max():.3e}"
+    finally:
+        ev.destroy()
+
+
+def test_impingement_only_for_attached_and_switchable(scenario):
+    """보정은 이탈 판정(부착 입자)에만: 자유 제트 조회(`probe_velocity`, 부유 입자가 쓰는 값)는
+    보정과 무관하고, `enabled = false`면 이탈 판정 속도도 자유 제트와 같다."""
+    cfg = load_physics()
+    off = copy.deepcopy(cfg)
+    off["jet"]["impingement"]["enabled"] = False
+    nozzle = slot_nozzles()
+    x, n = _mannequin_probe(PoseParams(), scenario, cfg)
+    ev_on = ParticleEvaluator(cfg, max_candidates=1, particles_per_candidate=1, duration_s=0.0)
+    ev_off = ParticleEvaluator(off, max_candidates=1, particles_per_candidate=1, duration_s=0.0)
+    try:
+        free_on = ev_on.probe_velocity(x, nozzle)
+        np.testing.assert_array_equal(free_on, ev_off.probe_velocity(x, nozzle))
+        # 커널이 달라 f32 연산 순서(fast math)가 달라지므로 비트 일치 대신 제트 비교 기준 1e-4
+        # (측정 최대 3e-5)
+        rel = _relative_error(ev_off.probe_surface_velocity(x, n, nozzle).astype(np.float64),
+                              free_on.astype(np.float64))
+        assert rel.max() < 1e-4
+        assert np.abs(ev_on.probe_surface_velocity(x, n, nozzle) - free_on).max() > 0.5
+    finally:
+        ev_on.destroy()
+        ev_off.destroy()
+
+
+def test_head_on_jet_detaches_only_with_impingement(scenario):
+    """정면으로 제트를 받는 원통: 보정이 없으면 접선 성분이 거의 0이라 이탈이 적고,
+    4.2b를 켜면 정체점 둘레의 벽면 제트가 입자를 더 많이 뗀다 (4.2b의 동기).
+
+    이탈한 입자는 자유 제트(몸 쪽을 향함)에 밀려 부스 밖까지 못 나가므로 제거율이 아니라
+    한 번이라도 이탈한 입자 수(state != 0)로 본다.
+    """
+    cfg = load_physics()
+    off = copy.deepcopy(cfg)
+    off["jet"]["impingement"]["enabled"] = False
+    head_on = NozzleConfig(np.array([[CENTER_X, -BOOTH["width_m"] / 2, 1.05]], np.float32),
+                           np.array([[0.0, 1.0, 0.0]], np.float32),
+                           np.array([1.0], np.float32))
+    body = cylinder_body(POSE_A)
+    detached = {}
+    for name, c in (("on", cfg), ("off", off)):
+        ev = ParticleEvaluator(c, max_candidates=1, particles_per_candidate=N_DEV,
+                               duration_s=DURATION_DEV)
+        try:
+            ev.batch_evaluate_states([body], [POSE_A], head_on, scenario)
+            detached[name] = int((ev.snapshot(0)["state"] != 0).sum())
+        finally:
+            ev.destroy()
+    assert detached["on"] > detached["off"], detached
+    assert detached["on"] >= 5, detached
