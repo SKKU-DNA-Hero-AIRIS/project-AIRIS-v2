@@ -130,10 +130,12 @@ def make_evaluator(
     nozzle: NozzleConfig,
     dummy_target: PoseParams | None = None,
     patches_per_m2: float | None = None,
+    physics_cfg: dict | None = None,
 ) -> Evaluator:
     """--evaluator 이름으로 평가기를 만든다.
 
     patches_per_m2 는 patch 평가기에만 넘긴다 (None 이면 build_body 기본 밀도).
+    physics_cfg 가 없으면 configs/physics.yaml (load_physics). E3 는 덮어쓴 dict 를 넘긴다.
 
     patch / particle 은 클래스가 있어도 내부가 NotImplementedError 일 수 있으므로
     기본 자세로 한 번 시험 평가해 본다. 미구현이면 TrackNotMerged 를 던진다.
@@ -149,7 +151,8 @@ def make_evaluator(
     try:
         module = __import__(module_path, fromlist=[cls_name])
         kwargs = {"patches_per_m2": patches_per_m2} if name == "patch" and patches_per_m2 is not None else {}
-        evaluator = getattr(module, cls_name)(load_physics(), **kwargs)
+        cfg = physics_cfg if physics_cfg is not None else load_physics()
+        evaluator = getattr(module, cls_name)(cfg, **kwargs)
     except (ImportError, AttributeError, NotImplementedError) as exc:
         raise TrackNotMerged(_not_merged_msg(name, track, dotted, doc, exc)) from exc
 
