@@ -19,18 +19,18 @@ class BodyParams:
 
     메시 몸(docs/mesh_transition.md) 기준 정의. 모두 관절 중심 기준 m.
     - height_m: 키 (정수리 − 발바닥)
-    - shoulder_width_m: 좌우 어깨 관절 간격
-    - torso_depth_m: 가슴 두께 (앞뒤)
-    - arm_length_m: 어깨 관절 → 손목 관절
-    - leg_length_m: 고관절 높이 (고관절 중심 − 발바닥)
-    기본값은 캡슐 마네킹 시절 값이다. B의 메시 build_body PR에서 MakeHuman 기본 체형
-    (1.70 / 0.34 / 0.22 / 0.46 / 0.88) 으로 바꾼다 (별도 types.py PR).
+    - shoulder_width_m: 좌우 upperarm01(상완골 관절) 머리 간격
+    - torso_depth_m: breast 뼈 머리 높이(유두선) ±1 cm 몸통 단면의 앞뒤(x) 범위
+    - arm_length_m: 상완 + 전완 구간 합 (upperarm01→lowerarm01→wrist 머리). 자세 불변
+    - leg_length_m: 고관절 중심 높이
+    기본값 = MakeHuman 기본 체형을 키 1.70 m 로 축척한 측정값 (= human_mesh.MESH_DEFAULT_BODY,
+    2026-09-18 확정). 캡슐 마네킹 시절 기본값은 1.70 / 0.42 / 0.22 / 0.62 / 0.85 였다.
     """
     height_m: float = 1.70
-    shoulder_width_m: float = 0.42
-    torso_depth_m: float = 0.22
-    arm_length_m: float = 0.62
-    leg_length_m: float = 0.85
+    shoulder_width_m: float = 0.342
+    torso_depth_m: float = 0.194
+    arm_length_m: float = 0.463
+    leg_length_m: float = 0.883
 
 
 @dataclass
