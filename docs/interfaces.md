@@ -13,7 +13,7 @@
 
 | 타입 | 생산자 | 소비자 | 비고 |
 |---|---|---|---|
-| `BodyParams` | E(포즈 추정), C(샘플링) | B | 체형 5개 값. 메시 몸 기준 정의(관절 중심): 키, 어깨 관절 간격, 가슴 두께, 어깨→손목, 고관절 높이 (`docs/mesh_transition.md` 8) |
+| `BodyParams` | E(포즈 추정), C(샘플링) | B | 체형 5개 값. 메시 몸 기준 정의(관절 중심): 키, 좌우 upperarm01 머리 간격, 유두선 높이 몸통 앞뒤 폭, 상완+전완 구간 합(자세 불변), 고관절 높이. 메시 기본 체형 1.70/0.342/0.194/0.463/0.883 = `human_mesh.MESH_DEFAULT_BODY`; 전역 기본값은 5단계 전환 때 교체 (`docs/mesh_transition.md` 8) |
 | `PoseParams` | C(최적화 변수) | B | degree. `to_vector / from_vector` 순서 고정 |
 | `NozzleConfig` | B (`configs/nozzles.yaml`) | A, D | 위치 (M,3), 방향 (M,3), 세기 (M,). 슬롯 제트면 `slot_axis` (M,3), `slot_length` (M,) 추가 (`None`이면 전부 원형; 배열이면 행 단위로 `slot_length[m] > 0`이고 `slot_axis[m] ≠ 0`인 노즐만 슬롯). 고정 입력 |
 | `Scenario` | B (`configs/scenarios.yaml`) | C, A, D | 상속 지원 |
@@ -34,7 +34,8 @@
 ### `airis/sim/human_mesh.py` (B, 메시 몸)
 
 - `load_makehuman(path=None) -> MeshAsset`: 기본 자세 정점 (V,3), 면 (F,3), 뼈(이름·부모·기본 변환), 정점별 뼈 가중치(희소). 자산은 `data/meshes/makehuman/`.
-- `pose_mesh(asset, body: BodyParams, pose: PoseParams, scenario) -> (V,3)`: 체형(뼈 축척·타깃) + 자세(선형 블렌드 스키닝) 적용, 부스 좌표(발바닥 z=0, 부스 중앙, `seat_height_m` 반영). 1회 수 ms.
+- `pose_mesh(asset, body: BodyParams | None, pose: PoseParams, scenario) -> (V,3)`: 체형(뼈 축척·타깃) + 자세(선형 블렌드 스키닝) 적용, 부스 좌표(발바닥 z=0, 부스 중앙, `seat_height_m` 반영). `body=None`이면 `MESH_DEFAULT_BODY`. 1회 수 ms.
+- 패치 면적 = 면 면적 / 기대 패치 수(≈ 1/밀도). sim 메시는 `scripts/build_sim_mesh.py`(B)가 만들고 `data/meshes/makehuman/sim_mesh.npz`에 커밋한다.
 - 좌우 대칭 면 인덱스 맵과 면 → 부위 맵은 자산과 함께 저장한다.
 
 ### `velocity_field_per_nozzle(points, nozzle, t, cfg, surface_normals=None) -> (M, P, 3)` (B)
