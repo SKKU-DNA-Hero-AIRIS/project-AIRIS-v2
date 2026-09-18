@@ -55,7 +55,8 @@ def wall_shear(u: np.ndarray, normals: np.ndarray, physics_cfg: dict) -> np.ndar
 
 ```
 state   = build_body(body, pose, scenario)                       # B 또는 fake
-u_mn    = velocity_field_per_nozzle(state.patch_pos + δ·n, nozzle, t=0, cfg)   # (M,N,3)
+u_mn    = velocity_field_per_nozzle(state.patch_pos + δ·n, nozzle, t=0, cfg,
+                                    surface_normals=state.patch_normal)         # (M,N,3), 4.2b 보정 포함
 visible = occlusion(state, nozzle)                               # (M,N)
 u       = Σ_m u_mn · visible[m]                                  # (N,3)
 τ       = wall_shear(u, state.patch_normal, cfg)                 # (N,)
