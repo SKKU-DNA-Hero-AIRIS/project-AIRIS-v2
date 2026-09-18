@@ -244,17 +244,48 @@ def test_arm_patches_labelled_arms(default_state):
 
 
 def test_build_body_under_20ms():
-    """완료 기준: 1회 build_body 20 ms 이하. 타이밍 잡음을 피하려고 최솟값을 쓴다."""
+    """완료 기준: 1회 build_body 20 ms 이하 (부하 시 기준 연산 대비 14배 이하)."""
     b, p, sc = BodyParams(), PoseParams(), SCENARIOS["default"]
-    build_body(b, p, sc)                       # 캐시 워밍업
-    best = min(_timed(lambda: build_body(b, p, sc)) for _ in range(7))
-    assert best < 0.020, f"build_body {best * 1e3:.1f} ms"
+    _assert_time_budget(lambda: build_body(b, p, sc), budget_s=0.020, max_ratio=14.0, label="build_body")
 
 
-def _timed(fn) -> float:
-    t0 = time.perf_counter()
+# ---------------------------------------------------------------------------
+# 성능 판정: 절대 시간 우선, 초과하면 기준 연산 대비 비율로 판정 (CPU 경쟁에 강하게)
+# ---------------------------------------------------------------------------
+# 다른 세션이 CPU 를 쓰면(예: C 의 8 프로세스 스윕) 15회 최솟값도 절대 시간 기준을 넘는다.
+# 같은 순간의 CPU 상태를 반영하도록, 측정마다 같은 성격(행렬곱 + exp)의 고정 numpy 연산을
+# 번갈아 재고 그 비율을 본다. 부하는 둘 다 느리게 하지만, 알고리즘 퇴행은 비율을 키운다.
+# 비율 상한은 부하 0·8·16 프로세스에서 관측한 최대 비율의 약 2배다 (PR 본문 표).
+_REF_RNG = np.random.default_rng(12345)
+_REF_A = _REF_RNG.random((16, 3600))
+_REF_D = _REF_RNG.random((16, 3))
+_REF_X = _REF_RNG.random((3600, 3))
+
+
+def _reference_workload() -> float:
+    s = _REF_D @ _REF_X.T
+    return float(np.exp(-(_REF_A * _REF_A) / (1.0 + s * s)).sum())
+
+
+def _assert_time_budget(fn, budget_s: float, max_ratio: float, label: str, reps: int = 15) -> None:
+    """fn 의 최솟값 시간이 budget_s 이하면 통과. 넘으면 기준 연산 대비 비율이 max_ratio 이하여야 한다."""
     fn()
-    return time.perf_counter() - t0
+    _reference_workload()
+    best = best_ref = float("inf")
+    for _ in range(reps):
+        t0 = time.perf_counter()
+        _reference_workload()
+        best_ref = min(best_ref, time.perf_counter() - t0)
+        t0 = time.perf_counter()
+        fn()
+        best = min(best, time.perf_counter() - t0)
+    if best < budget_s:
+        return
+    ratio = best / best_ref
+    assert ratio < max_ratio, (
+        f"{label} {best * 1e3:.2f} ms > {budget_s * 1e3:.0f} ms 이고, 기준 연산 "
+        f"{best_ref * 1e3:.2f} ms 대비 {ratio:.1f}배 > {max_ratio}배 (부하가 아니라 느려졌다)"
+    )
 
 
 # ---------------------------------------------------------------------------
