@@ -17,6 +17,7 @@ from airis.sim import (
 )
 from airis.sim.scenario import load_nozzles, load_physics
 
+from .cmaes_runner import Start
 from .dummy import DummyEvaluator
 
 EVALUATOR_CHOICES = ("dummy", "patch", "particle")
@@ -29,6 +30,35 @@ _OWNER = {
 
 #: --evaluator dummy 의 기본 목표 자세. E4 의 B1(업계 권장, 팔 들고 정면)과 같은 값.
 DEFAULT_DUMMY_TARGET = PoseParams(shoulder_abduction=90.0, elbow_flexion=0.0)
+
+
+#: --starts 이름 → CMA-ES 시작점. 점수 지형이 팔 내림 / 만세 두 봉우리라 둘 다 기본으로 쓴다.
+#: 만세 봉우리는 벌림 상한(180°)에 붙어 있어 초기 스텝을 작게 잡는다.
+START_PRESETS: dict[str, Start] = {
+    "default": Start("default", PoseParams()),
+    "hands_up": Start("hands_up", PoseParams(shoulder_abduction=180.0, elbow_flexion=0.0), sigma0=0.25),
+}
+DEFAULT_STARTS = "default,hands_up"
+
+
+def parse_starts(raw: str) -> list[Start]:
+    """'default,hands_up' → [Start, ...]. 모르는 이름이면 SystemExit."""
+    names = [n.strip() for n in raw.split(",") if n.strip()]
+    unknown = [n for n in names if n not in START_PRESETS]
+    if not names or unknown:
+        raise SystemExit(f"알 수 없는 --starts: {raw!r} (가능: {', '.join(START_PRESETS)})")
+    return [START_PRESETS[n] for n in names]
+
+
+def format_starts_table(per_start: list[dict]) -> str:
+    """시작점별 요약 표."""
+    lines = [f"{'시작점':<10}{'sigma0':>8}{'평가':>7}{'불가':>6}{'best':>11}  종료", "-" * 58]
+    for ps in per_start:
+        lines.append(
+            f"{ps['start']:<10}{ps['sigma0']:>8.2f}{ps['n_evals']:>7}{ps['n_infeasible']:>6}"
+            f"{ps['best_score']:>11.6f}  {ps['stop_reason']}"
+        )
+    return "\n".join(lines)
 
 
 def enable_utf8_stdout() -> None:

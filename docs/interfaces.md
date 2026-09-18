@@ -67,6 +67,20 @@ parquet, 한 행 = 체형 1개 × 시나리오 1개.
 | `score`, `total_removal`, `discomfort` | float | |
 | `exp_id`, `commit`, `seed` | str/int | 재현용 |
 
+## 회귀 모델 (C → E)
+
+`airis/model/predict.py` (C, 4주차). E의 `airis/realtime/recommend.py`가 호출한다. 그 전까지 E는 `docs/experiments.md`의 시나리오별 최적 자세 표를 돌려주는 스텁을 쓴다.
+
+```python
+def predict_pose(body: BodyParams, scenario: Scenario) -> PoseParams
+```
+
+- 시나리오는 객체로 받고 안에서는 `scenario.name`으로 구분한다 (데이터셋 열 `scenario`가 str). 학습에 없던 이름은 `KeyError`.
+- 출력은 항상 `PoseEncoder(scenario).clip_pose()`로 투영한다 → `pose_bounds` 안, `fixed_pose` 적용(휠체어 hip/knee 90).
+- 산출물 `data/models/pose_regressor.joblib`에 `nozzle_layout_hash`, `physics_hash`, 학습 커밋을 함께 저장하고, 로드 시 현재 설정과 다르면 경고한다. 물리 기준이 바뀌면 모델은 무효다 (`docs/experiments.md`와 같은 규칙).
+- **다봉 지형 처리**: 부스·노즐이 좌우 대칭이라 `torso_yaw ±θ`가 동등하다 → 데이터셋 생성(C 단계 9)에서 yaw를 `|yaw|`로 접는다(거울 정규화). 팔 벌림은 "팔 내림"과 "만세" 두 봉우리 사이 평균(≈90°)이 부스 밖일 수 있으므로, 모델은 봉우리를 먼저 분류하고 그 안에서 회귀하거나 최소한 출력 후 `outside_booth`로 부스 안인지 검사해 가까운 봉우리로 투영한다.
+- 평가(E5): 예측 자세를 시뮬레이터에 넣은 점수 / 직접 최적화 점수 (README H3: 95% 이상).
+
 ## 시각화용 상태 덤프 (A → E)
 
 - `outputs/<exp_id>/frames/<step>.npz`: `pos (N,3)`, `attached (N,) bool`, `part (N,) int`, `candidate (N,) int`

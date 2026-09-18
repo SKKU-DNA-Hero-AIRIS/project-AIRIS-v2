@@ -80,7 +80,8 @@ def test_wheelchair_keeps_fixed_pose(scenarios):
 def test_history_columns(scenarios):
     _, result = _run(scenarios["default"], max_evals=200)
     for i, row in enumerate(result.history, start=1):
-        assert set(row) == {"gen", "evals", "best", "mean", "sigma", "infeasible_frac"}
+        assert set(row) == {"gen", "evals", "best", "mean", "sigma", "infeasible_frac", "start"}
+        assert row["start"] == "default"
         assert row["infeasible_frac"] == 0.0   # 더미는 불가 판정을 내지 않는다
         assert row["gen"] == i
     best_values = [row["best"] for row in result.history]
@@ -183,7 +184,11 @@ def test_run_optimize_writes_three_files(tmp_path):
     }
 
     header, *rows = (run_dir / "history.csv").read_text(encoding="utf-8").strip().splitlines()
-    assert header == "gen,evals,best,mean,sigma,infeasible_frac"
+    assert header == "gen,evals,best,mean,sigma,infeasible_frac,start"
+    # CLI 기본값은 두 시작점 (default, hands_up) 이 예산을 나눈다.
+    assert [ps["start"] for ps in meta["per_start"]] == ["default", "hands_up"]
+    assert sum(ps["n_evals"] for ps in meta["per_start"]) == meta["n_evals"] == 200
+    assert {r.rsplit(",", 1)[1] for r in rows} == {"default", "hands_up"}
     assert len(rows) == len(set(rows)) and rows
 
     index = (tmp_path / "index.csv").read_text(encoding="utf-8").strip().splitlines()
@@ -342,3 +347,89 @@ def test_run_baselines_writes_three_conditions(tmp_path):
     assert b1["wheelchair"]["n_in_bounds"] == "3"
     # 더미 점수는 −1 아래로도 내려가지만 infeasible 표시가 없으면 불가가 아니다.
     assert all(r["infeasible"] == "False" for r in rows)
+
+
+class _TwoPeakEvaluator(DummyEvaluator):
+    """벌림 방향으로 봉우리가 둘인 더미. 실제 패치판의 팔 내림 / 만세 지형을 흉내 낸다.
+
+    정규화 벌림 x 에 대해 낮은 봉우리 0.5 (x = −0.8, 벌림 18°) 와
+    높은 봉우리 0.6 (x = 1, 벌림 180°) 사이에 골이 있다. 나머지 변수는 0 에서 멀수록 조금 감점.
+    """
+
+    def evaluate(self, pose, nozzle, body, scenario):
+        result = super().evaluate(pose, nozzle, body, scenario)
+        x = self.encoder.encode(pose)
+        a = x[self.encoder.free_keys.index("shoulder_abduction")]
+        rest = np.delete(x, self.encoder.free_keys.index("shoulder_abduction"))
+        result.score = float(
+            0.5 * np.exp(-((a + 0.8) / 0.3) ** 2)
+            + 0.6 * np.exp(-((a - 1.0) / 0.15) ** 2)
+            - 0.01 * np.sum(rest ** 2)
+        )
+        return result
+
+
+def _two_peak_run(scenario, starts, seed=0):
+    return run_cmaes(
+        _TwoPeakEvaluator(TARGET, scenario), BodyParams(), scenario, load_nozzles(),
+        max_evals=1200, popsize=20, seed=seed, starts=starts,
+    )
+
+
+def test_single_start_misses_high_peak_two_starts_find_it(scenarios):
+    from airis.optimize import cli
+
+    scenario = scenarios["default"]
+    one = _two_peak_run(scenario, cli.parse_starts("default"))
+    two = _two_peak_run(scenario, cli.parse_starts("default,hands_up"))
+
+    assert one.best_pose.shoulder_abduction < 90, "기본 자세 하나로는 낮은 봉우리에 갇힌다"
+    assert one.best_score < 0.55
+    assert two.best_pose.shoulder_abduction > 170, "만세 시작점이 높은 봉우리를 찾는다"
+    assert two.best_score > 0.59
+
+    assert [ps["start"] for ps in two.per_start] == ["default", "hands_up"]
+    assert [ps["n_evals"] for ps in two.per_start] == [600, 600]
+    assert [ps["seed"] for ps in two.per_start] == [0, 1]
+    assert [ps["sigma0"] for ps in two.per_start] == [0.5, 0.25]
+    assert two.per_start[1]["best_score"] == pytest.approx(two.best_score)
+    assert two.n_evals == 1200
+
+    gens = [row["gen"] for row in two.history]
+    evals = [row["evals"] for row in two.history]
+    assert gens == list(range(1, len(gens) + 1)), "gen 은 시작점을 넘어 누적"
+    assert evals == sorted(evals) and evals[-1] == 1200
+    assert [row["start"] for row in two.history] == ["default"] * 30 + ["hands_up"] * 30
+
+
+def test_two_starts_same_seed_identical(scenarios):
+    from airis.optimize import cli
+
+    scenario = scenarios["default"]
+    starts = cli.parse_starts("default,hands_up")
+    a = _two_peak_run(scenario, starts, seed=3)
+    b = _two_peak_run(scenario, starts, seed=3)
+    assert a.history == b.history
+    assert a.per_start == b.per_start
+    assert a.best_score == b.best_score
+
+
+def test_first_start_matches_single_start_run(scenarios):
+    """시작점 i=0 은 seed 가 같아 starts=None 실행과 같은 궤적을 가진다 (예산이 같을 때)."""
+    from airis.optimize import cli
+
+    scenario = scenarios["default"]
+    single = run_cmaes(DummyEvaluator(TARGET, scenario), BodyParams(), scenario, load_nozzles(),
+                       max_evals=200, popsize=20, seed=0)
+    first = run_cmaes(DummyEvaluator(TARGET, scenario), BodyParams(), scenario, load_nozzles(),
+                      max_evals=400, popsize=20, seed=0, starts=cli.parse_starts("default,hands_up"))
+    assert first.history[:10] == single.history
+
+
+def test_parse_starts_rejects_unknown():
+    from airis.optimize import cli
+
+    with pytest.raises(SystemExit):
+        cli.parse_starts("default,sideways")
+    with pytest.raises(SystemExit):
+        cli.parse_starts("")

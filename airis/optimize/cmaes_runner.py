@@ -10,7 +10,8 @@ CMA-ES 에는 그 점수를 그대로 벌점으로 넘겨 가능 구간 쪽 기�
 from __future__ import annotations
 
 import time
-from dataclasses import dataclass, field
+from collections.abc import Sequence
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 import numpy as np
@@ -36,13 +37,22 @@ class OptResult:
     best_pose: PoseParams
     best_score: float
     best_result: EvalResult
-    history: list[dict]           # per generation: gen, evals, best, mean, sigma, infeasible_frac
+    history: list[dict]           # per generation: gen, evals, best, mean, sigma, infeasible_frac, start
     n_evals: int
     exp_id: str
     elapsed_s: float = 0.0
     stop_reason: str = ""
     free_keys: list[str] = field(default_factory=list)
     n_infeasible: int = 0         # 불가 판정을 받은 후보 수 (전 세대 합)
+    per_start: list[dict] = field(default_factory=list)  # 시작점별 요약 (start, best_score, ...)
+
+
+@dataclass(frozen=True)
+class Start:
+    """CMA-ES 시작점. sigma0 가 None 이면 run_cmaes 의 sigma0 를 쓴다."""
+    name: str
+    pose: PoseParams
+    sigma0: float | None = None
 
 
 def cma_seed(seed: int) -> int:
@@ -98,6 +108,7 @@ def run_cmaes(
     popsize: int = 100,
     sigma0: float = 0.5,
     tol_stagnation_gens: int = 30,
+    starts: Sequence[Start] | None = None,
     log_dir: Path | str | None = None,
     exp_id: str | None = None,
     tag: str = "opt",
@@ -105,6 +116,13 @@ def run_cmaes(
     """시나리오 제약 안에서 자세를 탐색한다.
 
     같은 seed 와 결정론적 평가기면 history 가 완전히 같아야 한다.
+
+    starts 를 주면 시작점마다 CMA-ES 를 따로 돌린다 (점수 지형의 봉우리가 여럿일 때).
+    - 예산 max_evals 를 시작점 수로 나눈다 (나머지는 마지막 시작점).
+    - 시작점 i 의 시드는 seed + i, 초기 스텝은 start.sigma0 (None 이면 sigma0).
+    - 정체 판정은 시작점마다 따로, best 는 모든 시작점의 가능한 후보 중 최고.
+    - history 의 gen / evals 는 시작점을 넘어 누적하고 start 열에 시작점 이름을 남긴다.
+    starts=None 이면 기본 자세 하나 (예전 동작과 같다).
 
     log_dir 이 주어지면 세대마다 <log_dir>/<exp_id>/history.csv 에 한 줄씩 덧붙인다.
     meta.json / best.json 은 호출자가 explog.write_run 으로 쓴다.
@@ -118,70 +136,108 @@ def run_cmaes(
         )
 
     exp_id = exp_id or explog.new_exp_id(tag)
-    es = cma.CMAEvolutionStrategy(
-        enc.default_x().tolist(),
-        sigma0,
-        {
-            "bounds": [-1, 1],
-            "popsize": popsize,
-            "seed": cma_seed(seed),
-            "maxfevals": max_evals,
-            "verbose": -9,
-        },
-    )
+    starts = list(starts) if starts is not None else [Start("default", PoseParams())]
+    if not starts:
+        raise ValueError("starts 가 비어 있다")
+    names = [st.name for st in starts]
+    if len(set(names)) != len(names):
+        raise ValueError(f"시작점 이름이 겹친다: {names}")
+    # 예산은 시작점 수로 나누고 나머지는 마지막 시작점에 준다.
+    budgets = [max_evals // len(starts)] * len(starts)
+    budgets[-1] += max_evals - sum(budgets)
 
     history: list[dict] = []
+    per_start: list[dict] = []
     best_score = -np.inf
     best_x: np.ndarray | None = None
     n_evals = 0
     n_infeasible = 0
     gen = 0
-    stagnant = 0
-    stop_reason = ""
     t0 = time.perf_counter()
 
-    while not es.stop():
-        X = es.ask()
-        poses = [enc.decode(x) for x in X]
-        scores, infeasible = score_batch(evaluator, poses, nozzle, body, scenario)
+    for i, (start, budget) in enumerate(zip(starts, budgets)):
+        s0 = sigma0 if start.sigma0 is None else start.sigma0
+        es = cma.CMAEvolutionStrategy(
+            enc.encode(start.pose).tolist(),
+            s0,
+            {
+                "bounds": [-1, 1],
+                "popsize": popsize,
+                "seed": cma_seed(seed + i),
+                "maxfevals": budget,
+                "verbose": -9,
+            },
+        )
+        s_best = -np.inf
+        s_best_x: np.ndarray | None = None
+        s_evals = 0
+        s_infeasible = 0
+        stagnant = 0
+        stop_reason = ""
 
-        es.tell(X, (-scores).tolist())   # cma 는 최소화. 불가 후보도 벌점 점수 그대로 넘긴다.
+        while budget > 0 and not es.stop():
+            X = es.ask()
+            poses = [enc.decode(x) for x in X]
+            scores, infeasible = score_batch(evaluator, poses, nozzle, body, scenario)
 
-        n_evals += len(X)
-        n_infeasible += int(infeasible.sum())
-        gen += 1
+            es.tell(X, (-scores).tolist())   # cma 는 최소화. 불가 후보도 벌점 점수 그대로 넘긴다.
 
-        # best 는 가능한 후보 중에서만 고른다. 전부 불가면 이번 세대는 개선 없음.
-        feasible_scores = np.where(infeasible, -np.inf, scores)
-        top = int(np.argmax(feasible_scores))
-        gain = float(feasible_scores[top]) - best_score if not infeasible.all() else 0.0
-        if gain > 0:
-            best_score = float(scores[top])
-            best_x = np.asarray(X[top], dtype=np.float64).copy()
-        stagnant = 0 if gain > STAGNATION_TOL else stagnant + 1
+            s_evals += len(X)
+            s_infeasible += int(infeasible.sum())
+            gen += 1
 
-        row = {
-            "gen": gen,
-            "evals": n_evals,
-            "best": best_score,            # 누적 최고점
-            "mean": float(np.mean(scores)),  # 해당 세대 평균
-            "sigma": float(es.sigma),
-            "infeasible_frac": float(infeasible.mean()),  # 해당 세대 불가 후보 비율
-        }
-        history.append(row)
-        if log_dir is not None:
-            explog.append_history_row(log_dir, exp_id, row)
+            # best 는 가능한 후보 중에서만 고른다. 전부 불가면 이번 세대는 개선 없음.
+            feasible_scores = np.where(infeasible, -np.inf, scores)
+            top = int(np.argmax(feasible_scores))
+            gain = float(feasible_scores[top]) - s_best if not infeasible.all() else 0.0
+            if gain > 0:
+                s_best = float(scores[top])
+                s_best_x = np.asarray(X[top], dtype=np.float64).copy()
+            stagnant = 0 if gain > STAGNATION_TOL else stagnant + 1
+            if s_best > best_score:
+                best_score, best_x = s_best, s_best_x
 
-        if stagnant >= tol_stagnation_gens:
-            stop_reason = f"stagnation({tol_stagnation_gens} gens)"
-            break
-        if n_evals >= max_evals:
-            # cma 의 maxfevals 는 초과한 뒤에 멈추므로 예산을 정확히 지키도록 여기서 끊는다.
-            stop_reason = f"maxfevals({max_evals})"
-            break
+            row = {
+                "gen": gen,                    # 시작점을 넘어 누적
+                "evals": n_evals + s_evals,    # 시작점을 넘어 누적
+                "best": best_score,            # 전체 누적 최고점
+                "mean": float(np.mean(scores)),  # 해당 세대 평균
+                "sigma": float(es.sigma),
+                "infeasible_frac": float(infeasible.mean()),  # 해당 세대 불가 후보 비율
+                "start": start.name,
+            }
+            history.append(row)
+            if log_dir is not None:
+                explog.append_history_row(log_dir, exp_id, row)
 
-    if not stop_reason:
-        stop_reason = ", ".join(es.stop()) or "maxfevals"
+            if stagnant >= tol_stagnation_gens:
+                stop_reason = f"stagnation({tol_stagnation_gens} gens)"
+                break
+            if s_evals >= budget:
+                # cma 의 maxfevals 는 초과한 뒤에 멈추므로 예산을 정확히 지키도록 여기서 끊는다.
+                stop_reason = f"maxfevals({budget})"
+                break
+
+        if not stop_reason:
+            stop_reason = ", ".join(es.stop()) or "maxfevals"
+        n_evals += s_evals
+        n_infeasible += s_infeasible
+        per_start.append({
+            "start": start.name,
+            "start_pose": asdict(enc.clip_pose(start.pose)),
+            "sigma0": float(s0),
+            "seed": int(seed + i),
+            "n_evals": s_evals,
+            "n_infeasible": s_infeasible,
+            "best_score": float(s_best) if s_best_x is not None else float("nan"),
+            "best_pose": asdict(enc.decode(s_best_x)) if s_best_x is not None else None,
+            "stop_reason": stop_reason,
+        })
+
+    if len(per_start) == 1:
+        stop_reason = per_start[0]["stop_reason"]
+    else:
+        stop_reason = "; ".join(f"{ps['start']}: {ps['stop_reason']}" for ps in per_start)
 
     if best_x is None:                     # 한 세대도 못 돌렸거나 가능한 후보가 없던 경우
         best_x = enc.default_x()
@@ -202,4 +258,5 @@ def run_cmaes(
         stop_reason=stop_reason,
         free_keys=list(enc.free_keys),
         n_infeasible=n_infeasible,
+        per_start=per_start,
     )
