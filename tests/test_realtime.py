@@ -346,7 +346,7 @@ def test_stub_ranks_candidates_by_score_for_this_body(monkeypatch):
         def evaluate(self, pose, nozzle, body, scenario):
             return SimpleNamespace(score=1.0 if pose.shoulder_abduction < 90 else 0.5)
 
-    monkeypatch.setattr(rmod, "patch_evaluator", lambda: Flipped())
+    monkeypatch.setattr(rmod, "patch_evaluator", lambda model=None: Flipped())
     rec = recommend(BodyParams(), sc, use_model=False)
     assert rec.label == STUB_TABLE["default"][1].label
     assert "점수가 높아" in rec.notes[0]
@@ -388,3 +388,108 @@ def test_dashboard_runs_to_recommendation(mode, scenario):
     assert labels == ["B0 기본 대비", "B1 몸 회전 대비", "B2 만세 대비"]
     at.selectbox[0].set_value("합성 프레임 미리보기 (가짜 궤적)").run()
     assert not at.exception, [e.value for e in at.exception]
+
+
+def test_dashboard_capsule_model_query():
+    """?model=capsule 이면 캡슐 마네킹으로 끝까지 간다 (기본은 사람 메시)."""
+    pytest.importorskip("streamlit")
+    from pathlib import Path
+    from streamlit.testing.v1 import AppTest
+
+    path = Path(__file__).resolve().parents[1] / "scripts" / "run_dashboard.py"
+    at = AppTest.from_file(str(path), default_timeout=120)
+    at.query_params["model"] = "capsule"
+    at.run()
+    at.sidebar.radio[0].set_value("체형 직접 입력").run()
+    assert not at.exception, [e.value for e in at.exception]
+    model_radio = next(r for r in at.sidebar.radio if "캡슐 마네킹" in r.options)
+    assert model_radio.value == "캡슐 마네킹"
+    assert len(at.metric) == 3
+
+
+# ---------------------------------------------------------------------------
+# 메시 몸 (관절 중심 BodyParams 정의, docs/interfaces.md). 전역 기본값은 아직 캡슐이라 model="mesh" 를 명시한다.
+# ---------------------------------------------------------------------------
+from airis.sim.human_mesh import MESH_DEFAULT_BODY  # noqa: E402
+
+MESH_BODIES = {
+    "메시 기본": MESH_DEFAULT_BODY,
+    "작은 체형": BodyParams(1.55, 0.31, 0.18, 0.42, 0.80),
+    "큰 체형": BodyParams(1.90, 0.40, 0.22, 0.52, 1.00),
+    "다리 긴 체형": BodyParams(1.70, 0.36, 0.19, 0.47, 0.93),
+}
+
+
+def test_profiles():
+    cap, mesh = pe.profile_for("capsule"), pe.profile_for("mesh")
+    assert cap is pe.CAPSULE_PROFILE and mesh.name == "mesh"
+    assert pe.profile_for(None).name == "capsule"                    # 설정 파일 body.model (5단계 전)
+    assert mesh.torso_depth_per_height == pytest.approx(0.194 / 1.70)
+    assert mesh.seated_leg_per_height == pytest.approx(0.883 / 1.70)
+    assert 0.08 < mesh.nose_below_top < 0.11 and 0.06 < mesh.eye_below_top < mesh.nose_below_top
+    assert 0.03 < mesh.ankle_above_floor < 0.06 and 0.97 < mesh.leg_vertical_ratio <= 1.0
+    with pytest.raises(ValueError):
+        pe.profile_for("smplx")
+
+
+def test_mesh_landmarks_on_face():
+    lm = pe.mesh_landmarks()
+    kp3 = pe.mesh_keypoints_3d(None, PoseParams(), SCENARIOS["default"])
+    cx = BOOTH["length_m"] / 2.0
+    assert kp3[pe.NOSE, 0] > kp3[pe.L_EYE, 0] > kp3[pe.L_EAR, 0]          # 코가 가장 앞
+    assert abs(kp3[pe.NOSE, 1]) < 0.01                                     # 가운데
+    assert kp3[pe.L_EAR, 1] > kp3[pe.L_EYE, 1] > 0 > kp3[pe.R_EYE, 1] > kp3[pe.R_EAR, 1]
+    assert kp3[pe.L_SHOULDER, 1] == pytest.approx(MESH_DEFAULT_BODY.shoulder_width_m / 2, abs=0.01)
+    assert abs(kp3[pe.L_HIP, 0] - cx) < 0.05 and set(lm) == {"nose", "ear_L", "ear_R"}
+
+
+@pytest.mark.parametrize("name", list(MESH_BODIES))
+@pytest.mark.parametrize("pose", [PoseParams(), PoseParams(shoulder_abduction=40.0, elbow_flexion=0.0)])
+def test_recover_mesh_body_from_synthetic_keypoints(name, pose):
+    """메시 투영 합성 키포인트 → 체형 5개 ±5% (키 입력 보정). 원근 탓에 1~3% 작게 나온다."""
+    body = MESH_BODIES[name]
+    kp, conf = pe.synthetic_keypoints(body, pose, SCENARIOS["default"], model="mesh")
+    est = pe.estimate_body(kp, conf, height_m=body.height_m, image_size=(1280, 720), profile="mesh")
+    assert est.ok, est.message
+    err = _rel_err(est.body, body)
+    assert max(err.values()) < 0.05, err
+
+
+@pytest.mark.parametrize("name", ["메시 기본", "큰 체형"])
+def test_recover_mesh_body_with_marker_scale(name):
+    body = MESH_BODIES[name]
+    cam = pe.PinholeCamera(distance_m=2.5, focal_px=900.0)
+    kp, conf = pe.synthetic_keypoints(body, PoseParams(), SCENARIOS["default"], cam, model="mesh")
+    cx = BOOTH["length_m"] / 2.0
+    corners3 = np.array([[cx + 0.1, 0.3, 0.0], [cx + 0.1, 0.5, 0.0],
+                         [cx - 0.1, 0.5, 0.0], [cx - 0.1, 0.3, 0.0]])
+    scale = pe.scale_from_marker(cam.project(corners3, cx), 0.20)
+    est = pe.estimate_body(kp, conf, scale_m_per_px=scale, profile="mesh")
+    assert est.ok, est.message
+    assert max(_rel_err(est.body, body).values()) < 0.05
+
+
+def test_recover_mesh_body_noise_and_seated():
+    stab = pe.BodyEstimator(height_m=1.70, window=30, profile="mesh")
+    for seed in range(10):
+        kp, conf = pe.synthetic_keypoints(None, PoseParams(), SCENARIOS["default"], noise_px=2.0,
+                                          seed=seed, model="mesh")
+        stab.add(kp, conf, (1280, 720))
+    assert max(_rel_err(stab.body(), MESH_DEFAULT_BODY).values()) < 0.05
+    kp, conf = pe.synthetic_keypoints(None, PoseParams(), SCENARIOS["wheelchair"], model="mesh")
+    est = pe.estimate_body(kp, conf, height_m=1.70, seated=True, profile="mesh")
+    assert est.ok and max(_rel_err(est.body, MESH_DEFAULT_BODY).values()) < 0.05
+
+
+@pytest.mark.parametrize("scenario", ["default", "pregnant", "wheelchair"])
+def test_recommend_and_compare_with_mesh_body(scenario):
+    """메시 몸: 추천은 부스 안이고, 같은 몸 모델로 채점한 B0·B1 보다 높다."""
+    sc = SCENARIOS[scenario]
+    rec = recommend(None, sc, model="mesh")
+    assert is_inside_booth(None, rec.pose, sc, "mesh")
+    rows = compare_with_baselines(None, sc, rec.pose, model="mesh")
+    by = {r.name: r for r in rows}
+    n_patch = build_body(None, rec.pose, sc, patches_per_m2=400, model="mesh").patch_pos.shape[0]
+    assert len(by["추천"].result.extra["removal"]) == n_patch             # 메시 패치로 채점
+    for name in ("B0 기본", "B1 몸 회전"):
+        assert improvement(by["추천"], by[name]) > 0.0

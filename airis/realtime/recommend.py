@@ -13,11 +13,15 @@
 
 점수 비교(`compare_with_baselines`)는 D의 `PatchEvaluator`(400/m²)를 부른다. E는 물리 계산을 하지
 않는다. 결과는 절대 제거율이 아니라 기준 자세(B0·B1·B2) 대비 **상대 개선율**로 보여 준다.
+
+몸 모델: 함수마다 `model`(`"mesh"` | `"capsule"` | None = `configs/physics.yaml` `body.model`)을 받는다.
+`body`가 None이면 그 모델의 기본 체형(메시 `MESH_DEFAULT_BODY`, 캡슐 `BodyParams()`)이다. 추천 표는 캡슐판
+E4 결과지만, 부스 안 판정과 후보 채점은 고른 몸 모델로 다시 한다.
 """
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from functools import lru_cache
+from functools import lru_cache, partial
 
 import numpy as np
 
@@ -83,8 +87,25 @@ def _booth() -> dict:
     return load_nozzle_layout()["booth"]
 
 
-def is_inside_booth(body: BodyParams, pose: PoseParams, scenario: Scenario) -> bool:
-    state = build_body(body, pose, scenario, patches_per_m2=PATCHES_PER_M2)
+def resolve_model(model: str | None) -> str:
+    """None 이면 `configs/physics.yaml` `body.model`."""
+    if model is None:
+        from ..sim.body import _configured_body_model
+        return _configured_body_model()
+    return model
+
+
+def default_body(model: str | None = None) -> BodyParams:
+    """몸 모델의 기본 체형 (메시 `MESH_DEFAULT_BODY`, 캡슐 `BodyParams()`)."""
+    if resolve_model(model) == "mesh":
+        from ..sim.human_mesh import MESH_DEFAULT_BODY
+        return MESH_DEFAULT_BODY
+    return BodyParams()
+
+
+def is_inside_booth(body: BodyParams | None, pose: PoseParams, scenario: Scenario,
+                    model: str | None = None) -> bool:
+    state = build_body(body, pose, scenario, patches_per_m2=PATCHES_PER_M2, model=resolve_model(model))
     return not outside_booth(state.patch_pos, _booth())
 
 
@@ -100,20 +121,22 @@ def _model_predict(body: BodyParams, scenario: Scenario) -> PoseParams | None:
         return None
 
 
-def recommend(body: BodyParams, scenario: Scenario, *, use_model: bool = True,
-              rank_by_score: bool = True) -> Recommendation:
+def recommend(body: BodyParams | None, scenario: Scenario, *, use_model: bool = True,
+              rank_by_score: bool = True, model: str | None = None) -> Recommendation:
     """추천 자세 + 출처·메모. 항상 시나리오 제약 안이고, 가능하면 부스 안이다.
 
     스텁은 표의 봉우리 중 부스 안인 것을 고르고, `rank_by_score`면 그 후보들(시나리오당 2개)을
-    이 체형으로 D의 패치판에서 평가해 가장 높은 것을 고른다 (약 30 ms × 2).
+    이 체형·몸 모델로 D의 패치판에서 평가해 가장 높은 것을 고른다 (약 30 ms × 2).
     """
+    model = resolve_model(model)
+    body = body if body is not None else default_body(model)
     enc = PoseEncoder(scenario)
     notes: list[str] = []
     if use_model:
         pred = _model_predict(body, scenario)
         if pred is not None:
             pose = enc.clip_pose(pred)
-            if is_inside_booth(body, pose, scenario):
+            if is_inside_booth(body, pose, scenario, model):
                 return Recommendation(pose, "회귀 모델 예측", "model")
             notes.append("회귀 모델 예측 자세가 부스 밖이라 표의 자세로 대체")
 
@@ -123,14 +146,14 @@ def recommend(body: BodyParams, scenario: Scenario, *, use_model: bool = True,
     inside = []
     for i, e in enumerate(entries):
         pose = enc.clip_pose(e.pose)
-        if is_inside_booth(body, pose, scenario):
+        if is_inside_booth(body, pose, scenario, model):
             inside.append((i, e, pose))
         else:
             notes.append(f"'{e.label}' 자세는 이 체형에서 부스(천장·벽) 밖이라 제외")
     if inside:
         if rank_by_score and len(inside) > 1:
             # 표는 기본 체형의 봉우리다. 체형이 다르면 순위가 바뀔 수 있어 이 체형으로 다시 잰다.
-            ev, nz = patch_evaluator(), _nozzles()
+            ev, nz = patch_evaluator(model), _nozzles()
             scores = [ev.evaluate(pose, nz, body, scenario).score for _, _, pose in inside]
             best = int(np.argmax(scores))
             if best != 0:
@@ -213,9 +236,11 @@ class ScoreRow:
     result: EvalResult | None = None     # 단일 자세면 원래 결과 (패치 색칠용)
 
 
-@lru_cache(maxsize=1)
-def patch_evaluator() -> PatchEvaluator:
-    return PatchEvaluator(load_physics(), patches_per_m2=PATCHES_PER_M2)
+@lru_cache(maxsize=4)
+def patch_evaluator(model: str | None = None) -> PatchEvaluator:
+    """D의 패치판 (400/m²). `model` 을 주면 그 몸 모델로 `build_body` 를 부른다 (None = 설정 파일)."""
+    bb = None if model is None else partial(build_body, model=model)
+    return PatchEvaluator(load_physics(), bb, patches_per_m2=PATCHES_PER_M2)
 
 
 @lru_cache(maxsize=1)
@@ -230,10 +255,11 @@ def _in_bounds(pose: PoseParams, scenario: Scenario) -> bool:
     return True
 
 
-def evaluate_condition(name: str, poses: list[PoseParams], body: BodyParams,
-                       scenario: Scenario) -> ScoreRow:
+def evaluate_condition(name: str, poses: list[PoseParams], body: BodyParams | None,
+                       scenario: Scenario, model: str | None = None) -> ScoreRow:
     """자세가 여러 개면(B1) 범위 안·부스 안인 것의 평균 (run_baselines.py 집계와 같음)."""
-    ev, nz, enc = patch_evaluator(), _nozzles(), PoseEncoder(scenario)
+    ev, nz, enc = patch_evaluator(model), _nozzles(), PoseEncoder(scenario)
+    body = body if body is not None else default_body(model)
     usable = [enc.clip_pose(p) for p in poses if len(poses) == 1 or _in_bounds(p, scenario)]
     results = [ev.evaluate(p, nz, body, scenario) for p in usable]
     feasible = [r for r in results if not r.extra.get("infeasible")]
@@ -252,11 +278,11 @@ def evaluate_condition(name: str, poses: list[PoseParams], body: BodyParams,
     )
 
 
-def compare_with_baselines(body: BodyParams, scenario: Scenario,
-                           recommended: PoseParams) -> list[ScoreRow]:
-    """[추천, B0, B1, B2] 점수. 패치판 1회 약 30 ms × 15회."""
-    rows = [evaluate_condition("추천", [recommended], body, scenario)]
-    rows += [evaluate_condition(n, ps, body, scenario) for n, ps in baseline_poses().items()]
+def compare_with_baselines(body: BodyParams | None, scenario: Scenario,
+                           recommended: PoseParams, model: str | None = None) -> list[ScoreRow]:
+    """[추천, B0, B1, B2] 점수. 패치판 1회 약 25 ms × 15회. 같은 몸 모델로 채점한다."""
+    rows = [evaluate_condition("추천", [recommended], body, scenario, model)]
+    rows += [evaluate_condition(n, ps, body, scenario, model) for n, ps in baseline_poses().items()]
     return rows
 
 
