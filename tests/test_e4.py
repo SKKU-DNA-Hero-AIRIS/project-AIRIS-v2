@@ -66,6 +66,15 @@ def test_summarize_scenario_folds_yaw_and_computes_improvement():
     assert row["pose_std_torso_yaw"] == pytest.approx(0.0)
     assert row["best_start_counts"] == "hands_up:3"
     assert row["infeasible_frac"] == pytest.approx(0.05)
+    # 봉우리 간 차이 = hands_up − default (0.62−0.5, 0.64−0.5, 0.63−0.5)
+    assert row["peak_gap_mean"] == pytest.approx(0.13)
+    assert row["peak_gap_std"] == pytest.approx(0.01)
+
+
+def test_peak_gap():
+    per_start = [{"start": "default", "best_score": 0.55}, {"start": "hands_up", "best_score": 0.547}]
+    assert e4.peak_gap(per_start) == pytest.approx(-0.003)
+    assert math.isnan(e4.peak_gap([{"start": "default", "best_score": 0.55}]))
 
 
 def test_run_e4_dummy_writes_summary(tmp_path):
@@ -101,6 +110,9 @@ def test_run_e4_dummy_writes_summary(tmp_path):
     assert [r["seed"] for r in wheelchair["runs"]] == [0, 1]
     assert all(r["pose"]["hip_flexion"] == 90 for r in wheelchair["runs"])
     assert all(r["pose_folded"]["torso_yaw"] >= 0 for r in wheelchair["runs"])
+    assert all(set(r["start_best"]) == {"default", "hands_up"} for r in wheelchair["runs"])
+    assert all(r["peak_gap"] == pytest.approx(r["start_best"]["hands_up"] - r["start_best"]["default"])
+               for r in wheelchair["runs"])
 
     # 실행 4개가 각자 폴더와 index.csv 한 줄을 남기고, meta 에 묶음 id 가 있다.
     run_ids = [r["exp_id"] for s in poses["scenarios"].values() for r in s["runs"]]

@@ -182,7 +182,9 @@ def main(argv: list[str] | None = None) -> int:
         poses_out["scenarios"][name] = {
             "runs": [{
                 "exp_id": r["exp_id"], "seed": r["seed"], "best_score": r["best_score"],
-                "rescore_score": r.get("rescore_score"), "total_removal": r["total_removal"], "best_start": e4.winning_start(r["per_start"]),
+                "rescore_score": r.get("rescore_score"), "total_removal": r["total_removal"],
+                "start_best": {ps["start"]: ps["best_score"] for ps in r["per_start"]},
+                "peak_gap": e4.peak_gap(r["per_start"]), "best_start": e4.winning_start(r["per_start"]),
                 "pose": cli.pose_dict(r["best_pose"]), "pose_folded": e4.fold_pose(r["best_pose"]),
             } for r in runs],
             "mean_pose_folded": {k: summary[f"pose_mean_{k}"] for k in e4.POSE_KEYS},

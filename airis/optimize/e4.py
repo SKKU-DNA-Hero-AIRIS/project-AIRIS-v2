@@ -4,6 +4,8 @@ scripts/run_e4.py 가 시나리오 × 시드 실행 결과를 모아 여기서 �
 
 - 개선율 = (best − 기준선) / |기준선|. 기준선 점수가 양수면 best / 기준선 − 1 과 같다.
   기준선이 불가거나 0 이면 NaN.
+- 봉우리 간 차이 = hands_up 시작점 best − default 시작점 best (시드별). 양수면 만세 봉우리가 높다.
+  각 시작점 best 는 예산 절반으로 찾은 값이라 봉우리 최댓값의 하한이다.
 - 시드 간 자세 편차는 torso_yaw 를 |yaw| 로 접어서 계산한다. 노즐·부스가 좌우 대칭이라
   yaw +θ 와 −θ 가 같은 점수이므로 (docs/interfaces.md 회귀 모델 절, 거울 정규화)
   접지 않으면 같은 해가 ±90 으로 갈려 편차가 부풀려진다.
@@ -43,6 +45,14 @@ def winning_start(per_start: list[dict]) -> str:
     return max(scored, key=lambda ps: ps["best_score"])["start"]
 
 
+def peak_gap(per_start: list[dict], high: str = "hands_up", low: str = "default") -> float:
+    """봉우리 간 차이: high 시작점 best − low 시작점 best. 둘 중 하나가 없거나 NaN 이면 NaN."""
+    best = {ps["start"]: ps["best_score"] for ps in per_start}
+    if high not in best or low not in best:
+        return float("nan")
+    return float(best[high] - best[low])
+
+
 def summarize_scenario(runs: list[dict], baselines: dict[str, dict]) -> dict:
     """시나리오 하나의 시드별 실행을 요약한다.
 
@@ -71,6 +81,10 @@ def summarize_scenario(runs: list[dict], baselines: dict[str, dict]) -> dict:
 
     wins = [winning_start(r["per_start"]) for r in runs]
     row["best_start_counts"] = ";".join(f"{s}:{wins.count(s)}" for s in sorted(set(wins)))
+    gaps = np.array([peak_gap(r["per_start"]) for r in runs], dtype=np.float64)
+    finite = gaps[np.isfinite(gaps)]
+    row["peak_gap_mean"] = float(finite.mean()) if finite.size else float("nan")
+    row["peak_gap_std"] = float(finite.std(ddof=1 if finite.size > 1 else 0)) if finite.size else float("nan")
     n_evals = sum(r["n_evals"] for r in runs)
     row["infeasible_frac"] = sum(r["n_infeasible"] for r in runs) / n_evals if n_evals else 0.0
     row["elapsed_mean_s"] = float(np.mean([r["elapsed_s"] for r in runs]))
