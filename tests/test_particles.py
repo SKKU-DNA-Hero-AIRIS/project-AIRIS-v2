@@ -51,6 +51,17 @@ CENTER_X = BOOTH["length_m"] / 2
 TORSO = PART_NAMES.index("torso_front")
 ARMS = PART_NAMES.index("arms")
 
+# 실제 몸 테스트의 체형은 전역 `BodyParams()` 기본값에 기대지 않고 명시한다 (기본값은 메시 전환
+# 5단계에서 바뀐다). 캡슐 마네킹 시절 기본 체형으로 고정하고, build_body를 직접 부르는 곳은
+# model="capsule"도 명시한다. 평가기를 거치는 테스트는 physics.yaml body.model을 따르므로
+# 캡슐/메시 어느 쪽이어도 성립하는 자세만 단언한다. 메시 몸 검증은 단계 13 테스트가 따로 한다.
+CAPSULE_BODY = BodyParams(height_m=1.70, shoulder_width_m=0.42, torso_depth_m=0.22,
+                          arm_length_m=0.62, leg_length_m=0.85)
+
+
+def capsule_state(pose: PoseParams, scenario) -> BodyState:
+    return build_body(CAPSULE_BODY, pose, scenario, model="capsule")
+
 
 # ------------------------------------------------------------------ 가짜 입력
 def _capsule_patches(p0, p1, radius, part, n_axial=16, n_theta=24):
@@ -636,10 +647,11 @@ def _save_escape_plot(frames, final, body, nozzle, result):
 def test_batch_evaluate_with_build_body_matches_evaluate(ev_batch, scenario):
     """C가 부르는 그대로: batch_evaluate([(PoseParams, NozzleConfig)], body, scenario)
     -> (B,) float32, 입력 순서 유지, 각 원소 == evaluate(...).score. 기준 장비 슬롯 배치."""
-    body = BodyParams()
+    body = CAPSULE_BODY
     nozzle = load_nozzles()
     assert slot_mask(nozzle).all()
-    poses = [PoseParams(shoulder_abduction=120.0, torso_yaw=30.0), PoseParams()]
+    # 두 자세 모두 캡슐·메시 어느 몸 모델에서도 부스 안이다
+    poses = [PoseParams(shoulder_abduction=40.0, torso_yaw=90.0), PoseParams()]
     scores = ev_batch.batch_evaluate([(p, nozzle) for p in poses], body, scenario)
     assert scores.dtype == np.float32 and scores.shape == (2,)
     singles = [ev_batch.evaluate(p, nozzle, body, scenario) for p in poses]
@@ -727,11 +739,12 @@ def test_outside_booth_is_infeasible_per_slot(ev_batch, ev_single, scenario):
 def test_outside_booth_matches_patch_evaluator(ev_batch, scenario):
     """실제 몸: 불가 여부와 등급제 벌점 값이 D의 패치판과 같다 (00_common.md 5절).
 
-    어깨 벌림 90/120도는 팔 끝이 옆벽을 넘고, 180도(만세)는 체형에 따라 천장에 닿는다.
+    체형 CAPSULE_BODY에서 어깨 벌림 90/120도는 팔 끝이 옆벽을 넘는다 (캡슐 d_out 0.13/0.05 m,
+    메시 0.26/0.18 m). 180도(만세)는 체형에 따라 천장에 닿는다. 몸 모델은 설정을 따른다.
     """
     from airis.sim.patch_baseline import PatchEvaluator
 
-    body, nozzle = BodyParams(), load_nozzles()
+    body, nozzle = CAPSULE_BODY, load_nozzles()
     poses = [PoseParams(shoulder_abduction=90.0), PoseParams(shoulder_abduction=120.0),
              PoseParams(shoulder_abduction=180.0, elbow_flexion=0.0), PoseParams()]
     scores = ev_batch.batch_evaluate([(p, nozzle) for p in poses], body, scenario)
@@ -817,7 +830,7 @@ def _impingement_numpy(points, normals, nozzle, cfg, t=0.0):
 
 def _mannequin_probe(pose: PoseParams, scenario, cfg):
     """실제 마네킹 패치의 조회점 (x = 패치 + δ·n)과 법선."""
-    st = build_body(BodyParams(), pose, scenario)
+    st = capsule_state(pose, scenario)
     n = np.asarray(st.patch_normal, np.float64)
     x = st.patch_pos + cfg["air"]["wall_offset_m"] * n
     return x.astype(np.float32), n.astype(np.float32)
@@ -987,7 +1000,7 @@ def test_fused_run_matches_stepwise(variant, scenario):
         cfg["jet"]["pulse"]["enabled"] = True
     nozzle = load_nozzles()
     poses = [PoseParams(), PoseParams(torso_yaw=90.0, shoulder_abduction=40.0)]
-    states = [build_body(BodyParams(), p, scenario) for p in poses]
+    states = [capsule_state(p, scenario) for p in poses]
 
     ev = ParticleEvaluator(cfg, max_candidates=2, particles_per_candidate=N_DEV,
                            duration_s=DURATION_DEV)
@@ -1047,7 +1060,7 @@ def test_occlusion_matches_patch_evaluator_visibility(scenario):
     cfg = load_physics()
     nozzle = load_nozzles()
     poses = [PoseParams(), PoseParams(torso_yaw=90.0, shoulder_abduction=40.0)]
-    states = [build_body(BodyParams(), p, scenario) for p in poses]
+    states = [capsule_state(p, scenario) for p in poses]
     ev = ParticleEvaluator(cfg, max_candidates=2, particles_per_candidate=2000,
                            duration_s=DURATION_DEV)
     ev_off = ParticleEvaluator(cfg, max_candidates=2, particles_per_candidate=2000,
@@ -1091,7 +1104,7 @@ def test_occlusion_shadowed_patches_never_detach(scenario):
     cfg = load_physics()
     nozzle = load_nozzles()
     poses = [PoseParams(), PoseParams(torso_yaw=90.0)]
-    states = [build_body(BodyParams(), p, scenario) for p in poses]
+    states = [capsule_state(p, scenario) for p in poses]
     detached, hidden_detached, n_hidden = {}, {}, None
     for flag in (True, False):
         ev = ParticleEvaluator(cfg, max_candidates=2, particles_per_candidate=N_DEV,
