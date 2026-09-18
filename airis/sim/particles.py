@@ -5,6 +5,8 @@
 - 난수는 전부 호스트 numpy에서 만들어 필드에 복사한다. GPU 난수는 백엔드마다 달라
   결정론이 깨진다 (`docs/tracks/A_particles.md` 단계 3)
 - 스텝: 이탈 판정 -> 부유 입자 적분 -> 캡슐 충돌/재부착 -> 부스 이탈 제거
+- 제트: 원형 노즐은 00_common.md 4.1, 슬롯 노즐은 4.1b (노즐별 판정은 `jet.slot_mask`)
+- 부스 밖 자세(00_common.md 5절)는 시뮬레이션하지 않고 score = -1.0 (D와 같은 판정 함수)
 
 구현 상태 (A_particles.md 기준)
 - 단계 1~10 완료. 단계 11(성능: 커널 병합), 12(프레임 덤프)는 미구현.
@@ -21,9 +23,10 @@ import numpy as np
 from . import scoring
 from .body import build_body
 from .interface import Evaluator
-from .jet import slot_mask
+from .jet import SLOT_AXIS_PERP_TOL, slot_mask
 from .kernels import ParticleFields, init_taichi, pack_constants
 from .kernels.particle_kernels import PART_TORSO_BACK, PART_TORSO_FRONT
+from .patch_baseline import INFEASIBLE_SCORE, outside_booth
 from .scenario import load_nozzle_layout
 from .types import (
     PART_NAMES, BodyParams, BodyState, EvalResult, NozzleConfig, PoseParams, Scenario,
@@ -107,14 +110,47 @@ class ParticleEvaluator(Evaluator):
                               *, step_callback=None) -> list[EvalResult]:
         """BodyState를 직접 받는 배치 평가. `batch_evaluate`의 본체.
 
-        `step_callback(step, evaluator, n_act)`는 매 스텝 뒤 호출된다 (테스트/디버그용).
-        """
-        n_act = len(states)
-        if n_act != len(poses):
-            raise ValueError("states와 poses 길이가 다르다")
-        if not 0 < n_act <= self.max_candidates:
-            raise ValueError(f"후보 수 {n_act}가 범위 (1..{self.max_candidates}) 밖")
+        부스 밖 자세(00_common.md 5절)는 시뮬레이션하지 않고 score = -1.0,
+        removal 0, extra["infeasible"] = True를 돌려준다. 나머지 후보만 앞쪽 슬롯에
+        채워 시뮬레이션하므로, 불가 후보가 섞여도 가능 후보의 결과는 그대로다
+        (시드가 슬롯이 아니라 후보 내용으로 정해진다).
 
+        `step_callback(step, evaluator, n_act)`는 매 스텝 뒤 호출된다 (테스트/디버그용).
+        `n_act`는 실제로 시뮬레이션하는 (가능) 후보 수다.
+        """
+        n_cand = len(states)
+        if n_cand != len(poses):
+            raise ValueError("states와 poses 길이가 다르다")
+        if n_cand == 0:
+            raise ValueError("후보가 없다")
+
+        feasible = [b for b in range(n_cand)
+                    if not outside_booth(states[b].patch_pos, self.booth)]
+        # 불가 후보는 슬롯을 차지하지 않으므로 한도는 시뮬레이션할 가능 후보 수에만 건다.
+        if len(feasible) > self.max_candidates:
+            raise ValueError(f"가능 후보 {len(feasible)}개 > max_candidates {self.max_candidates}")
+        feasible_set = set(feasible)
+        results: list[EvalResult | None] = [None] * n_cand
+        for b in range(n_cand):
+            if b not in feasible_set:
+                results[b] = EvalResult(
+                    score=INFEASIBLE_SCORE,
+                    removal_by_part=np.zeros(N_PARTS, dtype=np.float32),
+                    total_removal=0.0,
+                    discomfort=scoring.discomfort(poses[b], scenario),
+                    extra={"evaluator": "particle", "infeasible": True},
+                )
+        if feasible:
+            simulated = self._simulate([states[b] for b in feasible],
+                                       [poses[b] for b in feasible],
+                                       nozzle, scenario, step_callback)
+            for b, res in zip(feasible, simulated):
+                results[b] = res
+        return results
+
+    def _simulate(self, states, poses, nozzle, scenario, step_callback) -> list[EvalResult]:
+        """가능 후보 n_act개를 슬롯 0..n_act-1에 올려 한 번에 시뮬레이션한다."""
+        n_act = len(states)
         self._init_candidates(states, poses, nozzle, n_act)
         self._upload_nozzles(nozzle)
 
@@ -144,6 +180,7 @@ class ParticleEvaluator(Evaluator):
                 discomfort=discomfort,
                 extra={
                     "evaluator": "particle",
+                    "infeasible": False,
                     "count_init": init[b].copy(),
                     "count_removed": removed[b].copy(),
                     "n_steps": n_steps,
@@ -170,7 +207,7 @@ class ParticleEvaluator(Evaluator):
 
     def probe_velocity(self, points: np.ndarray, nozzle: NozzleConfig,
                        t: float = 0.0) -> np.ndarray:
-        """Taichi `jet_velocity`를 임의의 점 (P,3)에서 평가 -> (P,3). 단계 4 검증용."""
+        """Taichi `jet_velocity`를 임의의 점 (P,3)에서 평가 -> (P,3). 4.1/4.1b 검증용."""
         self._upload_nozzles(nozzle)
         pts = np.ascontiguousarray(points, dtype=np.float32)
         out = np.zeros_like(pts)
@@ -268,12 +305,6 @@ class ParticleEvaluator(Evaluator):
 
     def _upload_nozzles(self, nozzle: NozzleConfig) -> None:
         m = nozzle.count
-        # TODO(A, ⑤b): 4.1b 슬롯 제트 커널이 들어오면 이 검사를 지운다. 그 전에는 슬롯 노즐을
-        # 원형(4.1)으로 조용히 계산해 틀린 점수를 내지 않도록 막는다.
-        if slot_mask(nozzle).any():
-            raise NotImplementedError(
-                "A 4.1b 커널(⑤b) 미구현: 입자판은 아직 슬롯(평면) 제트를 계산하지 못한다. "
-                "원형 배치는 load_nozzles(layout='layout')로 쓸 수 있다.")
         if m > self.f.M:
             raise ValueError(f"노즐 {m}개 > max_nozzles {self.f.M}")
         pos = np.zeros((self.f.M, 3), np.float32)
@@ -287,10 +318,32 @@ class ParticleEvaluator(Evaluator):
         strength[:m] = nozzle.strengths
         if nozzle.pulse_phase is not None:
             phase[:m] = nozzle.pulse_phase
+
+        # 4.1b 슬롯 노즐 (행 단위 규약은 B의 slot_mask를 그대로 쓴다)
+        is_slot = np.zeros(self.f.M, np.int32)
+        axis = np.zeros((self.f.M, 3), np.float32)
+        length = np.zeros(self.f.M, np.float32)
+        mask = slot_mask(nozzle)
+        if mask.any():
+            if not self.cfg["jet"].get("slot"):
+                raise ValueError("슬롯 노즐이 있는데 physics_cfg에 jet.slot 상수가 없다 (4.1b)")
+            e = np.asarray(nozzle.slot_axis, dtype=np.float64)[mask]
+            e = e / np.linalg.norm(e, axis=1, keepdims=True)
+            perp = np.abs((e * d[mask]).sum(axis=1))
+            if (perp > SLOT_AXIS_PERP_TOL).any():
+                bad = np.flatnonzero(mask)[perp > SLOT_AXIS_PERP_TOL]
+                raise ValueError(f"슬롯 축이 분사 방향에 수직이 아니다 (4.1b e ⊥ d): 노즐 {bad.tolist()}")
+            is_slot[:m] = mask
+            axis[:m][mask] = e
+            length[:m][mask] = np.asarray(nozzle.slot_length, dtype=np.float64)[mask]
+
         self.f.noz_pos.from_numpy(pos)
         self.f.noz_dir.from_numpy(dirs)
         self.f.noz_strength.from_numpy(strength)
         self.f.noz_phase.from_numpy(phase)
+        self.f.noz_slot.from_numpy(is_slot)
+        self.f.noz_axis.from_numpy(axis)
+        self.f.noz_len.from_numpy(length)
         self.f.n_noz[None] = m
 
 

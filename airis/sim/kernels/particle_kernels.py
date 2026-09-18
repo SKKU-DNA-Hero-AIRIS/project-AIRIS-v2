@@ -5,7 +5,8 @@
 numpy 준비와 업로드만 한다.
 
 수식 출처는 전부 `docs/tracks/00_common.md`다.
-- 4.1 자유 제트 속도장  -> `ParticleFields.jet_velocity` (ti.func)
+- 4.1 자유 제트 속도장  -> `ParticleFields.jet_velocity` (ti.func, 원형 노즐)
+- 4.1b 슬롯(평면) 제트 -> `ParticleFields.jet_velocity` (같은 함수, 슬롯 노즐)
 - 4.2 벽면 전단         -> `k_detach`
 - 4.3 이탈 판정         -> `k_detach` (입자별 tau_crit 비교)
 - 4.5 항력              -> `k_advect`
@@ -43,7 +44,11 @@ C_BOOTH_L = 13
 C_BOOTH_W = 14
 C_BOOTH_H = 15
 C_GZ = 16            # 중력 z 성분 (-9.81)
-NUM_CONST = 17
+C_SLOT_H = 17        # jet.slot.height_m (4.1b h)
+C_SLOT_U0 = 18       # jet.slot.exit_velocity_mps (strength 곱하기 전)
+C_SLOT_K = 19        # jet.slot.decay_constant (K_p)
+C_SLOT_SPREAD = 20   # jet.slot.spread_rate
+NUM_CONST = 21
 
 # 부위 인덱스 (types.PART_NAMES 순서). 커널 안에서 컴파일 상수로 쓴다.
 PART_TORSO_FRONT = 1
@@ -147,8 +152,13 @@ class ParticleFields:
         self.noz_dir = ti.Vector.field(3, ti.f32)
         self.noz_strength = ti.field(ti.f32)
         self.noz_phase = ti.field(ti.f32)
+        # 4.1b 슬롯 노즐. noz_slot = 1이면 슬롯, 0이면 원형 (행 단위 규약, jet.slot_mask).
+        self.noz_slot = ti.field(ti.i32)
+        self.noz_axis = ti.Vector.field(3, ti.f32)     # 슬롯 길이 방향 단위 벡터 e (e ⊥ d)
+        self.noz_len = ti.field(ti.f32)                # 슬롯 길이 L
         fb.dense(ti.i, self.M).place(self.noz_pos, self.noz_dir,
-                                     self.noz_strength, self.noz_phase)
+                                     self.noz_strength, self.noz_phase,
+                                     self.noz_slot, self.noz_axis, self.noz_len)
 
         self.count_init = ti.field(ti.i32)
         self.count_removed = ti.field(ti.i32)
@@ -173,30 +183,52 @@ class ParticleFields:
     # ------------------------------------------------------ 4.1 자유 제트 속도장
     @ti.func
     def jet_velocity(self, p, t):
-        """00_common.md 4.1을 그대로. 노즐 M개 기여의 벡터 합."""
+        """00_common.md 4.1(원형) / 4.1b(슬롯)을 그대로. 노즐 M개 기여의 벡터 합.
+
+        노즐마다 `noz_slot`으로 식을 고른다. 두 모델이 한 배치에 섞일 수 있다.
+        """
         u = ti.Vector([0.0, 0.0, 0.0], dt=ti.f32)
         big_d = self.cst[C_JET_D]
-        k_dec = self.cst[C_JET_K]
         spread = self.cst[C_JET_SPREAD]
-        l_core = k_dec * big_d
+        l_core = self.cst[C_JET_K] * big_d                # 4.1  L_c = K·D
+        slot_h = self.cst[C_SLOT_H]
+        slot_spread = self.cst[C_SLOT_SPREAD]
+        slot_core = self.cst[C_SLOT_K] * slot_h           # 4.1b L_c = K_p·h
         for m in range(self.n_noz[None]):
             d = self.noz_dir[m]
             r = p - self.noz_pos[m]
             s = r.dot(d)
             if s > 0.0:                                   # s <= 0 이면 기여 없음
-                rho = (r - s * d).norm()
-                u0 = self.cst[C_JET_U0] * self.noz_strength[m]
-                u_c = u0
-                if s > l_core:
-                    u_c = u0 * l_core / s                 # 코어 밖에서 1/s 감쇠
-                sig = 0.5 * big_d / SQRT2LN2 + spread * s / SQRT2LN2
                 gate = 1.0
                 if self.cst[C_PULSE_ON] > 0.5:
                     ph = t / self.cst[C_PULSE_PERIOD] + self.noz_phase[m]
                     frac = ph - ti.floor(ph)
                     if frac >= self.cst[C_PULSE_DUTY]:
                         gate = 0.0
-                u += (u_c * ti.exp(-rho * rho / (2.0 * sig * sig)) * gate) * d
+                mag = 0.0
+                if self.noz_slot[m] == 1:
+                    # 4.1b 평면 제트: 코어 밖 1/sqrt(s) 감쇠, 슬롯 길이 안은 균일, 끝에서 가우시안
+                    e = self.noz_axis[m]
+                    rho_e = r.dot(e)
+                    rho_n = (r - s * d - rho_e * e).norm()
+                    rho_e_out = ti.max(ti.abs(rho_e) - 0.5 * self.noz_len[m], 0.0)
+                    u0 = self.cst[C_SLOT_U0] * self.noz_strength[m]
+                    u_c = u0
+                    if s > slot_core:
+                        u_c = u0 * ti.sqrt(slot_core / s)
+                    sig = 0.5 * slot_h / SQRT2LN2 + slot_spread * s / SQRT2LN2
+                    mag = u_c * ti.exp(-(rho_n * rho_n + rho_e_out * rho_e_out)
+                                       / (2.0 * sig * sig))
+                else:
+                    # 4.1 원형 제트: 코어 밖 1/s 감쇠, 가우시안 단면
+                    rho = (r - s * d).norm()
+                    u0 = self.cst[C_JET_U0] * self.noz_strength[m]
+                    u_c = u0
+                    if s > l_core:
+                        u_c = u0 * l_core / s
+                    sig = 0.5 * big_d / SQRT2LN2 + spread * s / SQRT2LN2
+                    mag = u_c * ti.exp(-rho * rho / (2.0 * sig * sig))
+                u += (mag * gate) * d
         return u
 
     # ----------------------------------------------------------- 단계 5. 이탈
@@ -342,4 +374,10 @@ def pack_constants(cfg: dict, booth: dict) -> np.ndarray:
     c[C_BOOTH_W] = booth["width_m"]
     c[C_BOOTH_H] = booth["height_m"]
     c[C_GZ] = GRAVITY_Z
+    slot = jet.get("slot")
+    if slot:        # 없으면 0. 슬롯 노즐이 들어오면 호스트(_upload_nozzles)가 막는다.
+        c[C_SLOT_H] = slot["height_m"]
+        c[C_SLOT_U0] = slot["exit_velocity_mps"]
+        c[C_SLOT_K] = slot["decay_constant"]
+        c[C_SLOT_SPREAD] = slot["spread_rate"]
     return c
