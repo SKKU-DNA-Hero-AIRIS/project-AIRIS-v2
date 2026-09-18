@@ -356,10 +356,16 @@ def pose_mesh(asset: HumanMesh | None, body: BodyParams | None, pose: PoseParams
               scenario: Scenario | None = None, booth: Mapping | None = None) -> np.ndarray:
     """자세를 입힌 정점 (V,3), 부스 좌표. `docs/interfaces.md` "airis/sim/human_mesh.py" 시그니처와 같다.
 
-    `asset` 이 None 이면 캐시한 MakeHuman 기본 메시, `body` 가 None 이면 `BodyParams()`.
+    `asset` 이 None 이면 캐시한 MakeHuman 기본 메시, `body` 가 None 이면 `MESH_DEFAULT_BODY`(메시 기본 체형).
     체형 5개를 뼈별 축척으로 맞춘다 (`shape_mesh`). 면은 `asset.faces`."""
     return posed_in_booth(asset if asset is not None else cached_makehuman(),
-                          body if body is not None else BodyParams(), pose, scenario, booth)
+                          body if body is not None else MESH_DEFAULT_BODY, pose, scenario, booth)
+
+
+#: MakeHuman 기본 메시를 키 1.70 m 로 축척해 잰 체형 (관절 중심 정의, 2026-09-18 확정). BodyParams 기본값을
+#: 이 값으로 바꾸는 것은 통합의 types.py PR 이다. 그 전에는 BodyParams() 가 캡슐 시절 값(0.42/0.62/0.85)이다.
+MESH_DEFAULT_BODY = BodyParams(height_m=1.70, shoulder_width_m=0.342, torso_depth_m=0.194,
+                               arm_length_m=0.425, leg_length_m=0.883)
 
 
 #: `docs/interfaces.md` 의 이름

@@ -17,7 +17,8 @@ import numpy as np
 
 from ..sim.human_mesh import *  # noqa: F401,F403  (공개 API 재수출)
 from ..sim.human_mesh import (  # noqa: F401  (테스트·렌더가 쓰는 내부 이름)
-    MAKEHUMAN_DIR, ROOT, HumanMesh, _axis_angle, _default_booth, _rot, load_makehuman, posed_in_booth,
+    MAKEHUMAN_DIR, ROOT, HumanMesh, _axis_angle, _default_booth, _rot, load_makehuman, pose_mesh,
+    posed_in_booth,
 )
 from ..sim.types import BodyParams, PoseParams
 
@@ -88,13 +89,12 @@ def render_preview(out_dir: Path | str, mesh_dir: Path | str = MAKEHUMAN_DIR,
     t_load = time.perf_counter() - t0
     booth = load_nozzle_layout()["booth"]
     sc = load_scenarios()["default"]
-    body = BodyParams()
     info = {"vertices": int(mesh.vertices.shape[0]), "triangles": int(mesh.faces.shape[0]),
             "bones": len(mesh.bone_names), "rest_height_m": round(mesh.height_m, 3),
             "load_s": round(t_load, 2), "files": {}}
     for key, pose in PREVIEW_POSES.items():
         t1 = time.perf_counter()
-        v = posed_in_booth(mesh, body, pose, sc, booth)
+        v = pose_mesh(mesh, None, pose, sc, booth)        # body=None → 메시 기본 체형
         info.setdefault("pose_s", {})[key] = round(time.perf_counter() - t1, 4)
         info.setdefault("top_z_m", {})[key] = round(float(v[:, 2].max()), 3)
         info.setdefault("max_abs_y_m", {})[key] = round(float(np.abs(v[:, 1]).max()), 3)
@@ -103,7 +103,7 @@ def render_preview(out_dir: Path | str, mesh_dir: Path | str = MAKEHUMAN_DIR,
         fig.write_image(path, width=width, height=height)
         info["files"][key] = str(path)
         if key == "a_default":
-            state = build_body(body, pose, sc, patches_per_m2=400)
+            state = build_body(BodyParams(), pose, sc, patches_per_m2=400)   # 캡슐 마네킹 (겹침 비교용)
             fig = figure_from_mesh(v, mesh.faces, overlay_state=state, booth=booth,
                                    title="MakeHuman + 캡슐 마네킹 (반투명) · 기본 자세", camera="정면")
             path = out / "makehuman_overlay_capsule.png"
