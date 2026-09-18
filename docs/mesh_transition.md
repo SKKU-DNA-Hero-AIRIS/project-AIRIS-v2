@@ -17,7 +17,7 @@
 5. **가림(D)**: `open3d.t.geometry.RaycastingScene`(BSD, Windows CPU) 광선-삼각형 교차로 교체. 광선 원점은 노즐 가림점(슬롯 K=3 유지), 대상은 패치 위치, 자기 면(`patch_face`)은 제외. 캡슐 경로는 `body.model: capsule`일 때 폴백으로 유지.
 6. **입자 충돌(A)**: 1차는 뼈 캡슐(`capsules`, 약 30개)로 기존 Taichi 커널 유지. 가림은 D의 `occlusion` 재사용이라 자동으로 메시. SDF 격자 전환은 E5 결과를 보고 결정.
 7. **성능 기준**: 패치판 400/m² 1회 **30 ms → 100 ms**(중앙값, 저부하). 3,000회 최적화 약 5분, 데이터셋 100체형×3시나리오 약 5시간(8 프로세스).
-8. **`BodyParams` 재정의**: 5개 필드를 메시 측정(관절 중심) 기준으로 재정의 — 키, 어깨 관절 간격, 가슴 두께, 어깨→손목, 고관절 높이. 기본값은 B의 메시 `build_body` PR과 같은 시점에 MakeHuman 기본 체형(1.70/0.34/0.22/0.46/0.88)으로 교체(별도 types.py PR). 체형 맞춤은 뼈 길이별 축척(1차) → 모디파이어 타깃(선택). 임산부는 MakeHuman `stomach-pregnant` 타깃(추가 다운로드, B 세션 사용자 승인) 적용. C의 데이터셋 샘플링 범위와 E의 포즈 추정 매핑을 함께 갱신.
+8. **`BodyParams` 재정의**: 5개 필드를 메시 측정(관절 중심) 기준으로 재정의 — 키, 어깨 관절 간격, 가슴 두께, 어깨→손목, 고관절 높이. 정의(관절 중심, 2026-09-18 확정): `shoulder_width_m` = 좌우 upperarm01(상완골 관절) 머리 간격, `torso_depth_m` = breast 뼈 머리 높이(유두선) ±1 cm 몸통 단면의 앞뒤 범위, `arm_length_m` = 상완 + 전완 구간 합(upperarm01→lowerarm01→wrist 머리, 자세 불변. 직선거리는 A자 기본 자세의 팔꿈치 굽힘에 묶여 폐기), `leg_length_m` = 고관절 중심 높이. MakeHuman 기본 체형 측정값 **1.70 / 0.342 / 0.194 / 0.463 / 0.883** = `airis/sim/human_mesh.MESH_DEFAULT_BODY`(메시 경로에서 `body=None`의 해석). **전역 `BodyParams()` 기본값 교체는 5단계에서** 한다 — 지금 바꾸면 main에서 11개(B test_body torso 분할 1, A test_particles outside_booth 1, E test_realtime 포즈 추정·스텁 9)가 깨지므로 B·A·E 테스트 수정과 같은 PR 묶음으로 처리. 체형 맞춤은 뼈 길이별 축척(1차) → 모디파이어 타깃(선택). 임산부는 MakeHuman `stomach-pregnant` 타깃(추가 다운로드, B 세션 사용자 승인) 적용. C의 데이터셋 샘플링 범위와 E의 포즈 추정 매핑을 함께 갱신.
 9. **전환 검증(E5)**: 캡슐판 vs 메시판, 시나리오별 부스 안 자세 300개 Spearman(score·부위별), E2 방식. D 소유 `scripts/compare_bodies.py`. 통과 기준 없음 — 차이를 `docs/experiments.md`에 기록.
 10. **결과 재실행**: 전환 후 C가 E4 → E3 → 데이터셋 순으로 재실행. 캡슐판 E3·데이터셋 결과는 "캡슐판 참고"로 보존.
 
@@ -30,17 +30,17 @@
 | 순서 | 담당 | 내용 | 예상 |
 |---|---|---|---|
 | 0 | 통합 | 이 문서, `types.py` 필드, `interfaces.md`, `00_common.md` §1·§5·§7 | 즉시 |
-| 1 | E | `airis/viz/human_mesh.py`(MakeHuman 전용, 희소 스키닝) + 자산 커밋 + `tests/test_viz.py` | 0.5일 |
+| 1 | E | `airis/viz/human_mesh.py`(MakeHuman 전용, 희소 스키닝) + 자산 커밋 + `tests/test_viz.py` — 완료 #50·#52 | 0.5일 |
 | 2 | B | `airis/sim/human_mesh.py` 이관·확장: BodyParams→뼈 축척, 임산부 타깃, sim 메시 데시메이션, 패치 샘플링(면 중심·법선·면적·부위, 좌우 대칭), 뼈 캡슐, `build_body(model=)` 스위치, 테스트 | 4일 |
 | 3 | D | 메시 레이캐스트 가림(Open3D), 성능 측정(100 ms), `scripts/compare_bodies.py`(E5) | 3일, 2와 병행(가짜 메시로 시작) |
 | 4 | A | 뼈 캡슐 소비 확인, `max_capsules` 조정, 부위 판정, 테스트 | 0.5일 |
-| 5 | B | E5 기록 후 `body.model: mesh` 기본값 전환, BodyParams 기본값 PR(통합) | 0.5일 |
+| 5 | B+통합+A+E | E5 기록 후 `body.model: mesh` 기본값 전환(B), `BodyParams` 전역 기본값 교체(통합 types.py PR), 같은 시점에 B test_body 1·A test_particles 1·E test_realtime 9 수정 PR | 1일 |
 | 6 | C | BodyParams 샘플링 범위 갱신, E4 → E3 → 데이터셋 재실행 | 재실행 1~2일 |
 | 7 | E | `pose_view`·`anim` 메시 렌더, 포즈 추정 BodyParams 매핑 | 1일 |
 
 ## 패치 샘플링 규약 (B, D·A가 소비)
 
-- 패치 = sim 메시 면 위의 점. `patches_per_m2` 밀도로 면적 비례 샘플링(면적이 큰 면은 여러 점, 작은 면은 확률적으로 0~1개). 위치는 면 위, 법선은 면 법선(바깥), 면적은 그 면의 면적을 그 면의 패치 수로 나눈 값.
+- 패치 = sim 메시 면 위의 점. `patches_per_m2` 밀도로 면적 비례 샘플링(면적이 큰 면은 여러 점, 작은 면은 확률적으로 0~1개). 위치는 면 위, 법선은 면 법선(바깥). **패치 면적 = 면 면적 / 기대 패치 수(= 면 면적 × 밀도, 즉 ≈ 1/밀도)**. "실제 패치 수로 나누기"는 패치 없는 면이 빠져 400/m²에서 표면적의 약 30%만 남고 면적² 편향이 생기므로 쓰지 않는다(B 측정).
 - 좌우 대칭: y → −y 대칭 쌍이 되도록 샘플링(#42 규칙 유지). MakeHuman 기본 메시는 좌우 대칭이므로 면 인덱스 대칭 맵을 오프라인에서 만들어 저장.
 - 부위(`PART_NAMES`): 정점 뼈 가중치 최댓값의 뼈 → 부위 매핑(머리·목 → head, 척추·골반 → torso, 상완·전완·손 → arms, 대퇴·하퇴·발 → legs). torso는 면 법선의 몸 전방 성분 부호로 front/back(기존 규칙).
 - 부스 밖 판정은 패치 위치 기준(§5 규칙 그대로).
