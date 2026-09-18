@@ -19,8 +19,7 @@ README 6절 E2, docs/tracks/D_patch_baseline.md 단계 7.
 
 부스 밖 자세(00_common.md 5절)는 샘플링 단계에서 버리고 다시 뽑는다. 규칙에 걸린 자세는 두
 평가기 모두 같은 기하 벌점(−1 − 10·d_out)을 받아 제거율 비교에 정보가 없고, 입자판을 돌릴
-이유도 없다. 버린 수는
-summary.json 의 infeasible_rejected 에 남긴다.
+이유도 없다. 버린 수는 summary.json 의 infeasible_rejected 에 남긴다.
 
 주의: 두 평가기의 score 는 같은 불편도 항(−w·discomfort)을 공유한다. 제거율이 둘 다 0에
 가까우면 score 순위가 불편도만으로 정해져 상관이 1에 가깝게 부풀려진다. 그래서 불편도를
@@ -56,6 +55,7 @@ from airis.sim.scenario import load_physics, load_scenarios     # noqa: E402
 
 POSE_KEYS = [f.name for f in fields(PoseParams)]
 EVALUATORS = ("patch", "particle")
+# 아래 분석·저장 함수는 두 결과 묶음의 이름(names)을 받아 E5(scripts/compare_bodies.py)도 쓴다.
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -178,32 +178,33 @@ def normalized_rank(x: np.ndarray) -> np.ndarray:
     return (rankdata(x, method="average") - 1.0) / (x.size - 1.0)
 
 
-def build_table(poses, res_patch, res_particle, physics) -> dict[str, np.ndarray]:
+def build_table(poses, res_a, res_b, physics, names=EVALUATORS) -> dict[str, np.ndarray]:
+    a_name, b_name = names
     t: dict[str, np.ndarray] = {k: np.array([getattr(p, k) for p in poses]) for k in POSE_KEYS}
-    t["discomfort"] = np.array([r.discomfort for r in res_patch])
-    for name, res in zip(EVALUATORS, (res_patch, res_particle)):
+    t["discomfort"] = np.array([r.discomfort for r in res_a])
+    for name, res in zip(names, (res_a, res_b)):
         t[f"{name}_score"] = np.array([r.score for r in res])
         t[f"{name}_weighted_removal"] = np.array([weighted_removal(r.removal_by_part, physics) for r in res])
         t[f"{name}_total"] = np.array([r.total_removal for r in res])
         for j, part in enumerate(PART_NAMES):
             t[f"{name}_{part}"] = np.array([float(r.removal_by_part[j]) for r in res])
     for metric in ("score", "weighted_removal"):
-        rp = normalized_rank(t[f"patch_{metric}"])
-        rq = normalized_rank(t[f"particle_{metric}"])
-        t[f"patch_rank_{metric}"], t[f"particle_rank_{metric}"] = rp, rq
+        rp = normalized_rank(t[f"{a_name}_{metric}"])
+        rq = normalized_rank(t[f"{b_name}_{metric}"])
+        t[f"{a_name}_rank_{metric}"], t[f"{b_name}_rank_{metric}"] = rp, rq
         t[f"rank_diff_{metric}"] = np.abs(rp - rq)
     return t
 
 
-def correlations(t: dict[str, np.ndarray]) -> dict[str, float | None]:
+def correlations(t: dict[str, np.ndarray], names=EVALUATORS) -> dict[str, float | None]:
     metrics = ["score", "weighted_removal", "total"] + PART_NAMES
-    return {m: spearman(t[f"patch_{m}"], t[f"particle_{m}"]) for m in metrics}
+    return {m: spearman(t[f"{names[0]}_{m}"], t[f"{names[1]}_{m}"]) for m in metrics}
 
 
-def mismatch_order(t: dict[str, np.ndarray]) -> tuple[np.ndarray, str]:
+def mismatch_order(t: dict[str, np.ndarray], names=EVALUATORS) -> tuple[np.ndarray, str]:
     """weighted_removal 순위 차이 기준. 그게 정의되지 않으면(제거율이 상수) score 로 대신한다."""
     for metric in ("weighted_removal", "score"):
-        if np.ptp(t[f"patch_{metric}"]) > 0 and np.ptp(t[f"particle_{metric}"]) > 0:
+        if np.ptp(t[f"{names[0]}_{metric}"]) > 0 and np.ptp(t[f"{names[1]}_{metric}"]) > 0:
             return np.argsort(-t[f"rank_diff_{metric}"], kind="stable"), metric
     return np.arange(len(t["discomfort"])), "none"
 
@@ -219,25 +220,29 @@ def write_csv(path: Path, t: dict[str, np.ndarray], rows: np.ndarray | None = No
             w.writerow([int(i), *(f"{float(v[i]):.6g}" for v in t.values())])
 
 
-def write_mismatch_md(path: Path, t, order: np.ndarray, metric: str, top: int) -> None:
-    lines = [f"# E2 순위 차이 상위 {top}개", "",
+def write_mismatch_md(path: Path, t, order: np.ndarray, metric: str, top: int,
+                      names=EVALUATORS, title: str = "E2") -> None:
+    a, b = names
+    lines = [f"# {title} 순위 차이 상위 {top}개", "",
              f"정렬 기준: `{metric}` 정규화 순위(0=최저, 1=최고)의 차이.", ""]
     for rank, i in enumerate(order[:top], start=1):
         pose = ", ".join(f"{k}={t[k][i]:.1f}" for k in POSE_KEYS)
         lines += [f"## {rank}. idx {int(i)}", "", pose, ""]
         if metric != "none":
-            lines += [f"순위 patch {t[f'patch_rank_{metric}'][i]:.3f} / "
-                      f"particle {t[f'particle_rank_{metric}'][i]:.3f} "
+            lines += [f"순위 {a} {t[f'{a}_rank_{metric}'][i]:.3f} / "
+                      f"{b} {t[f'{b}_rank_{metric}'][i]:.3f} "
                       f"(차이 {t[f'rank_diff_{metric}'][i]:.3f})", ""]
-        lines += ["| 항목 | patch | particle | particle − patch |", "|---|---:|---:|---:|"]
+        lines += [f"| 항목 | {a} | {b} | {b} − {a} |", "|---|---:|---:|---:|"]
         for m in PART_NAMES + ["total", "weighted_removal", "score"]:
-            a, b = t[f"patch_{m}"][i], t[f"particle_{m}"][i]
-            lines.append(f"| {m} | {a:.4f} | {b:.4f} | {b - a:+.4f} |")
+            va, vb = t[f"{a}_{m}"][i], t[f"{b}_{m}"][i]
+            lines.append(f"| {m} | {va:.4f} | {vb:.4f} | {vb - va:+.4f} |")
         lines.append("")
     path.write_text("\n".join(lines), encoding="utf-8")
 
 
-def plot_scatter(path: Path, t, rho: dict) -> None:
+def plot_scatter(path: Path, t, rho: dict, names=EVALUATORS,
+                 labels: tuple[str, str] = ("패치판", "입자판"),
+                 title: str = "E2 패치판 vs 입자판") -> None:
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
@@ -246,14 +251,14 @@ def plot_scatter(path: Path, t, rho: dict) -> None:
     fig, axes = plt.subplots(1, 2, figsize=(10, 4.6))
     for ax, metric, label in zip(axes, ("weighted_removal", "score"),
                                  ("가중 제거율 (불편도 제외)", "score")):
-        x, y = t[f"patch_rank_{metric}"], t[f"particle_rank_{metric}"]
+        x, y = t[f"{names[0]}_rank_{metric}"], t[f"{names[1]}_rank_{metric}"]
         ax.plot([0, 1], [0, 1], color=muted, lw=1, ls="--", zorder=1)
         ax.scatter(x, y, s=14, color=mark, alpha=0.6, edgecolors="white", linewidths=0.4, zorder=2)
         r = rho.get(metric)
         rtxt = "정의 안 됨 (상수)" if r is None else f"{r:.3f}"
         ax.set_title(f"{label}  ·  Spearman ρ = {rtxt}", color=ink, fontsize=10, loc="left")
-        ax.set_xlabel("패치판 순위 (0=최저, 1=최고)", color=muted, fontsize=9)
-        ax.set_ylabel("입자판 순위", color=muted, fontsize=9)
+        ax.set_xlabel(f"{labels[0]} 순위 (0=최저, 1=최고)", color=muted, fontsize=9)
+        ax.set_ylabel(f"{labels[1]} 순위", color=muted, fontsize=9)
         ax.set_xlim(-0.03, 1.03)
         ax.set_ylim(-0.03, 1.03)
         ax.set_aspect("equal")
@@ -261,7 +266,7 @@ def plot_scatter(path: Path, t, rho: dict) -> None:
         ax.tick_params(colors=muted, labelsize=8)
         for s in ax.spines.values():
             s.set_color(grid)
-    fig.suptitle(f"E2 패치판 vs 입자판 (n={len(t['discomfort'])})", color=ink, fontsize=11)
+    fig.suptitle(f"{title} (n={len(t['discomfort'])})", color=ink, fontsize=11)
     fig.tight_layout()
     fig.savefig(path, dpi=130)
     plt.close(fig)
