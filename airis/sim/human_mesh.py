@@ -365,7 +365,7 @@ def pose_mesh(asset: HumanMesh | None, body: BodyParams | None, pose: PoseParams
 #: MakeHuman 기본 메시를 키 1.70 m 로 축척해 잰 체형 (관절 중심 정의, 2026-09-18 확정). BodyParams 기본값을
 #: 이 값으로 바꾸는 것은 통합의 types.py PR 이다. 그 전에는 BodyParams() 가 캡슐 시절 값(0.42/0.62/0.85)이다.
 MESH_DEFAULT_BODY = BodyParams(height_m=1.70, shoulder_width_m=0.342, torso_depth_m=0.194,
-                               arm_length_m=0.425, leg_length_m=0.883)
+                               arm_length_m=0.463, leg_length_m=0.883)
 
 
 #: `docs/interfaces.md` 의 이름
@@ -430,7 +430,8 @@ def measure_body(mesh: HumanMesh) -> dict[str, float]:
     - height_m: 정점 z 범위 (정수리 − 발바닥)
     - shoulder_width_m: 좌우 upperarm01 머리(상완골 관절) 간격
     - torso_depth_m: breast 뼈 머리 높이 ±1 cm 에 있는 몸통 부위 정점의 x 범위 (가슴 두께)
-    - arm_length_m: upperarm01 머리 → wrist 머리 (왼쪽)
+    - arm_length_m: 상완 + 전완 구간 합 (upperarm01 머리 → lowerarm01 머리 → wrist 머리, 왼쪽). 자세 불변이다
+      (직선 거리는 MakeHuman A자 휴지 자세의 팔꿈치 굽힘에 따라 바뀐다). 캡슐 정의·포즈 추정과 같다.
     - leg_length_m: 고관절 중심 z − 발바닥 z
     """
     from .types import PART_NAMES
@@ -443,7 +444,8 @@ def measure_body(mesh: HumanMesh) -> dict[str, float]:
         "height_m": float(np.ptp(v[:, 2])),
         "shoulder_width_m": float(np.linalg.norm(h[mesh.bone("upperarm01.L")] - h[mesh.bone("upperarm01.R")])),
         "torso_depth_m": float(np.ptp(v[band, 0])),
-        "arm_length_m": float(np.linalg.norm(h[mesh.bone("upperarm01.L")] - h[mesh.bone("wrist.L")])),
+        "arm_length_m": float(np.linalg.norm(h[mesh.bone("lowerarm01.L")] - h[mesh.bone("upperarm01.L")])
+                              + np.linalg.norm(h[mesh.bone("wrist.L")] - h[mesh.bone("lowerarm01.L")])),
         "leg_length_m": float(mesh.hip_center[2] - v[:, 2].min()),
     }
 
@@ -494,7 +496,7 @@ def shape_affines(mesh: HumanMesh, body: BodyParams) -> np.ndarray:
          kT = 1 + (1 − kL)·LL0 / (z_neck − z_hip) 이라 다리가 길어진 만큼 몸통이 줄어 키가 H0 로 유지된다.
       3. 목·머리: 몸통이 옮긴 목 밑(neck01 머리)만큼 평행이동 (모양 유지)
       4. 쇄골: 몸통 변환 + 좌우 ky 배 (어깨 관절 간격)
-      5. 팔: 어깨 관절이 옮긴 만큼 평행이동 + 상완·전완을 각자 휴지 축 방향으로 kA 배 (어깨→손목),
+      5. 팔: 어깨 관절이 옮긴 만큼 평행이동 + 상완·전완을 각자 휴지 축 방향으로 같은 kA 배 (구간 합이 kA 배),
          손(wrist·metacarpal·finger)은 평행이동만
     """
     ref = _reference_mesh(mesh)                               # 측정 정의는 원본(고해상도) 메시 기준
@@ -777,7 +779,7 @@ def _fit_capsules(shaped: HumanMesh) -> dict:
     return {"caps": caps, "part": parts, "driver": driver, "vertex_capsule": gid}
 
 
-def build_mesh_body(body: BodyParams, pose: PoseParams, scenario: Scenario,
+def build_mesh_body(body: BodyParams | None, pose: PoseParams, scenario: Scenario,
                     patches_per_m2: float = 2000.0, mesh: SimMesh | None = None) -> "BodyState":
     """MakeHuman sim 메시 몸 → `BodyState` (interfaces.md build_body 메시 계약).
 
@@ -794,6 +796,7 @@ def build_mesh_body(body: BodyParams, pose: PoseParams, scenario: Scenario,
 
     if patches_per_m2 <= 0.0:
         raise ValueError("patches_per_m2 는 양수여야 한다")
+    body = body if body is not None else MESH_DEFAULT_BODY           # 메시 기본 체형 (뼈 축척 항등)
     mesh = mesh if mesh is not None else cached_sim_mesh()
     shaped = shape_mesh(mesh, body, scenario)
     booth = _default_booth()

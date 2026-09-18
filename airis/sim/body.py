@@ -462,12 +462,13 @@ def _configured_body_model() -> str:
     return model
 
 
-def build_body(body: BodyParams, pose: PoseParams, scenario: Scenario,
+def build_body(body: BodyParams | None, pose: PoseParams, scenario: Scenario,
                patches_per_m2: float = 2000.0, model: str | None = None) -> BodyState:
     """체형 + 자세 + 시나리오 → 패치와 캡슐로 표현된 마네킹.
 
     `docs/interfaces.md` 의 build_body 계약을 따른다. `model` 이 None 이면 `configs/physics.yaml`
     `body.model` (`capsule` | `mesh`). `mesh` 는 MakeHuman 사람 메시 (`human_mesh.build_mesh_body`).
+    `body` 가 None 이면 모델의 기본 체형 (캡슐 `BodyParams()`, 메시 `human_mesh.MESH_DEFAULT_BODY`).
     """
     if patches_per_m2 <= 0.0:
         raise ValueError("patches_per_m2 는 양수여야 한다")
@@ -477,6 +478,7 @@ def build_body(body: BodyParams, pose: PoseParams, scenario: Scenario,
         return build_mesh_body(body, pose, scenario, patches_per_m2)
     if model != "capsule":
         raise ValueError(f"model 은 {BODY_MODELS} 중 하나: {model!r}")
+    body = body if body is not None else BodyParams()
 
     joints, dims, r_body = joint_positions(body, pose, scenario)
     segs = _segments(joints, dims, r_body, scenario)

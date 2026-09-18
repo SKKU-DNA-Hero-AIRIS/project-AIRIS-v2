@@ -18,9 +18,9 @@ from airis.sim.types import PART_NAMES, BodyParams, PoseParams
 
 SC = load_scenarios()
 BOOTH = load_nozzle_layout()["booth"]
-MH = BodyParams(1.70, 0.342, 0.194, 0.425, 0.883)          # MakeHuman 기본 체형 (관절 중심 측정)
-BODIES = [MH, BodyParams(1.95, 0.42, 0.26, 0.52, 1.00), BodyParams(1.50, 0.30, 0.16, 0.37, 0.76),
-          BodyParams(1.70, 0.38, 0.22, 0.46, 0.85)]
+MH = BodyParams(1.70, 0.342, 0.194, 0.463, 0.883)          # MakeHuman 기본 체형 (관절 중심 측정)
+BODIES = [MH, BodyParams(1.95, 0.42, 0.26, 0.57, 1.00), BodyParams(1.50, 0.30, 0.16, 0.40, 0.76),
+          BodyParams(1.70, 0.38, 0.22, 0.50, 0.85)]
 FRONT, BACK = PART_NAMES.index("torso_front"), PART_NAMES.index("torso_back")
 MIRROR = np.array([1.0, -1.0, 1.0])
 
@@ -100,7 +100,8 @@ def test_every_weighted_bone_has_a_part(full):
 # 체형 (BodyParams 5개, 관절 중심 정의)
 # ---------------------------------------------------------------------------
 def test_default_makehuman_measurements(full):
-    """MakeHuman 기본 메시를 1.70 m 로 축척한 측정값 = 확정 기본값 (1.70 / 0.342 / 0.194 / 0.425 / 0.883)."""
+    """MakeHuman 기본 메시를 1.70 m 로 축척한 측정값 = 확정 기본값 (1.70 / 0.342 / 0.194 / 0.463 / 0.883)."""
+    assert hm.MESH_DEFAULT_BODY == MH
     m = hm.measure_body(full)
     s = 1.70 / m["height_m"]
     for key, want in dataclasses.asdict(MH).items():
@@ -226,6 +227,15 @@ def test_booth_feasibility_matches_pose():
                          (PoseParams(shoulder_abduction=90.0, elbow_flexion=0.0), False)):
         p = build_body(MH, pose, SC["default"], 400.0, model="mesh").patch_pos
         assert (np.abs(p[:, 1]).max() <= half and p[:, 2].max() <= top) == inside, pose
+
+
+def test_mesh_body_none_uses_mesh_default_body():
+    a = build_body(None, PoseParams(), SC["default"], 400.0, model="mesh")
+    b = build_body(hm.MESH_DEFAULT_BODY, PoseParams(), SC["default"], 400.0, model="mesh")
+    np.testing.assert_array_equal(a.mesh_vertices, b.mesh_vertices)
+    v = hm.pose_mesh(None, None, PoseParams(), SC["default"])
+    np.testing.assert_allclose(v, hm.posed_in_booth(hm.cached_makehuman(), hm.MESH_DEFAULT_BODY, PoseParams(),
+                                                    SC["default"]))
 
 
 def test_body_model_switch_defaults_to_config():
