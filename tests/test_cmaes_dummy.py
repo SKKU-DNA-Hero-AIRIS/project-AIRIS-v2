@@ -4,13 +4,16 @@ import json
 import numpy as np
 import pytest
 
-from airis.optimize.cmaes_runner import INFEASIBLE_SCORE, cma_seed, run_cmaes
+from airis.optimize.cmaes_runner import cma_seed, run_cmaes
 from airis.optimize.dummy import DummyEvaluator
 from airis.optimize.encoding import PoseEncoder
 from airis.sim import BodyParams, PoseParams
 from airis.sim.scenario import load_nozzles, load_scenarios
 
 pytest.importorskip("cma", reason="cma 패키지 필요 (pip install cma)")
+
+#: 부스 밖 벌점의 기준값. 평가기는 −1 − 10·d_out 을 돌려준다 (00_common.md 5절).
+INFEASIBLE_BASE = -1.0
 
 TARGET = PoseParams(
     shoulder_abduction=95.0, shoulder_flexion=30.0, elbow_flexion=20.0,
@@ -97,7 +100,7 @@ class _BoothWallEvaluator(DummyEvaluator):
     def evaluate(self, pose, nozzle, body, scenario):
         result = super().evaluate(pose, nozzle, body, scenario)
         if pose.shoulder_abduction > self.LIMIT:
-            result.score = INFEASIBLE_SCORE - 10.0 * (pose.shoulder_abduction - self.LIMIT) / 180.0
+            result.score = INFEASIBLE_BASE - 10.0 * (pose.shoulder_abduction - self.LIMIT) / 180.0
             result.extra["infeasible"] = True
         return result
 
@@ -124,15 +127,15 @@ def test_infeasible_candidates_excluded_from_best(scenarios, cls):
     assert any(f > 0 for f in fracs), "목표가 불가 구간이라 불가 후보가 나와야 한다"
     assert result.n_infeasible == round(sum(f * 20 for f in fracs))
     assert result.best_pose.shoulder_abduction <= cls.LIMIT
-    assert result.best_score > INFEASIBLE_SCORE
+    assert result.best_score > INFEASIBLE_BASE
     assert not result.best_result.extra.get("infeasible", False)
-    assert all(row["best"] > INFEASIBLE_SCORE for row in result.history)
+    assert all(row["best"] > INFEASIBLE_BASE for row in result.history)
 
 
 class _AlwaysInfeasibleEvaluator(DummyEvaluator):
     def evaluate(self, pose, nozzle, body, scenario):
         result = super().evaluate(pose, nozzle, body, scenario)
-        result.score = INFEASIBLE_SCORE
+        result.score = INFEASIBLE_BASE
         result.extra["infeasible"] = True
         return result
 
@@ -270,7 +273,7 @@ class _YawWallEvaluator(DummyEvaluator):
     def evaluate(self, pose, nozzle, body, scenario):
         result = super().evaluate(pose, nozzle, body, scenario)
         if abs(pose.torso_yaw) > 100:
-            result.score = INFEASIBLE_SCORE - 1.0
+            result.score = INFEASIBLE_BASE - 1.0
             result.extra["infeasible"] = True
         else:
             result.score = pose.torso_yaw / 1000.0
@@ -317,7 +320,7 @@ def test_baseline_all_infeasible_is_marked(scenarios):
                              PoseEncoder(scenario), load_nozzles(), BodyParams(), scenario)
     assert agg["infeasible"]
     assert agg["n_feasible"] == 0
-    assert agg["score"] <= INFEASIBLE_SCORE
+    assert agg["score"] <= INFEASIBLE_BASE
     assert agg["total_removal"] == 0.0
     assert not agg["removal_by_part"].any()
 
