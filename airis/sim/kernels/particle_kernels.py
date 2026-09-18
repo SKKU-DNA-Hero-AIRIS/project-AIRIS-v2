@@ -11,6 +11,9 @@ numpy 준비와 업로드만 한다.
 - 4.2b 충돌 제트 보정  -> `ParticleFields.impingement` (ti.func). 부착 입자의 `k_detach`에만 더한다.
                           부유 입자(`k_advect`)는 자유 제트 그대로 (00_common.md 4.2b 계약)
 - 4.3 이탈 판정         -> `k_detach` (입자별 tau_crit 비교)
+- 가림 (occlusion)      -> 부착 입자의 이탈 판정에서 노즐 m의 기여(자유 제트 + 4.2b)에
+                          D의 `patch_baseline.occlusion` 가시 비율을 곱한다. 부유 입자는 가림 없음
+                          (몸에 부딪히는 것은 캡슐 충돌로 처리된다)
 - 4.5 항력              -> `k_advect`
 
 배치 규약 (`A_particles.md` 단계 2)
@@ -117,11 +120,12 @@ class ParticleFields:
     """단계 2의 데이터 레이아웃. `__init__`에서 고정 할당하고 재사용한다."""
 
     def __init__(self, max_candidates: int, particles_per_candidate: int,
-                 max_capsules: int = 64, max_nozzles: int = 64):
+                 max_capsules: int = 64, max_nozzles: int = 32, max_patches: int = 8192):
         self.B = int(max_candidates)
         self.N = int(particles_per_candidate)
         self.K = int(max_capsules)
         self.M = int(max_nozzles)
+        self.P = int(max_patches)
         bn = self.B * self.N
 
         # FieldsBuilder로 한 트리에 모아 둔다. 암묵적 root를 쓰면 평가기를 여러 개
@@ -138,10 +142,11 @@ class ParticleFields:
         self.state = ti.field(ti.i32)              # 0 부착, 1 부유, 2 제거
         self.part = ti.field(ti.i32)               # 현재 부위 (재부착으로 바뀔 수 있음)
         self.part_init = ti.field(ti.i32)          # 초기 부위. 집계는 이쪽으로 (단계 7)
+        self.patch_idx = ti.field(ti.i32)          # 붙어 있는 패치 번호. -1 = 재부착 (가림 없음)
         fb.dense(ti.i, bn).place(
             self.pos, self.vel, self.normal, self.diam, self.tau_crit,
             self.tau_crit_respawn, self.rand_redep,
-            self.state, self.part, self.part_init,
+            self.state, self.part, self.part_init, self.patch_idx,
         )
 
         self.capsules = ti.field(ti.f32)           # (B, K, 7) = [p0(3), p1(3), r]
@@ -166,6 +171,11 @@ class ParticleFields:
                                      self.noz_strength, self.noz_phase,
                                      self.noz_slot, self.noz_axis, self.noz_len)
 
+        # 가림: 후보 b의 패치 p가 노즐 m에서 보이는 비율 (D의 occlusion 그대로, 0~1).
+        # 입자별 (N, M) 대신 패치 표로 두어 메모리를 줄인다 (패치 수 < 입자 수).
+        self.vis = ti.field(ti.f32)
+        fb.dense(ti.ijk, (self.B, self.P, self.M)).place(self.vis)
+
         self.count_init = ti.field(ti.i32)
         self.count_removed = ti.field(ti.i32)
         fb.dense(ti.ij, (self.B, 5)).place(self.count_init, self.count_removed)
@@ -188,125 +198,136 @@ class ParticleFields:
 
     # ------------------------------------------------------ 4.1 자유 제트 속도장
     @ti.func
-    def jet_velocity(self, p, t):
-        """00_common.md 4.1(원형) / 4.1b(슬롯)을 그대로. 노즐 M개 기여의 벡터 합.
-
-        노즐마다 `noz_slot`으로 식을 고른다. 두 모델이 한 배치에 섞일 수 있다.
-        """
+    def jet_one(self, m, p, t):
+        """노즐 m 하나의 자유 제트 기여. 00_common.md 4.1(원형) / 4.1b(슬롯)을 그대로."""
         u = ti.Vector([0.0, 0.0, 0.0], dt=ti.f32)
-        big_d = self.cst[C_JET_D]
-        spread = self.cst[C_JET_SPREAD]
-        l_core = self.cst[C_JET_K] * big_d                # 4.1  L_c = K·D
-        slot_h = self.cst[C_SLOT_H]
-        slot_spread = self.cst[C_SLOT_SPREAD]
-        slot_core = self.cst[C_SLOT_K] * slot_h           # 4.1b L_c = K_p·h
+        d = self.noz_dir[m]
+        r = p - self.noz_pos[m]
+        s = r.dot(d)
+        if s > 0.0:                                       # s <= 0 이면 기여 없음
+            gate = 1.0
+            if self.cst[C_PULSE_ON] > 0.5:
+                ph = t / self.cst[C_PULSE_PERIOD] + self.noz_phase[m]
+                frac = ph - ti.floor(ph)
+                if frac >= self.cst[C_PULSE_DUTY]:
+                    gate = 0.0
+            mag = 0.0
+            if self.noz_slot[m] == 1:
+                # 4.1b 평면 제트: 코어 밖 1/sqrt(s) 감쇠, 슬롯 길이 안은 균일, 끝에서 가우시안
+                slot_h = self.cst[C_SLOT_H]
+                slot_core = self.cst[C_SLOT_K] * slot_h   # L_c = K_p·h
+                e = self.noz_axis[m]
+                rho_e = r.dot(e)
+                rho_n = (r - s * d - rho_e * e).norm()
+                rho_e_out = ti.max(ti.abs(rho_e) - 0.5 * self.noz_len[m], 0.0)
+                u0 = self.cst[C_SLOT_U0] * self.noz_strength[m]
+                u_c = u0
+                if s > slot_core:
+                    u_c = u0 * ti.sqrt(slot_core / s)
+                sig = 0.5 * slot_h / SQRT2LN2 + self.cst[C_SLOT_SPREAD] * s / SQRT2LN2
+                mag = u_c * ti.exp(-(rho_n * rho_n + rho_e_out * rho_e_out) / (2.0 * sig * sig))
+            else:
+                # 4.1 원형 제트: 코어 밖 1/s 감쇠, 가우시안 단면
+                big_d = self.cst[C_JET_D]
+                l_core = self.cst[C_JET_K] * big_d        # L_c = K·D
+                rho = (r - s * d).norm()
+                u0 = self.cst[C_JET_U0] * self.noz_strength[m]
+                u_c = u0
+                if s > l_core:
+                    u_c = u0 * l_core / s
+                sig = 0.5 * big_d / SQRT2LN2 + self.cst[C_JET_SPREAD] * s / SQRT2LN2
+                mag = u_c * ti.exp(-rho * rho / (2.0 * sig * sig))
+            u = (mag * gate) * d
+        return u
+
+    @ti.func
+    def jet_velocity(self, p, t):
+        """노즐 M개 자유 제트의 벡터 합 (가림 없음). 부유 입자와 검증용 조회가 쓴다."""
+        u = ti.Vector([0.0, 0.0, 0.0], dt=ti.f32)
         for m in range(self.n_noz[None]):
-            d = self.noz_dir[m]
-            r = p - self.noz_pos[m]
-            s = r.dot(d)
-            if s > 0.0:                                   # s <= 0 이면 기여 없음
-                gate = 1.0
-                if self.cst[C_PULSE_ON] > 0.5:
-                    ph = t / self.cst[C_PULSE_PERIOD] + self.noz_phase[m]
-                    frac = ph - ti.floor(ph)
-                    if frac >= self.cst[C_PULSE_DUTY]:
-                        gate = 0.0
-                mag = 0.0
-                if self.noz_slot[m] == 1:
-                    # 4.1b 평면 제트: 코어 밖 1/sqrt(s) 감쇠, 슬롯 길이 안은 균일, 끝에서 가우시안
-                    e = self.noz_axis[m]
-                    rho_e = r.dot(e)
-                    rho_n = (r - s * d - rho_e * e).norm()
-                    rho_e_out = ti.max(ti.abs(rho_e) - 0.5 * self.noz_len[m], 0.0)
-                    u0 = self.cst[C_SLOT_U0] * self.noz_strength[m]
-                    u_c = u0
-                    if s > slot_core:
-                        u_c = u0 * ti.sqrt(slot_core / s)
-                    sig = 0.5 * slot_h / SQRT2LN2 + slot_spread * s / SQRT2LN2
-                    mag = u_c * ti.exp(-(rho_n * rho_n + rho_e_out * rho_e_out)
-                                       / (2.0 * sig * sig))
-                else:
-                    # 4.1 원형 제트: 코어 밖 1/s 감쇠, 가우시안 단면
-                    rho = (r - s * d).norm()
-                    u0 = self.cst[C_JET_U0] * self.noz_strength[m]
-                    u_c = u0
-                    if s > l_core:
-                        u_c = u0 * l_core / s
-                    sig = 0.5 * big_d / SQRT2LN2 + spread * s / SQRT2LN2
-                    mag = u_c * ti.exp(-rho * rho / (2.0 * sig * sig))
-                u += (mag * gate) * d
+            u += self.jet_one(m, p, t)
         return u
 
     # --------------------------------------------- 4.2b 충돌 제트 -> 벽면 제트 보정
     @ti.func
-    def impingement(self, x, n, t):
-        """00_common.md 4.2b를 그대로. 조회점 x, 바깥 단위 법선 n에서 노즐 M개의 w·e_r 합.
+    def imp_one(self, m, x, n, t):
+        """노즐 m 하나의 4.2b 보정 w·e_r. 조회점 x, 바깥 단위 법선 n.
 
-        cosθ = max(−d·n, 0), H = ((x − n_m)·n)/(d·n) > 0인 노즐만 기여한다.
+        cosθ = max(−d·n, 0), H = ((x − n_m)·n)/(d·n) > 0일 때만 기여한다.
         """
         corr = ti.Vector([0.0, 0.0, 0.0], dt=ti.f32)
-        gain = self.cst[C_IMP_K]
-        big_d = self.cst[C_JET_D]
-        l_core = self.cst[C_JET_K] * big_d
-        slot_h = self.cst[C_SLOT_H]
-        slot_core = self.cst[C_SLOT_K] * slot_h
-        for m in range(self.n_noz[None]):
-            d = self.noz_dir[m]
-            cos_t = -d.dot(n)
-            xn = (x - self.noz_pos[m]).dot(n)
-            # d·n = −cosθ < 0 이므로 H = xn/(d·n) > 0 ⇔ xn < 0
-            if cos_t > 0.0 and xn < 0.0:
-                h_ax = -xn / cos_t                                   # H
-                r = x - self.noz_pos[m] - h_ax * d                   # x − c,  c = n_m + H·d
-                r = r - r.dot(n) * n                                 # 접평면 성분
-                gate = 1.0
-                if self.cst[C_PULSE_ON] > 0.5:
-                    ph = t / self.cst[C_PULSE_PERIOD] + self.noz_phase[m]
-                    frac = ph - ti.floor(ph)
-                    if frac >= self.cst[C_PULSE_DUTY]:
-                        gate = 0.0
-                u_h = 0.0
-                sig = 1.0
-                end = 1.0
-                is_slot = self.noz_slot[m] == 1
+        d = self.noz_dir[m]
+        cos_t = -d.dot(n)
+        xn = (x - self.noz_pos[m]).dot(n)
+        # d·n = −cosθ < 0 이므로 H = xn/(d·n) > 0 ⇔ xn < 0
+        if cos_t > 0.0 and xn < 0.0:
+            h_ax = -xn / cos_t                                       # H
+            r = x - self.noz_pos[m] - h_ax * d                       # x − c,  c = n_m + H·d
+            r = r - r.dot(n) * n                                     # 접평면 성분
+            gate = 1.0
+            if self.cst[C_PULSE_ON] > 0.5:
+                ph = t / self.cst[C_PULSE_PERIOD] + self.noz_phase[m]
+                frac = ph - ti.floor(ph)
+                if frac >= self.cst[C_PULSE_DUTY]:
+                    gate = 0.0
+            u_h = 0.0
+            sig = 1.0
+            end = 1.0
+            is_slot = self.noz_slot[m] == 1
+            if is_slot:
+                slot_h = self.cst[C_SLOT_H]
+                slot_core = self.cst[C_SLOT_K] * slot_h
+                u_h = self.cst[C_SLOT_U0] * self.noz_strength[m]
+                if h_ax > slot_core:
+                    u_h = u_h * ti.sqrt(slot_core / h_ax)
+                sig = 0.5 * slot_h / SQRT2LN2 + self.cst[C_SLOT_SPREAD] * h_ax / SQRT2LN2
+                # 선 충돌: 슬롯 축의 접평면 성분 e_t 방향을 r에서 뺀다
+                e = self.noz_axis[m]
+                e_t = e - e.dot(n) * n
+                e_len = e_t.norm()
+                rho_e = 0.0
+                if e_len > 0.0:
+                    e_t = e_t / e_len
+                    rho_e = r.dot(e_t)
+                    r = r - rho_e * e_t
+                rho_e_out = ti.max(ti.abs(rho_e) - 0.5 * self.noz_len[m], 0.0)
+                end = ti.exp(-rho_e_out * rho_e_out / (2.0 * sig * sig))
+            else:
+                big_d = self.cst[C_JET_D]
+                l_core = self.cst[C_JET_K] * big_d
+                u_h = self.cst[C_JET_U0] * self.noz_strength[m]
+                if h_ax > l_core:
+                    u_h = u_h * l_core / h_ax
+                sig = 0.5 * big_d / SQRT2LN2 + self.cst[C_JET_SPREAD] * h_ax / SQRT2LN2
+            rho = r.norm()
+            xi = rho / sig
+            if xi >= IMPINGEMENT_XI_MIN:
+                core = 1.0 - ti.exp(-0.5 * xi * xi)
+                f_shape = core / xi
                 if is_slot:
-                    u_h = self.cst[C_SLOT_U0] * self.noz_strength[m]
-                    if h_ax > slot_core:
-                        u_h = u_h * ti.sqrt(slot_core / h_ax)
-                    sig = 0.5 * slot_h / SQRT2LN2 + self.cst[C_SLOT_SPREAD] * h_ax / SQRT2LN2
-                    # 선 충돌: 슬롯 축의 접평면 성분 e_t 방향을 r에서 뺀다
-                    e = self.noz_axis[m]
-                    e_t = e - e.dot(n) * n
-                    e_len = e_t.norm()
-                    rho_e = 0.0
-                    if e_len > 0.0:
-                        e_t = e_t / e_len
-                        rho_e = r.dot(e_t)
-                        r = r - rho_e * e_t
-                    rho_e_out = ti.max(ti.abs(rho_e) - 0.5 * self.noz_len[m], 0.0)
-                    end = ti.exp(-rho_e_out * rho_e_out / (2.0 * sig * sig))
-                else:
-                    u_h = self.cst[C_JET_U0] * self.noz_strength[m]
-                    if h_ax > l_core:
-                        u_h = u_h * l_core / h_ax
-                    sig = 0.5 * big_d / SQRT2LN2 + self.cst[C_JET_SPREAD] * h_ax / SQRT2LN2
-                rho = r.norm()
-                xi = rho / sig
-                if xi >= IMPINGEMENT_XI_MIN:
-                    core = 1.0 - ti.exp(-0.5 * xi * xi)
-                    f_shape = core / xi
-                    if is_slot:
-                        f_shape = core / ti.sqrt(xi)
-                    w = gain * cos_t * u_h * f_shape * end * gate
-                    corr += (w / rho) * r                            # w · e_r
+                    f_shape = core / ti.sqrt(xi)
+                w = self.cst[C_IMP_K] * cos_t * u_h * f_shape * end * gate
+                corr = (w / rho) * r                                 # w · e_r
         return corr
 
     @ti.func
-    def surface_velocity(self, x, n, t):
-        """부착 입자가 느끼는 공기 속도: 자유 제트(4.1/4.1b) + 켜져 있으면 4.2b 보정."""
-        u = self.jet_velocity(x, t)
-        if self.cst[C_IMP_ON] > 0.5:
-            u += self.impingement(x, n, t)
+    def surface_velocity(self, x, n, t, b, pidx):
+        """부착 입자가 느끼는 공기 속도 = Σ_m vis[b, pidx, m] · (자유 제트_m + 4.2b 보정_m).
+
+        D의 패치판 `u = Σ_m u_mn · visible[m, n]`과 같은 형태. pidx < 0(재부착 입자, 패치 없음)이면
+        가림 없음(vis = 1)으로 본다.
+        """
+        u = ti.Vector([0.0, 0.0, 0.0], dt=ti.f32)
+        imp_on = self.cst[C_IMP_ON] > 0.5
+        for m in range(self.n_noz[None]):
+            w = 1.0
+            if pidx >= 0:
+                w = self.vis[b, pidx, m]
+            if w > 0.0:
+                u_m = self.jet_one(m, x, t)
+                if imp_on:
+                    u_m += self.imp_one(m, x, n, t)
+                u += w * u_m
         return u
 
     # ------------------------------------------------ 입자 하나의 한 스텝 (ti.func)
@@ -319,7 +340,8 @@ class ParticleFields:
     def detach_one(self, i, t):
         if self.state[i] == 0:
             nrm = self.normal[i]
-            u = self.surface_velocity(self.pos[i] + self.cst[C_WALL_OFF] * nrm, nrm, t)
+            u = self.surface_velocity(self.pos[i] + self.cst[C_WALL_OFF] * nrm, nrm, t,
+                                      i // self.N, self.patch_idx[i])
             u_t = u - u.dot(nrm) * nrm                              # 4.2 접선 성분
             tau = 0.5 * self.cst[C_RHO_AIR] * self.cst[C_CF] * u_t.norm_sqr()
             if tau > self.tau_crit[i]:
@@ -379,6 +401,7 @@ class ParticleFields:
                         self.part[i] = cp
                         self.normal[i] = n_hit
                         self.tau_crit[i] = self.tau_crit_respawn[i]
+                        self.patch_idx[i] = -1          # 재부착 자리는 패치가 아니다: 가림 없음
                         v = ti.Vector([0.0, 0.0, 0.0], dt=ti.f32)
                         break
                     v_n = v.dot(n_hit) * n_hit                  # 반사
@@ -479,7 +502,18 @@ class ParticleFields:
         for i in range(n_pts):
             u = self.surface_velocity(
                 ti.Vector([pts[i, 0], pts[i, 1], pts[i, 2]], dt=ti.f32),
-                ti.Vector([nrm[i, 0], nrm[i, 1], nrm[i, 2]], dt=ti.f32), t)
+                ti.Vector([nrm[i, 0], nrm[i, 1], nrm[i, 2]], dt=ti.f32), t, 0, -1)
+            out[i, 0] = u[0]
+            out[i, 1] = u[1]
+            out[i, 2] = u[2]
+
+    @ti.kernel
+    def k_probe_attached(self, out: ti.types.ndarray(), n_act: ti.i32, t: ti.f32):
+        """가림 검증용. 입자 i가 이탈 판정에 쓰는 속도 (가림 포함)를 그대로 뽑는다."""
+        for i in range(n_act * self.N):
+            nrm = self.normal[i]
+            u = self.surface_velocity(self.pos[i] + self.cst[C_WALL_OFF] * nrm, nrm, t,
+                                      i // self.N, self.patch_idx[i])
             out[i, 0] = u[0]
             out[i, 1] = u[1]
             out[i, 2] = u[2]
