@@ -354,8 +354,9 @@ def pose_mesh(asset: HumanMesh | None, body: BodyParams | None, pose: PoseParams
               scenario: Scenario | None = None, booth: Mapping | None = None) -> np.ndarray:
     """자세를 입힌 정점 (V,3), 부스 좌표. `docs/interfaces.md` "airis/sim/human_mesh.py" 시그니처와 같다.
 
-    `asset` 이 None 이면 캐시한 MakeHuman 기본 메시, `body` 가 None 이면 `BodyParams()`(키 1.70 m 균일 축척).
-    면은 `asset.faces`. 체형은 아직 키만 맞춘다 (뼈별 축척·타깃은 B 이관 때)."""
+    `asset` 이 None 이면 캐시한 MakeHuman 기본 메시. `body` 가 None 이면 메시 기본 체형(키 1.70 m 균일 축척.
+    B 이관 뒤에는 `MESH_DEFAULT_BODY` 로 해석한다). 전역 `BodyParams()` 기본값(0.42/0.62/0.85)은 캡슐 시절
+    값이라 메시 체형 축척에 넣지 않는다. 면은 `asset.faces`. 체형은 아직 키만 맞춘다 (뼈별 축척은 B 이관 때)."""
     return posed_in_booth(asset if asset is not None else cached_makehuman(),
                           body if body is not None else BodyParams(), pose, scenario, booth)
 
@@ -430,13 +431,12 @@ def render_preview(out_dir: Path | str, mesh_dir: Path | str = MAKEHUMAN_DIR,
     t_load = time.perf_counter() - t0
     booth = load_nozzle_layout()["booth"]
     sc = load_scenarios()["default"]
-    body = BodyParams()
     info = {"vertices": int(mesh.vertices.shape[0]), "triangles": int(mesh.faces.shape[0]),
             "bones": len(mesh.bone_names), "rest_height_m": round(mesh.height_m, 3),
             "load_s": round(t_load, 2), "files": {}}
     for key, pose in PREVIEW_POSES.items():
         t1 = time.perf_counter()
-        v = posed_in_booth(mesh, body, pose, sc, booth)
+        v = pose_mesh(mesh, None, pose, sc, booth)        # body=None → 메시 기본 체형
         info.setdefault("pose_s", {})[key] = round(time.perf_counter() - t1, 4)
         info.setdefault("top_z_m", {})[key] = round(float(v[:, 2].max()), 3)
         info.setdefault("max_abs_y_m", {})[key] = round(float(np.abs(v[:, 1]).max()), 3)
@@ -445,7 +445,7 @@ def render_preview(out_dir: Path | str, mesh_dir: Path | str = MAKEHUMAN_DIR,
         fig.write_image(path, width=width, height=height)
         info["files"][key] = str(path)
         if key == "a_default":
-            state = build_body(body, pose, sc, patches_per_m2=400)
+            state = build_body(BodyParams(), pose, sc, patches_per_m2=400)   # 캡슐 마네킹 (겹침 비교용)
             fig = figure_from_mesh(v, mesh.faces, overlay_state=state, booth=booth,
                                    title="MakeHuman + 캡슐 마네킹 (반투명) · 기본 자세", camera="정면")
             path = out / "makehuman_overlay_capsule.png"
