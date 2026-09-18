@@ -31,7 +31,9 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--max-evals", type=int, default=3000)
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--popsize", type=int, default=100)
-    ap.add_argument("--sigma0", type=float, default=0.5)
+    ap.add_argument("--sigma0", type=float, default=0.5, help="시작점에 sigma0 가 없을 때의 초기 스텝")
+    ap.add_argument("--starts", default=cli.DEFAULT_STARTS,
+                    help=f"CMA-ES 시작점, 쉼표 구분 (가능: {', '.join(cli.START_PRESETS)}). 예산을 나눠 쓴다")
     ap.add_argument("--tol-stagnation-gens", type=int, default=30)
     ap.add_argument("--patches-per-m2", type=float, default=cli.DEFAULT_PATCHES_PER_M2,
                     help="패치판 표면 패치 밀도 (--evaluator patch 에만 적용)")
@@ -68,6 +70,7 @@ def main(argv: list[str] | None = None) -> int:
         print(str(exc), file=sys.stderr)
         return 3
 
+    starts = cli.parse_starts(args.starts)
     exp_id = explog.new_exp_id(args.tag)
     print(f"[{exp_id}] scenario={scenario.name} evaluator={args.evaluator} "
           f"seed={args.seed} popsize={args.popsize} max_evals={args.max_evals} "
@@ -81,6 +84,7 @@ def main(argv: list[str] | None = None) -> int:
         popsize=args.popsize,
         sigma0=args.sigma0,
         tol_stagnation_gens=args.tol_stagnation_gens,
+        starts=starts,
         log_dir=args.log_dir,
         exp_id=exp_id,
     )
@@ -109,6 +113,8 @@ def main(argv: list[str] | None = None) -> int:
     print(cli.format_pose_table(result.best_pose, scenario, result.free_keys))
     print()
     print(cli.format_removal_table(result.best_result))
+    print()
+    print(cli.format_starts_table(result.per_start))
     print()
     print(f"best_score   {result.best_score:.6f}")
     print(f"평가 횟수    {result.n_evals} ({len(result.history)} 세대)")
