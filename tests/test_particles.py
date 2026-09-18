@@ -30,7 +30,8 @@ import pytest
 
 ti = pytest.importorskip("taichi")
 
-from airis.sim.jet import slot_mask, velocity_field  # noqa: E402
+from airis.sim.jet import slot_mask, velocity_field, velocity_field_per_nozzle  # noqa: E402
+from airis.sim.patch_baseline import occlusion  # noqa: E402
 from airis.sim import scoring  # noqa: E402
 from airis.sim.body import build_body  # noqa: E402
 from airis.sim.particles import ParticleEvaluator  # noqa: E402
@@ -1008,3 +1009,106 @@ def test_fused_run_matches_stepwise(variant, scenario):
             np.testing.assert_array_equal(pos, ref_pos)
     finally:
         ev.destroy()
+
+
+# ------------------------------------------------------------ 가림 (occlusion)
+def _occluded_reference(ev, states, pidx, nozzle, cfg):
+    """D 패치판과 같은 식: u = Σ_m occlusion[m, 패치] · u_m (B의 노즐별 속도, 4.2b 포함).
+
+    반환: (n·N, 3) 기준 속도와 합산 크기 척도 Σ_m w·|u_m| (상쇄 판정용).
+    """
+    n_all = ev.N * len(states)
+    pos = ev._h["pos"][:n_all].astype(np.float64)
+    nrm = ev._h["normal"][:n_all].astype(np.float64)
+    x = pos + cfg["air"]["wall_offset_m"] * nrm
+    ref = np.zeros((n_all, 3))
+    scale = np.zeros(n_all)
+    for b, st in enumerate(states):
+        sl = slice(b * ev.N, (b + 1) * ev.N)
+        u_m = velocity_field_per_nozzle(x[sl], nozzle, 0.0, cfg,
+                                        surface_normals=nrm[sl]).astype(np.float64)   # (M,P,3)
+        w = occlusion(st, nozzle, cfg)[:, pidx[sl]]                                   # (M,P)
+        ref[sl] = np.einsum("mpk,mp->pk", u_m, w)
+        scale[sl] = np.einsum("mp,mp->p", np.linalg.norm(u_m, axis=2), w)
+    return ref, scale
+
+
+def test_occlusion_matches_patch_evaluator_visibility(scenario):
+    """부착 입자의 이탈 판정 속도 = Σ_m occlusion[m, 소속 패치] · (자유 제트 + 4.2b)_m.
+
+    D의 `patch_baseline.occlusion` 배열을 입자별 소속 패치로 그대로 읽는지 본다. 가림을 끄면
+    B의 `velocity_field(..., surface_normals=)`와 같다.
+
+    허용치: |Δu| ≤ 1e-4·|u| + 1e-5·Σ_m w·|u_m|. 좌우 벽의 대칭 노즐이 서로 상쇄해 합 |u|가
+    거의 0인 점(거울 대칭 패치 격자에서 1e-7 m/s까지)에서는 상대 오차가 뜻이 없다. 노즐 M개를
+    float32로 더하는 누적 오차는 대략 M·eps·Σ_m w·|u_m| (M = 12면 약 7e-7·Σ)이므로, 합산 크기에
+    비례하는 절대 항을 그보다 넉넉히 두고 상대 기준 1e-4는 그대로 유지한다.
+    """
+    cfg = load_physics()
+    nozzle = load_nozzles()
+    poses = [PoseParams(), PoseParams(torso_yaw=90.0, shoulder_abduction=40.0)]
+    states = [build_body(BodyParams(), p, scenario) for p in poses]
+    ev = ParticleEvaluator(cfg, max_candidates=2, particles_per_candidate=2000,
+                           duration_s=DURATION_DEV)
+    ev_off = ParticleEvaluator(cfg, max_candidates=2, particles_per_candidate=2000,
+                               duration_s=DURATION_DEV, occlusion=False)
+    try:
+        vel, pidx = ev.probe_attached_velocity(states, poses, nozzle)
+        vel_off, pidx_off = ev_off.probe_attached_velocity(states, poses, nozzle)
+        ref, scale = _occluded_reference(ev, states, pidx, nozzle, cfg)
+        pos = ev_off._h["pos"][:4000].astype(np.float64)
+        nrm = ev_off._h["normal"][:4000].astype(np.float64)
+    finally:
+        ev.destroy()
+        ev_off.destroy()
+
+    np.testing.assert_array_equal(pidx, pidx_off)
+    err = np.linalg.norm(vel.astype(np.float64) - ref, axis=1)
+    bound = 1e-4 * np.linalg.norm(ref, axis=1) + 1e-5 * scale
+    worst = int(np.argmax(err / np.maximum(bound, 1e-300)))
+    assert np.all(err <= bound), (
+        f"가림 적용 속도: 점 {worst}에서 |Δu| {err[worst]:.3e} > 허용 {bound[worst]:.3e} "
+        f"(|u| {np.linalg.norm(ref[worst]):.3e}, Σw|u_m| {scale[worst]:.3e})")
+
+    x_off = pos + cfg["air"]["wall_offset_m"] * nrm
+    free = velocity_field(x_off, nozzle, 0.0, cfg, surface_normals=nrm).astype(np.float64)
+    free_scale = np.linalg.norm(velocity_field_per_nozzle(
+        x_off, nozzle, 0.0, cfg, surface_normals=nrm).astype(np.float64), axis=2).sum(axis=0)
+    err_off = np.linalg.norm(vel_off.astype(np.float64) - free, axis=1)
+    assert np.all(err_off <= 1e-4 * np.linalg.norm(free, axis=1) + 1e-5 * free_scale)
+    # 가림이 실제로 무언가를 가린다 (공허하지 않다)
+    assert np.linalg.norm(vel_off - vel, axis=1).max() > 1.0
+
+
+def test_occlusion_shadowed_patches_never_detach(scenario):
+    """가림을 켜면 모든 노즐에서 완전히 가린 패치(occlusion 전부 0)의 입자는 이탈하지 않는다.
+    가림을 끄면 그 입자 일부가 이탈하고, 전체 이탈도 가림을 켤 때 더 적다.
+
+    ("몸통 뒤 이탈이 준다"는 반드시 성립하지 않는다: 가림 없이는 양쪽 벽의 마주 보는 제트가
+    몸통 뒤에서 서로 상쇄되는데, 가림이 한쪽을 지우면 남은 쪽 때문에 접선 속도가 커질 수 있다.
+    기본 자세에서 torso_back 이탈이 가림 끔 14 -> 켬 23으로 늘었다. PR 본문 참고.)
+    """
+    cfg = load_physics()
+    nozzle = load_nozzles()
+    poses = [PoseParams(), PoseParams(torso_yaw=90.0)]
+    states = [build_body(BodyParams(), p, scenario) for p in poses]
+    detached, hidden_detached, n_hidden = {}, {}, None
+    for flag in (True, False):
+        ev = ParticleEvaluator(cfg, max_candidates=2, particles_per_candidate=N_DEV,
+                               duration_s=DURATION_DEV, occlusion=flag)
+        try:
+            ev.batch_evaluate_states(states, poses, nozzle, scenario)
+            moved = ev.f.state.to_numpy()[:2 * N_DEV] != 0
+            pidx = ev._h["patch_idx"][:2 * N_DEV]
+        finally:
+            ev.destroy()
+        hidden = np.concatenate([
+            occlusion(st, nozzle, cfg)[:, pidx[b * N_DEV:(b + 1) * N_DEV]].max(axis=0) == 0.0
+            for b, st in enumerate(states)])
+        n_hidden = int(hidden.sum())
+        detached[flag] = int(moved.sum())
+        hidden_detached[flag] = int((moved & hidden).sum())
+    assert n_hidden > 100, "완전히 가린 패치의 입자가 거의 없으면 공허한 검사"
+    assert hidden_detached[True] == 0, hidden_detached
+    assert hidden_detached[False] > 0, hidden_detached
+    assert detached[True] < detached[False], detached

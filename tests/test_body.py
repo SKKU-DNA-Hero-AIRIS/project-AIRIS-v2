@@ -255,3 +255,54 @@ def _timed(fn) -> float:
     t0 = time.perf_counter()
     fn()
     return time.perf_counter() - t0
+
+
+# ---------------------------------------------------------------------------
+# 좌우 거울 대칭 (C 발견: 패치 격자가 y 거울 대칭이 아니어서 yaw ±θ 점수가 격자 잡음만큼 달랐다)
+# ---------------------------------------------------------------------------
+_MIRROR = np.array([1.0, -1.0, 1.0])
+_MIRROR_POSES = [
+    PoseParams(torso_yaw=45.0),
+    PoseParams(torso_yaw=45.0, shoulder_abduction=35.0, shoulder_flexion=40.0, elbow_flexion=60.0,
+               torso_pitch=10.0, hip_flexion=15.0, knee_flexion=20.0),
+    PoseParams(torso_yaw=-30.0, shoulder_abduction=160.0),
+]
+
+
+def _mirror_pairs(a: BodyState, b: BodyState) -> np.ndarray:
+    """a 의 각 패치에 대해 y 거울상 b 에서 가장 가까운 패치 인덱스와 거리."""
+    from scipy.spatial import cKDTree
+    dist, idx = cKDTree(b.patch_pos.astype(np.float64) * _MIRROR).query(a.patch_pos.astype(np.float64))
+    return dist, idx
+
+
+@pytest.mark.parametrize("scenario", ["default", "wheelchair"])
+@pytest.mark.parametrize("patches_per_m2", [400.0, 2000.0])
+@pytest.mark.parametrize("pose", _MIRROR_POSES, ids=["yaw45", "mixed", "arms_up"])
+def test_patches_are_mirror_symmetric_under_yaw_flip(scenario, patches_per_m2, pose):
+    """build_body(yaw = θ) 를 y 로 반사하면 build_body(yaw = −θ) 와 패치 단위로 일치한다 (1e−6 m).
+
+    마네킹은 부스 중심선 y = 0 에 서 있고 좌우 관절 부호가 거울 관계라, 패치 격자도 거울이어야
+    yaw ±θ 평가가 격자 잡음 없이 같아진다. 위치·법선·면적·부위를 짝지어 비교한다.
+    """
+    import dataclasses
+    sc = SCENARIOS[scenario]
+    a = build_body(BodyParams(), pose, sc, patches_per_m2=patches_per_m2)
+    b = build_body(BodyParams(), dataclasses.replace(pose, torso_yaw=-pose.torso_yaw), sc,
+                   patches_per_m2=patches_per_m2)
+    assert a.patch_pos.shape == b.patch_pos.shape
+    dist, idx = _mirror_pairs(a, b)
+    assert dist.max() < 1e-6
+    assert len(np.unique(idx)) == len(idx)                                   # 일대일
+    np.testing.assert_allclose(a.patch_normal, b.patch_normal[idx] * _MIRROR, atol=1e-6)
+    np.testing.assert_allclose(a.patch_area, b.patch_area[idx], rtol=1e-6)
+    np.testing.assert_array_equal(a.patch_part, b.patch_part[idx])
+
+
+@pytest.mark.parametrize("patches_per_m2", [400.0, 2000.0])
+def test_zero_yaw_body_is_its_own_mirror(patches_per_m2):
+    """yaw 0 이면 패치 집합이 y → −y 에 대해 자기 자신과 일치한다."""
+    a = build_body(BodyParams(), PoseParams(), SCENARIOS["default"], patches_per_m2=patches_per_m2)
+    dist, idx = _mirror_pairs(a, a)
+    assert dist.max() < 1e-6
+    assert len(np.unique(idx)) == len(idx)
