@@ -3,12 +3,21 @@
 체형을 시드 고정으로 샘플링하고, 체형 × 시나리오마다 CMA-ES(두 시작점)로 최적 자세를 찾아
 parquet 한 행으로 남긴다.
 
-체형 분포 (C_optimize.md 단계 9):
-    height_m          N(1.68, 0.09), clip [1.45, 1.95]
-    shoulder_width_m  0.245·height + N(0, 0.015)
-    torso_depth_m     0.13·height  + N(0, 0.015)
-    arm_length_m      0.365·height + N(0, 0.02)
-    leg_length_m      0.50·height  + N(0, 0.025)
+체형 분포 (C_optimize.md 단계 9). 키는 두 몸 모델 공통 N(1.68, 0.09), clip [1.45, 1.95].
+나머지 4개는 `비율·height + N(0, σ)` 이고 몸 모델(configs/physics.yaml body.model)마다 정의가 다르다.
+
+    capsule (캡슐 마네킹 시절 정의)       비율     σ
+      shoulder_width_m                    0.245    0.015
+      torso_depth_m                       0.13     0.015
+      arm_length_m                        0.365    0.02
+      leg_length_m                        0.50     0.025
+    mesh (관절 중심 정의, docs/mesh_transition.md 8번; 비율 = human_mesh.MESH_DEFAULT_BODY / 1.70,
+          σ = capsule σ 를 같은 변동계수로 옮긴 값)
+      shoulder_width_m  어깨 관절 간격     0.2012   0.012
+      torso_depth_m     유두선 가슴 두께   0.1141   0.013
+      arm_length_m      상완 + 전완        0.2724   0.015
+      leg_length_m      고관절 높이        0.5194   0.026
+    두 모델은 같은 난수열을 쓰므로 같은 시드의 i 번 체형은 키가 같다.
 
 열 (interfaces.md 스키마 + 회귀 계약 요구):
     body_idx, body_*                      체형 번호와 BodyParams 필드
@@ -20,7 +29,8 @@ parquet 한 행으로 남긴다.
     hands_up_feasible                     이 체형에서 만세 기준 자세(B2)가 부스 안인가 (큰 체형은 천장 2.15 m 에 걸린다)
     score, total_removal, discomfort      best 자세의 평가값
     n_infeasible, elapsed_s
-    nozzle_layout_hash, physics_hash, exp_id, commit, seed, max_evals, popsize, patches_per_m2, body_seed
+    nozzle_layout_hash, physics_hash, exp_id, commit, seed, max_evals, popsize, patches_per_m2, body_seed,
+    body_model                            체형 샘플링·몸 생성에 쓴 몸 모델 (capsule | mesh)
 
 재개: 출력 parquet 이 있으면 (body_idx, scenario) 키가 있는 작업을 건너뛴다. 설정 해시·체형 시드가 다르면
 섞지 않고 멈춘다. flush_every 행마다 파일 전체를 임시 파일에 다시 쓰고 바꿔 넣는다.
@@ -43,25 +53,47 @@ KEY_COLS = ("body_idx", "scenario")
 
 #: 이 값들이 다르면 이어 쓰지 않는다 (다른 물리 기준·다른 탐색 설정의 행이 섞인다).
 CONSISTENCY_COLS = ("nozzle_layout_hash", "physics_hash", "body_seed", "max_evals", "popsize",
-                    "patches_per_m2", "evaluator")
+                    "patches_per_m2", "evaluator", "body_model")
+
+#: 몸 모델별 체형 분포: 필드 → (키 대비 비율, 잡음 표준편차 m). 위 모듈 설명 참고.
+BODY_DISTRIBUTIONS: dict[str, dict[str, tuple[float, float]]] = {
+    "capsule": {
+        "shoulder_width_m": (0.245, 0.015),
+        "torso_depth_m": (0.13, 0.015),
+        "arm_length_m": (0.365, 0.02),
+        "leg_length_m": (0.50, 0.025),
+    },
+    "mesh": {
+        "shoulder_width_m": (0.342 / 1.70, 0.012),
+        "torso_depth_m": (0.194 / 1.70, 0.013),
+        "arm_length_m": (0.463 / 1.70, 0.015),
+        "leg_length_m": (0.883 / 1.70, 0.026),
+    },
+}
 
 
-def sample_bodies(n: int, seed: int) -> list[BodyParams]:
-    """시드 고정 체형 샘플러. 같은 (n, seed) 면 같은 목록, n 을 늘리면 앞부분은 그대로다."""
+def sample_bodies(n: int, seed: int, model: str = "capsule") -> list[BodyParams]:
+    """시드 고정 체형 샘플러. 같은 (n, seed, model) 이면 같은 목록, n 을 늘리면 앞부분은 그대로다."""
+    if model not in BODY_DISTRIBUTIONS:
+        raise ValueError(f"몸 모델은 {sorted(BODY_DISTRIBUTIONS)} 중 하나: {model!r}")
+    dist = BODY_DISTRIBUTIONS[model]
     rng = np.random.default_rng(seed)
     bodies = []
     for _ in range(n):
         # 체형마다 난수 5개를 같은 순서로 뽑아 n 에 무관하게 앞부분이 고정되게 한다.
         z = rng.standard_normal(5)
         height = float(np.clip(1.68 + 0.09 * z[0], 1.45, 1.95))
-        bodies.append(BodyParams(
-            height_m=height,
-            shoulder_width_m=0.245 * height + 0.015 * float(z[1]),
-            torso_depth_m=0.13 * height + 0.015 * float(z[2]),
-            arm_length_m=0.365 * height + 0.02 * float(z[3]),
-            leg_length_m=0.50 * height + 0.025 * float(z[4]),
-        ))
+        values = {key: ratio * height + sigma * float(z[i + 1])
+                  for i, (key, (ratio, sigma)) in enumerate(dist.items())}
+        bodies.append(BodyParams(height_m=height, **values))
     return bodies
+
+
+def configured_body_model() -> str:
+    """configs/physics.yaml 의 body.model (없으면 capsule). 평가기의 build_body 와 같은 값을 읽는다."""
+    from airis.sim.scenario import load_physics
+
+    return str(load_physics().get("body", {}).get("model", "capsule"))
 
 
 @dataclass(frozen=True)
@@ -74,6 +106,8 @@ class DatasetConfig:
     seed: int = 0                 # CMA-ES 시드 기준값. 작업 시드 = seed·100000 + body_idx
     body_seed: int = 0
     dataset_id: str = "ds"
+    #: 체형 분포의 몸 모델. None 이면 physics.yaml body.model. 평가기가 만드는 몸과 달라지면 거부한다.
+    body_model: str | None = None
 
 
 # ---------- 작업자 (프로세스마다 평가기 캐시) ----------
@@ -179,6 +213,11 @@ def build_dataset(
     from . import cli, explog
 
     out_path = Path(out_path)
+    body_model = configured_body_model()
+    if cfg.body_model is not None and cfg.body_model != body_model:
+        raise ValueError(
+            f"체형 분포 몸 모델({cfg.body_model})이 physics.yaml body.model({body_model})과 다르다. "
+            f"평가기는 physics.yaml 의 몸으로 평가하므로 섞지 않는다.")
     nozzle, _ = cli.resolve_nozzles()
     stamp = {
         "nozzle_layout_hash": cli.nozzle_hash(nozzle),
@@ -189,11 +228,14 @@ def build_dataset(
         "popsize": cfg.popsize,
         "patches_per_m2": cfg.patches_per_m2,
         "evaluator": cfg.evaluator,
+        "body_model": body_model,
     }
 
     existing = _read(out_path)
     done: set = set()
     if existing is not None and len(existing):
+        if "body_model" not in existing.columns:        # body_model 열 이전 파일은 캡슐판이다
+            existing = existing.assign(body_model="capsule")
         for col in CONSISTENCY_COLS:
             vals = set(existing[col].astype(str))
             if vals != {str(stamp[col])}:
@@ -202,10 +244,10 @@ def build_dataset(
                     f"다른 파일로 만들거나 기존 파일을 옮겨라.")
         done = set(zip(existing["body_idx"].astype(int), existing["scenario"].astype(str)))
 
-    bodies = sample_bodies(n_bodies, cfg.body_seed)
+    bodies = sample_bodies(n_bodies, cfg.body_seed, body_model)
     tasks = [(i, asdict(b), s) for i, b in enumerate(bodies) for s in scenarios if (i, s) not in done]
     n_skipped = n_bodies * len(scenarios) - len(tasks)
-    log(f"[dataset] {out_path.name}: 작업 {len(tasks)}개 (건너뜀 {n_skipped}), 프로세스 {processes}")
+    log(f"[dataset] {out_path.name}: 몸 {body_model}, 작업 {len(tasks)}개 (건너뜀 {n_skipped}), 프로세스 {processes}")
 
     frames = [existing] if existing is not None else []
     pending: list[dict] = []

@@ -108,3 +108,52 @@ def test_run_dataset_script(tmp_path):
     assert out.exists() and (tmp_path / "s_height_bins.csv").exists()
     assert main(["--evaluator", "dummy", "--n-bodies", "2", "--scenarios", "default",
                  "--max-evals", "60", "--popsize", "10", "--out", str(out)]) == 2
+
+
+def test_mesh_distribution_matches_mesh_default_body():
+    """메시 분포의 비율은 MakeHuman 기본 체형(MESH_DEFAULT_BODY)을 키 1.70 으로 나눈 값이다."""
+    from airis.sim.human_mesh import MESH_DEFAULT_BODY
+
+    for key, (ratio, sigma) in dataset.BODY_DISTRIBUTIONS["mesh"].items():
+        assert ratio * MESH_DEFAULT_BODY.height_m == pytest.approx(getattr(MESH_DEFAULT_BODY, key))
+        cap_ratio, cap_sigma = dataset.BODY_DISTRIBUTIONS["capsule"][key]
+        # 변동계수(σ / 평균)를 캡슐 분포와 비슷하게 유지한다.
+        assert sigma / ratio == pytest.approx(cap_sigma / cap_ratio, rel=0.05)
+
+
+def test_sample_bodies_mesh_model():
+    cap = dataset.sample_bodies(2000, seed=0)
+    mesh = dataset.sample_bodies(2000, seed=0, model="mesh")
+    assert [b.height_m for b in cap] == [b.height_m for b in mesh], "같은 시드면 키가 같다"
+    h = np.array([b.height_m for b in mesh])
+    arm = np.array([b.arm_length_m for b in mesh])
+    assert (arm - 0.463 / 1.70 * h).std() == pytest.approx(0.015, abs=0.002)
+    assert np.mean([b.shoulder_width_m for b in mesh]) == pytest.approx(0.342 / 1.70 * h.mean(), abs=0.002)
+    with pytest.raises(ValueError):
+        dataset.sample_bodies(1, seed=0, model="stick")
+
+
+def test_build_dataset_stamps_and_checks_body_model(tmp_path, monkeypatch):
+    out = tmp_path / "ds.parquet"
+    dataset.build_dataset(out, n_bodies=1, scenarios=["default"], cfg=SMALL, log=lambda *_: None)
+    assert set(pd.read_parquet(out)["body_model"]) == {"capsule"}
+
+    # 평가기(physics.yaml)와 다른 몸 모델 분포는 거부한다.
+    mesh_cfg = dataset.DatasetConfig(evaluator="dummy", max_evals=40, popsize=10, body_model="mesh")
+    with pytest.raises(ValueError, match="body.model"):
+        dataset.build_dataset(tmp_path / "m.parquet", n_bodies=1, scenarios=["default"], cfg=mesh_cfg,
+                              log=lambda *_: None)
+
+    # physics 가 mesh 로 바뀐 뒤에는 캡슐판 파일에 이어 쓰지 않는다.
+    monkeypatch.setattr(dataset, "configured_body_model", lambda: "mesh")
+    with pytest.raises(ValueError, match="body_model"):
+        dataset.build_dataset(out, n_bodies=2, scenarios=["default"], cfg=SMALL, log=lambda *_: None)
+
+
+def test_legacy_file_without_body_model_is_capsule(tmp_path):
+    out = tmp_path / "old.parquet"
+    dataset.build_dataset(out, n_bodies=1, scenarios=["default"], cfg=SMALL, log=lambda *_: None)
+    df = pd.read_parquet(out).drop(columns=["body_model"])
+    df.to_parquet(out, index=False)
+    info = dataset.build_dataset(out, n_bodies=2, scenarios=["default"], cfg=SMALL, log=lambda *_: None)
+    assert info["n_new"] == 1
