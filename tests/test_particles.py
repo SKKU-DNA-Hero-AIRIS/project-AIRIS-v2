@@ -177,7 +177,9 @@ def ev_single():
 
 
 POSE_A = PoseParams()                                                  # 캡슐 1개
-POSE_B = PoseParams(shoulder_abduction=90.0, torso_pitch=15.0)        # 기울임 + 팔, 캡슐 2개
+# 기울임 + 팔, 캡슐 2개. 기울기를 크게 하면 몸통이 스치는 제트에서 벗어나 제거가 0이 되어
+# (tau_med 0.125 Pa 기준 15도에서 0) 격리 테스트가 공허해진다. 3도에서 A와 제거 개수가 다르다.
+POSE_B = PoseParams(shoulder_abduction=90.0, torso_pitch=3.0)
 
 
 def _assert_same(r1, r2):
