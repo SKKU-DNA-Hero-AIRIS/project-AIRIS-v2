@@ -15,7 +15,17 @@ PART_NAMES = ["head", "torso_front", "torso_back", "arms", "legs"]
 
 @dataclass
 class BodyParams:
-    """체형. 포즈 추정에서 추정하거나 데이터셋 생성 시 샘플링."""
+    """체형. 포즈 추정에서 추정하거나 데이터셋 생성 시 샘플링.
+
+    메시 몸(docs/mesh_transition.md) 기준 정의. 모두 관절 중심 기준 m.
+    - height_m: 키 (정수리 − 발바닥)
+    - shoulder_width_m: 좌우 어깨 관절 간격
+    - torso_depth_m: 가슴 두께 (앞뒤)
+    - arm_length_m: 어깨 관절 → 손목 관절
+    - leg_length_m: 고관절 높이 (고관절 중심 − 발바닥)
+    기본값은 캡슐 마네킹 시절 값이다. B의 메시 build_body PR에서 MakeHuman 기본 체형
+    (1.70 / 0.34 / 0.22 / 0.46 / 0.88) 으로 바꾼다 (별도 types.py PR).
+    """
     height_m: float = 1.70
     shoulder_width_m: float = 0.42
     torso_depth_m: float = 0.22
@@ -82,8 +92,16 @@ class BodyState:
     capsules: np.ndarray             # (K, 7) = [x0,y0,z0, x1,y1,z1, r]
     # 캡슐 부위. -1 = 가림 전용 (휠체어 프레임 등, 패치 없음). A의 재부착 부위 판정에 사용.
     capsule_part: np.ndarray | None = None   # (K,) int
-    # 패치가 속한 캡슐 인덱스. D의 가림 판정이 자기 캡슐을 제외할 때 사용.
+    # 패치가 속한 캡슐 인덱스. D의 가림 판정이 자기 캡슐을 제외할 때 사용 (캡슐 모델).
     patch_capsule: np.ndarray | None = None  # (N,) int
+    # --- 메시 몸 (docs/mesh_transition.md). physics.yaml body.model == "mesh" 일 때 B가 채운다. ---
+    # 시뮬레이션용 데시메이션 메시 (약 5~6k 삼각형). 정점은 자세가 적용된 부스 좌표.
+    mesh_vertices: np.ndarray | None = None   # (V, 3) float32
+    mesh_faces: np.ndarray | None = None      # (F, 3) int32, 바깥 방향 반시계
+    mesh_face_part: np.ndarray | None = None  # (F,) int, PART_NAMES 인덱스
+    # 패치가 놓인 면 인덱스. D의 메시 가림 판정이 자기 면을 제외할 때 사용.
+    patch_face: np.ndarray | None = None      # (N,) int
+    # 메시 모델에서 `capsules` 는 뼈에 맞춘 근사 캡슐(A 입자 충돌·D 폴백용)이다. 휠체어 프레임 포함.
 
 
 @dataclass
