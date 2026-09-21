@@ -27,6 +27,7 @@ from airis.realtime.camera import detections_from_result, draw_pose, largest_per
 from airis.realtime.recommend import (STUB_TABLE, compare_with_baselines, improvement,
                                       is_inside_booth, recommend, recommend_pose)
 from airis.sim.body import build_body
+from airis.sim.human_mesh import MESH_DEFAULT_BODY
 from airis.sim.patch_baseline import outside_booth
 from airis.sim.scenario import load_nozzle_layout, load_scenarios
 from airis.sim.types import BodyParams, PoseParams
@@ -267,19 +268,30 @@ def test_recommend_pose_inside_booth_and_bounds(scenario):
         assert getattr(pose, key) == v
 
 
-@pytest.mark.parametrize("scenario,arms_up", [("default", True), ("pregnant", False),
-                                              ("wheelchair", True)])
-def test_stub_first_entry_is_e4_best_for_default_body(scenario, arms_up):
-    """기본 체형이면 E4 정식 결과(첫 후보)를 그대로 고른다. pregnant 는 팔 내림 봉우리."""
+@pytest.mark.parametrize("scenario", ["default", "pregnant", "wheelchair"])
+def test_stub_first_entry_is_mesh_e4_best_for_default_body(scenario):
+    """메시 기본 체형이면 메시판 E4 결과(첫 후보, 세 시나리오 모두 만세)를 그대로 고른다."""
     from airis.optimize.encoding import PoseEncoder
     from airis.realtime.recommend import E4_SOURCE
     sc = SCENARIOS[scenario]
-    rec = recommend(CAPSULE_BODY, sc, use_model=False, model="capsule")
+    rec = recommend(MESH_DEFAULT_BODY, sc, use_model=False, model="mesh")
     first = STUB_TABLE[scenario][0]
     assert rec.source == f"stub: {E4_SOURCE}"
     assert rec.label == first.label and rec.pose == PoseEncoder(sc).clip_pose(first.pose)
-    assert (rec.pose.shoulder_abduction > 170.0) == arms_up
+    assert rec.pose.shoulder_abduction > 170.0
     assert not rec.notes
+
+
+@pytest.mark.parametrize("scenario,expected", [
+    ("default", (0.2469, 0.4405, 0.2463)), ("pregnant", (0.2639, 0.4409, 0.2364)),
+    ("wheelchair", (0.1824, 0.2652, 0.3212))])
+def test_mesh_baselines_match_mesh_e4_rescoring(scenario, expected):
+    """메시 몸 기준선 B0·B1·B2 가 C 메시판 E4 재채점(2,000/m²) 값과 같다 (채점 밀도가 맞는지)."""
+    from airis.realtime.recommend import MESH_PATCHES_PER_M2, scoring_patches_per_m2
+    assert scoring_patches_per_m2("mesh") == MESH_PATCHES_PER_M2 == 2000.0
+    rows = compare_with_baselines(MESH_DEFAULT_BODY, SCENARIOS[scenario], PoseParams(), model="mesh")
+    got = tuple(r.score for r in rows[1:])
+    assert got == pytest.approx(expected, abs=5e-4)
 
 
 def test_tall_body_falls_back_to_arms_down_peak():
@@ -368,7 +380,11 @@ def test_stub_ranks_candidates_by_score_for_this_body(monkeypatch):
 def test_pose_instructions():
     from airis.realtime.recommend import pose_instructions
     lines = pose_instructions(STUB_TABLE["default"][0].pose, SCENARIOS["default"])
-    assert any("만세" in s for s in lines) and any("90°" in s for s in lines)
+    assert any("만세" in s for s in lines) and any("약 70°" in s for s in lines)   # yaw 71.0 → 5° 단위
+    lines = pose_instructions(PoseParams(torso_yaw=-92.0), SCENARIOS["default"])
+    assert any("약 90°" in s and "옆으로" in s for s in lines)                  # 좌우 부호는 말하지 않는다
+    lines = pose_instructions(STUB_TABLE["wheelchair"][0].pose, SCENARIOS["wheelchair"])
+    assert any("약 35°" in s for s in lines) and any("만세" in s for s in lines)
     lines = pose_instructions(STUB_TABLE["wheelchair"][1].pose, SCENARIOS["wheelchair"])
     assert lines[0].startswith("휠체어") and any("45°" in s for s in lines)
     assert any("내리세요" in s for s in lines)
@@ -421,7 +437,6 @@ def test_dashboard_capsule_model_query():
 # ---------------------------------------------------------------------------
 # 메시 몸 (관절 중심 BodyParams 정의, docs/interfaces.md). 전역 기본값은 아직 캡슐이라 model="mesh" 를 명시한다.
 # ---------------------------------------------------------------------------
-from airis.sim.human_mesh import MESH_DEFAULT_BODY  # noqa: E402
 
 MESH_BODIES = {
     "메시 기본": MESH_DEFAULT_BODY,
@@ -501,7 +516,9 @@ def test_recommend_and_compare_with_mesh_body(scenario):
     assert is_inside_booth(None, rec.pose, sc, "mesh")
     rows = compare_with_baselines(None, sc, rec.pose, model="mesh")
     by = {r.name: r for r in rows}
-    n_patch = build_body(None, rec.pose, sc, patches_per_m2=400, model="mesh").patch_pos.shape[0]
+    from airis.realtime.recommend import scoring_patches_per_m2
+    n_patch = build_body(None, rec.pose, sc, patches_per_m2=scoring_patches_per_m2("mesh"),
+                         model="mesh").patch_pos.shape[0]
     assert len(by["추천"].result.extra["removal"]) == n_patch             # 메시 패치로 채점
     for name in ("B0 기본", "B1 몸 회전"):
         assert improvement(by["추천"], by[name]) > 0.0

@@ -509,7 +509,8 @@ def test_makehuman_pose_speed(mh):
 
 def test_figure_from_mesh(mh):
     v = hm.posed_in_booth(mh, MESH_BODY, PoseParams(), SCENARIOS["default"], BOOTH)
-    state = build_body(BodyParams(), PoseParams(), SCENARIOS["default"], patches_per_m2=400)   # 캡슐 겹침
+    state = build_body(BodyParams(), PoseParams(), SCENARIOS["default"], patches_per_m2=400,
+                       model="capsule")                                                   # 캡슐 겹침
     fig = hmv.figure_from_mesh(v, mh.faces, overlay_state=state, booth=BOOTH)
     assert {"사람 메시", "캡슐 마네킹 (반투명)", "부스", "슬롯 바 12개"} <= _names(fig)
     fig.to_dict()

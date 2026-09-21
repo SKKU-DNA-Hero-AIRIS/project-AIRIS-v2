@@ -4,7 +4,7 @@
 
 1. C의 회귀 모델 `airis.model.predict.predict_pose` (4주차, `docs/interfaces.md` "회귀 모델")와
    학습 산출물 `data/models/pose_regressor.joblib`이 있으면 그것을 쓴다.
-2. 없으면 **스텁**: E4 정식 결과의 시나리오별 최적 자세 표(`STUB_TABLE`)를 돌려준다.
+2. 없으면 **스텁**: 메시판 E4 정식 결과의 시나리오별 최적 자세 표(`STUB_TABLE`)를 돌려준다.
    표는 봉우리 후보다(만세 + 옆으로 회전, 팔 내림 + 옆으로 회전). 키가 커서 만세가 천장에
    닿는 체형이면 D의 `outside_booth`로 거르고, 남은 후보는 이 체형으로 패치판 점수를 재서 고른다
    (표는 기본 체형 결과라 체형이 다르면 순위가 바뀔 수 있다).
@@ -15,8 +15,11 @@
 않는다. 결과는 절대 제거율이 아니라 기준 자세(B0·B1·B2) 대비 **상대 개선율**로 보여 준다.
 
 몸 모델: 함수마다 `model`(`"mesh"` | `"capsule"` | None = `configs/physics.yaml` `body.model`)을 받는다.
-`body`가 None이면 그 모델의 기본 체형(메시 `MESH_DEFAULT_BODY`, 캡슐 `BodyParams()`)이다. 추천 표는 캡슐판
-E4 결과지만, 부스 안 판정과 후보 채점은 고른 몸 모델로 다시 한다.
+`body`가 None이면 그 모델의 기본 체형(메시 `MESH_DEFAULT_BODY`, 캡슐 `BodyParams()`)이다. 추천 표 첫 후보는
+메시판 E4 결과이고, 부스 안 판정과 후보 채점은 고른 몸 모델로 다시 한다.
+
+패치 밀도 (`scoring_patches_per_m2`): 메시 2,000/m² (C 메시판 E4 재채점 기준. 400/m² 는 메시에서 점수가
+±10~16% 흔들린다, 1회 약 40~60 ms), 캡슐 400/m² (캡슐판 E4·최적화 루프 기준, 1회 약 25 ms).
 """
 from __future__ import annotations
 
@@ -31,8 +34,15 @@ from ..sim.patch_baseline import PatchEvaluator, outside_booth
 from ..sim.scenario import load_nozzle_layout, load_nozzles, load_physics
 from ..sim.types import PART_NAMES, BodyParams, EvalResult, PoseParams, Scenario
 
-#: 부스 안 판정·점수 계산에 쓰는 패치 밀도 (최적화 루프와 같음)
+#: 캡슐 몸의 부스 안 판정·점수 계산 패치 밀도 (캡슐판 최적화 루프와 같음)
 PATCHES_PER_M2 = 400.0
+#: 메시 몸의 패치 밀도 (C 메시판 E4 재채점과 같음. 400/m² 는 메시에서 점수가 ±10~16% 흔들린다)
+MESH_PATCHES_PER_M2 = 2000.0
+
+
+def scoring_patches_per_m2(model: str | None = None) -> float:
+    """몸 모델별 채점 패치 밀도. 그림을 같은 결과로 칠하려면 같은 밀도로 `build_body` 해야 한다."""
+    return MESH_PATCHES_PER_M2 if resolve_model(model) == "mesh" else PATCHES_PER_M2
 
 
 @dataclass(frozen=True)
@@ -42,34 +52,37 @@ class StubEntry:
     source: str
 
 
-# 첫 후보 = E4 정식 결과 (패치판, 대칭 격자 main 5f353be, 시드 5개 평균, 체형 BodyParams() 기본값).
-#   default·wheelchair 는 만세 봉우리, pregnant 는 팔 내림 봉우리다 (벌림 불편도 가중이 커서).
-# 둘째 후보 = 다른 봉우리. 체형 때문에 첫 후보가 부스 밖이거나 점수가 낮을 때 쓴다. #42(패치 격자
-#   대칭화) 이전 docs/experiments.md 기록이라 값은 참고용이고, recommend() 가 이 체형으로 다시 잰다.
+# 첫 후보 = 메시판 E4 정식 결과 (e4m_20260921_193042_bca7ad: 1,500/m² 탐색 + 2,000/m² 재채점,
+#   3시나리오 × 5시드, 메시 기본 체형). 2,000/m² 재채점 최고 시드. 세 시나리오 모두 만세 + 옆으로 서기
+#   (임산부 포함), 휠체어는 약 36° 회전 (시나리오 yaw 상한 45° 안).
+#   pregnant 원 시드는 yaw 102.1 이지만 앞뒤 등가(θ ↔ 180° − θ 점수 동일)라 안내 일관성을 위해 77.9 로 쓴다.
+# 둘째 후보 = 팔 내림 봉우리 (캡슐판 E4 값, 참고). 체형 때문에 첫 후보가 부스 밖(키가 커서 만세가 천장에
+#   닿음)이거나 이 체형에서 점수가 낮을 때 쓴다. recommend() 가 이 체형·몸 모델로 다시 잰다.
 # yaw 는 좌우 대칭이라 |yaw| 로 적는다 (interfaces.md 거울 정규화).
-E4_SOURCE = "E4 e4_20260918_125531_5c81a2 시드 평균"
+E4_SOURCE = "메시판 E4 e4m_20260921_193042_bca7ad 시드 최고"
+CAPSULE_REF_SOURCE = "캡슐판 참고"
 
 STUB_TABLE: dict[str, list[StubEntry]] = {
     "default": [
         StubEntry("만세 + 옆으로 회전",
-                  PoseParams(179.8, 0.0, 1.4, -0.8, 94.2, 0.6, 1.5), E4_SOURCE),
+                  PoseParams(179.9, -4.4, 0.1, 0.2, 71.0, 1.7, 11.2), E4_SOURCE),     # 0.6544
         StubEntry("팔 내림 + 옆으로 회전",
                   PoseParams(4.8, -3.2, 3.1, 0.5, 98.1, 0.1, 0.2),
-                  "remeasure_20260918_103149_00b235 (#42 이전, 대체 후보)"),
+                  f"{CAPSULE_REF_SOURCE} (remeasure_20260918_103149_00b235, 대체 후보)"),
     ],
     "pregnant": [
-        StubEntry("팔 내림 + 옆으로 회전",
-                  PoseParams(12.5, -3.0, 7.4, -0.1, 84.6, 2.4, 5.3), E4_SOURCE),
         StubEntry("만세 + 옆으로 회전",
-                  PoseParams(180.0, 6.7, 2.6, -0.1, 97.2, 0.9, 2.1),
-                  "starts_20260918_110639_46f4dd (#42 이전, 대체 후보)"),
+                  PoseParams(179.4, -6.0, 0.0, -0.2, 77.9, 0.1, 10.6), E4_SOURCE),    # 0.6342
+        StubEntry("팔 내림 + 옆으로 회전",
+                  PoseParams(12.5, -3.0, 7.4, -0.1, 84.6, 2.4, 5.3),
+                  f"{CAPSULE_REF_SOURCE} (e4_20260918_125531_5c81a2, 대체 후보)"),
     ],
     "wheelchair": [
-        StubEntry("만세 + 몸 45° 회전",
-                  PoseParams(179.9, 7.9, 9.6, 4.4, 44.9, 90.0, 90.0), E4_SOURCE),
+        StubEntry("만세 + 몸 36° 회전",
+                  PoseParams(179.9, 2.5, 8.9, -0.4, 35.8, 90.0, 90.0), E4_SOURCE),    # 0.4319
         StubEntry("팔 내림 + 몸 45° 회전",
                   PoseParams(0.0, -29.9, 14.5, 0.3, 45.0, 90.0, 90.0),
-                  "remeasure_20260918_103307_2bd141 (#42 이전, 대체 후보)"),
+                  f"{CAPSULE_REF_SOURCE} (remeasure_20260918_103307_2bd141, 대체 후보)"),
     ],
 }
 
@@ -105,7 +118,8 @@ def default_body(model: str | None = None) -> BodyParams:
 
 def is_inside_booth(body: BodyParams | None, pose: PoseParams, scenario: Scenario,
                     model: str | None = None) -> bool:
-    state = build_body(body, pose, scenario, patches_per_m2=PATCHES_PER_M2, model=resolve_model(model))
+    model = resolve_model(model)
+    state = build_body(body, pose, scenario, patches_per_m2=scoring_patches_per_m2(model), model=model)
     return not outside_booth(state.patch_pos, _booth())
 
 
@@ -184,7 +198,8 @@ def pose_instructions(pose: PoseParams, scenario: Scenario) -> list[str]:
     elif yaw < 60:
         lines.append(f"몸을 한쪽으로 약 {round(yaw / 5) * 5:.0f}° 돌리세요 (좌우 어느 쪽이든 같습니다).")
     elif yaw <= 120:
-        lines.append("몸을 옆으로 돌려 한쪽 벽을 보고 서세요 (약 90°, 좌우 어느 쪽이든 같습니다).")
+        lines.append(f"몸을 옆으로 약 {round(yaw / 5) * 5:.0f}° 돌려 한쪽 벽 쪽을 보고 서세요 "
+                     "(좌우 어느 쪽이든 같습니다).")
     else:
         lines.append("뒤로 돌아 들어온 문을 보고 서세요.")
 
@@ -236,11 +251,15 @@ class ScoreRow:
     result: EvalResult | None = None     # 단일 자세면 원래 결과 (패치 색칠용)
 
 
-@lru_cache(maxsize=4)
 def patch_evaluator(model: str | None = None) -> PatchEvaluator:
-    """D의 패치판 (400/m²). `model` 을 주면 그 몸 모델로 `build_body` 를 부른다 (None = 설정 파일)."""
-    bb = None if model is None else partial(build_body, model=model)
-    return PatchEvaluator(load_physics(), bb, patches_per_m2=PATCHES_PER_M2)
+    """D의 패치판. 몸 모델(None = 설정 파일)에 맞는 밀도(`scoring_patches_per_m2`)로 `build_body` 를 부른다."""
+    return _patch_evaluator(resolve_model(model))
+
+
+@lru_cache(maxsize=4)
+def _patch_evaluator(model: str) -> PatchEvaluator:
+    return PatchEvaluator(load_physics(), partial(build_body, model=model),
+                          patches_per_m2=scoring_patches_per_m2(model))
 
 
 @lru_cache(maxsize=1)
@@ -280,7 +299,7 @@ def evaluate_condition(name: str, poses: list[PoseParams], body: BodyParams | No
 
 def compare_with_baselines(body: BodyParams | None, scenario: Scenario,
                            recommended: PoseParams, model: str | None = None) -> list[ScoreRow]:
-    """[추천, B0, B1, B2] 점수. 패치판 1회 약 25 ms × 15회. 같은 몸 모델로 채점한다."""
+    """[추천, B0, B1, B2] 점수. 패치판 15회 (메시 2,000/m² 약 0.7 s, 캡슐 400/m² 약 0.4 s). 같은 몸 모델로 채점한다."""
     rows = [evaluate_condition("추천", [recommended], body, scenario, model)]
     rows += [evaluate_condition(n, ps, body, scenario, model) for n, ps in baseline_poses().items()]
     return rows
