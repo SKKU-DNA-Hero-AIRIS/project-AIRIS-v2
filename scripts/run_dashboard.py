@@ -33,7 +33,8 @@ import streamlit as st                                                # noqa: E4
 
 from airis.realtime import camera, pose_estimate as pe               # noqa: E402
 from airis.realtime.recommend import (compare_with_baselines, default_body,  # noqa: E402
-                                      improvement, pose_instructions, recommend)
+                                      improvement, pose_instructions, recommend,
+                                      scoring_patches_per_m2)
 from airis.sim.body import build_body                                 # noqa: E402
 from airis.sim.scenario import load_nozzle_layout, load_scenarios     # noqa: E402
 from airis.sim.types import PART_NAMES, BodyParams, PoseParams       # noqa: E402
@@ -199,7 +200,8 @@ def main() -> None:
         body_model = BODY_MODELS[st.radio(
             "몸 모델", model_labels, index=1 if q.get("model") == "capsule" else 0,
             label_visibility="collapsed")]
-        st.caption("시뮬레이션 몸. 추천 표(E4)는 캡슐판 결과이고, 부스 안 판정·점수는 고른 몸으로 다시 잽니다.")
+        st.caption("시뮬레이션 몸. 추천 표는 메시판 E4 결과이고, 부스 안 판정·점수는 고른 몸으로 다시 잽니다 "
+                   "(메시 2,000/m², 캡슐 400/m²).")
         st.divider()
         st.caption("카메라 영상은 저장하지 않습니다. 시나리오(임산부·휠체어)는 영상으로 판별하지 않고 "
                    "사용자가 직접 고릅니다.")
@@ -307,7 +309,8 @@ def main() -> None:
             st.markdown(f"- {line}")
         st.caption(f"자세 값: {pose_label(rec.pose)}")
         st.caption(f"출처: {rec.source}" + (" (회귀 모델이 준비되기 전의 임시 표)" if rec.source.startswith("stub") else ""))
-        st.caption("팔 자세(만세 / 팔 내림)는 불편도 설정에 민감합니다. 임산부 시나리오는 팔 불편도 가중이 커서 팔 내림이 최적입니다.")
+        st.caption("메시판에서는 세 시나리오 모두 만세 + 옆으로 서기가 최적입니다(임산부 포함). 휠체어는 약 36° 회전. "
+                   "팔 자세(만세 / 팔 내림)는 불편도 설정에 민감합니다.")
         for note in rec.notes:
             st.info(note)
     with metrics:
@@ -320,6 +323,7 @@ def main() -> None:
                    "개선율 = 추천 점수 / 기준 점수 − 1.")
 
     booth = load_nozzle_layout()["booth"]
+    density = scoring_patches_per_m2(body_model)            # 채점과 같은 밀도로 그려야 패치 색이 맞는다
     cmax = max(float(np.max(r.result.extra["removal"])) for r in (rec_row, by["B0 기본"])
                if r.result is not None and not r.infeasible)
     f1, f2 = st.columns(2)
@@ -327,12 +331,12 @@ def main() -> None:
         b0 = by["B0 기본"]
         fig = figure_from_pose(body, PoseParams(), scenario, result=b0.result, booth=booth,
                                title=f"B0 기본 자세 · 점수 {b0.score:.3f}", cmin=0.0, cmax=cmax,
-                               height=560, model=body_model)
+                               height=560, model=body_model, patches_per_m2=density)
         st.plotly_chart(fig, **WIDE)
     with f2:
         fig = figure_from_pose(body, rec.pose, scenario, result=rec_row.result, booth=booth,
                                title=f"추천: {rec.label} · 점수 {rec_row.score:.3f}", cmin=0.0,
-                               cmax=cmax, height=560, model=body_model)
+                               cmax=cmax, height=560, model=body_model, patches_per_m2=density)
         st.plotly_chart(fig, **WIDE)
     st.caption("색 = 패치별 제거율 (두 그림 같은 색 범위). 파란 선 = 퓨리움 슬롯 바 12개, 점선 = 분사 방향.")
 
