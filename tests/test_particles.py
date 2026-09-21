@@ -1125,3 +1125,190 @@ def test_occlusion_shadowed_patches_never_detach(scenario):
     assert hidden_detached[True] == 0, hidden_detached
     assert hidden_detached[False] > 0, hidden_detached
     assert detached[True] < detached[False], detached
+
+
+# ------------------------------------------------ 단계 13. 메시 몸 (MakeHuman, ③)
+from airis.sim.human_mesh import MESH_DEFAULT_BODY  # noqa: E402
+
+MESH_TALL_BODY = BodyParams(height_m=1.95, shoulder_width_m=0.39, torso_depth_m=0.22,
+                            arm_length_m=0.53, leg_length_m=1.01)
+
+
+def mesh_state(pose: PoseParams, scenario, body: BodyParams = MESH_DEFAULT_BODY) -> BodyState:
+    return build_body(body, pose, scenario, model="mesh")
+
+
+def _capsule_gap(points: np.ndarray, capsules: np.ndarray) -> np.ndarray:
+    """(P, K) 점에서 캡슐 표면까지 부호 거리 (음수 = 캡슐 안)."""
+    p = np.asarray(points, np.float64)
+    out = np.empty((len(p), len(capsules)))
+    for k, c in enumerate(np.asarray(capsules, np.float64)):
+        a, b, r = c[:3], c[3:6], c[6]
+        ab = b - a
+        den = ab @ ab
+        t = np.clip(((p - a) @ ab) / den, 0.0, 1.0) if den > 0 else np.zeros(len(p))
+        out[:, k] = np.linalg.norm(p - (a + t[:, None] * ab), axis=1) - r
+    return out
+
+
+@pytest.mark.parametrize("scenario_name", ["default", "pregnant", "wheelchair"])
+def test_mesh_body_fits_particle_fields(scenario_name, ev_batch):
+    """메시 몸의 뼈 근사 캡슐과 패치가 입자판 고정 할당 안에 들고, 부위 규약을 지킨다.
+
+    - 캡슐 수 <= max_capsules, 패치 수 <= max_patches (키 1.95 m 체형 포함)
+    - 몸통 근사 캡슐은 전부 torso_front (재부착 때 법선·전방 부호로 앞/뒤를 가른다),
+      휠체어 프레임은 -1 (가림 전용), 나머지는 머리·팔·다리 부위 번호
+    """
+    sc = load_scenarios()[scenario_name]
+    for body in (MESH_DEFAULT_BODY, MESH_TALL_BODY):
+        st = mesh_state(PoseParams(), sc, body)
+        assert st.mesh_vertices is not None and st.mesh_faces is not None
+        assert len(st.capsules) <= ev_batch.f.K
+        assert len(st.patch_pos) <= ev_batch.f.P
+        parts = set(np.asarray(st.capsule_part).tolist())
+        assert parts <= {-1, PART_NAMES.index("head"), TORSO, ARMS, PART_NAMES.index("legs")}
+        assert PART_NAMES.index("torso_back") not in parts
+        assert TORSO in parts
+        assert (-1 in parts) == (scenario_name == "wheelchair")
+
+
+def test_mesh_body_batch_isolation(ev_batch, ev_single, scenario):
+    """메시 몸(뼈 캡슐 19개, 패치 약 3,400개)으로 배치가 돌고 단독 vs 배치가 일치한다."""
+    nozzle = load_nozzles()
+    poses = [PoseParams(), PoseParams(torso_yaw=90.0, shoulder_abduction=40.0)]
+    states = [mesh_state(p, scenario) for p in poses]
+    batch = ev_batch.batch_evaluate_states(states, poses, nozzle, scenario)
+    solo = [ev_single.batch_evaluate_states([st], [p], nozzle, scenario)[0]
+            for st, p in zip(states, poses)]
+    for a, b in zip(solo, batch):
+        _assert_same(a, b)
+        assert a.extra["infeasible"] is False
+        assert a.total_removal > 0.0
+        assert a.extra["count_init"].sum() == N_DEV
+    assert not np.array_equal(batch[0].extra["count_removed"], batch[1].extra["count_removed"])
+
+
+@pytest.mark.parametrize("scenario_name", ["default", "wheelchair"])
+def test_mesh_capsule_collision_parts(scenario_name):
+    """뼈 근사 캡슐 충돌·재부착의 부위 판정 (재부착 확률 1).
+
+    캡슐 하나에만 들어 있는 점을 골라 부유 입자로 두고 충돌 커널을 한 번 돌린다.
+    - 몸 캡슐: 재부착, 부위 = 캡슐 부위. 몸통(torso_front) 캡슐은 충돌 법선·전방
+      (cos yaw, sin yaw, 0) 부호로 torso_front / torso_back
+    - 휠체어 프레임(-1): 재부착하지 않고 반사 (부유 유지), 캡슐 밖으로 밀려난다
+    yaw 0과 180 두 후보로 앞/뒤가 뒤집히는지 본다.
+    """
+    sc = load_scenarios()[scenario_name]
+    cfg = copy.deepcopy(load_physics())
+    cfg["adhesion"]["redeposition_prob"] = 1.0
+    poses = [PoseParams(torso_yaw=0.0), PoseParams(torso_yaw=180.0)]
+    states = [mesh_state(p, sc) for p in poses]
+    rng = np.random.default_rng(5)
+    n = 64
+    picks, expect = [], []
+    for st, pose in zip(states, poses):
+        caps = np.asarray(st.capsules, np.float64)
+        cap_part = np.asarray(st.capsule_part)
+        # 캡슐 축 위의 점 주변에서 후보를 뽑고, 정확히 한 캡슐 안에 있는 점만 쓴다
+        k = rng.integers(0, len(caps), 4000)
+        t = rng.random(4000)
+        axis_pt = caps[k, :3] + t[:, None] * (caps[k, 3:6] - caps[k, :3])
+        cand = axis_pt + rng.normal(0.0, 1.0, (4000, 3)) * 0.6 * caps[k, 6:7]
+        gap = _capsule_gap(cand, caps)
+        # 한 캡슐 안(1 mm 이상 안쪽)이고 다른 캡슐과는 1 mm 이상 떨어진 점만 (경계 모호성 제거)
+        inside = gap < -1e-3
+        clear = inside | (gap > 1e-3)
+        one = np.flatnonzero((inside.sum(axis=1) == 1) & clear.all(axis=1))
+        owner = inside[one].argmax(axis=1)
+        # 캡슐마다 돌아가며 골라 모든 부위(몸통, 팔, 다리, 머리, 프레임)가 섞이게 한다
+        by_cap = [list(one[owner == kk]) for kk in range(len(caps))]
+        chosen = []
+        while len(chosen) < n and any(by_cap):
+            for lst in by_cap:
+                if lst and len(chosen) < n:
+                    chosen.append(lst.pop())
+        chosen = np.array(chosen)
+        own = inside[chosen].argmax(axis=1)
+        assert len(chosen) == n
+        fwd = np.array([math.cos(math.radians(pose.torso_yaw)),
+                        math.sin(math.radians(pose.torso_yaw)), 0.0])
+        exp = []
+        for i, kk in zip(chosen, own):
+            c = caps[kk]
+            ab = c[3:6] - c[:3]
+            tt = np.clip(((cand[i] - c[:3]) @ ab) / (ab @ ab), 0, 1) if ab @ ab > 0 else 0.0
+            nh = cand[i] - (c[:3] + tt * ab)
+            nh = nh / np.linalg.norm(nh)
+            part = int(cap_part[kk])
+            if part == TORSO and nh @ fwd <= 0.0:
+                part = PART_NAMES.index("torso_back")
+            if part < 0:
+                # 프레임에서 밀려난 점이 뒤 순서의 다른 캡슐 안이면 거기서 판정이 이어진다
+                # (커널이 캡슐을 순서대로 본다). 그런 점은 기대값을 정하지 않는다 (-2).
+                pushed = c[:3] + tt * ab + nh * (c[6] + 1e-4)
+                others = np.delete(_capsule_gap(pushed[None], caps)[0], kk)
+                if (others < 1e-3).any():
+                    part = -2
+            exp.append(part)
+        picks.append(cand[chosen].astype(np.float32))
+        expect.append(np.array(exp))
+
+    ev = ParticleEvaluator(cfg, max_candidates=2, particles_per_candidate=n, duration_s=0.0)
+    try:
+        ev.batch_evaluate_states(states, poses, load_nozzles(), sc)      # 캡슐·전방 업로드
+        ev.f.pos.from_numpy(np.concatenate(picks))
+        ev.f.state.from_numpy(np.ones(2 * n, np.int32))
+        ev.f.rand_redep.from_numpy(np.zeros(2 * n, np.float32))
+        ev.f.vel.from_numpy(np.zeros((2 * n, 3), np.float32))
+        ev.f.k_collide(2)
+        state, part = ev.f.state.to_numpy(), ev.f.part.to_numpy()
+        pos_after = ev.f.pos.to_numpy()
+    finally:
+        ev.destroy()
+    exp = np.concatenate(expect)
+    body = exp >= 0
+    np.testing.assert_array_equal(state[body], 0)
+    np.testing.assert_array_equal(part[body], exp[body])
+    # 두 후보 모두 앞/뒤 몸통이 나오고, yaw가 뒤집혀도 판정이 식을 따른다
+    for b in range(2):
+        seg = exp[b * n:(b + 1) * n]
+        assert (seg == TORSO).any() or (seg == PART_NAMES.index("torso_back")).any()
+    if scenario_name == "wheelchair":
+        frame = exp == -1
+        assert frame.any(), "휠체어 프레임 안 점이 없으면 공허한 검사"
+        np.testing.assert_array_equal(state[frame], 1)             # 가림 전용은 재부착 안 함
+        caps0 = np.concatenate([np.asarray(st.capsules) for st in states])
+        gap_after = np.concatenate([
+            _capsule_gap(pos_after[b * n:(b + 1) * n], states[b].capsules) for b in range(2)])
+        assert (gap_after[frame].min(axis=1) >= -1e-5).all(), "프레임 밖으로 밀려나야 한다"
+        del caps0
+
+
+def test_mesh_occlusion_switches_to_raycast(scenario):
+    """메시 몸이면 D의 occlusion이 광선-삼각형 판정으로 자동 전환되고, 입자판은 그 배열을
+    그대로 쓴다 (단계 13-2). 같은 몸을 캡슐 판정으로 돌린 가림과는 달라야 한다.
+
+    입자판 쪽 대조는 가림 대조 테스트와 같은 식·허용치
+    (|Δu| <= 1e-4·|u| + 1e-5·Σ_m w·|u_m|).
+    """
+    import dataclasses
+
+    cfg = load_physics()
+    nozzle = load_nozzles()
+    poses = [PoseParams(), PoseParams(torso_yaw=90.0, shoulder_abduction=40.0)]
+    states = [mesh_state(p, scenario) for p in poses]
+    ev = ParticleEvaluator(cfg, max_candidates=2, particles_per_candidate=2000,
+                           duration_s=DURATION_DEV)
+    try:
+        vel, pidx = ev.probe_attached_velocity(states, poses, nozzle)
+        ref, scale = _occluded_reference(ev, states, pidx, nozzle, cfg)
+    finally:
+        ev.destroy()
+    err = np.linalg.norm(vel.astype(np.float64) - ref, axis=1)
+    assert np.all(err <= 1e-4 * np.linalg.norm(ref, axis=1) + 1e-5 * scale)
+
+    mesh_vis = occlusion(states[0], nozzle, cfg)
+    as_capsule = dataclasses.replace(states[0], mesh_vertices=None, mesh_faces=None,
+                                     mesh_face_part=None, patch_face=None)
+    capsule_vis = occlusion(as_capsule, nozzle, cfg)
+    assert np.abs(mesh_vis - capsule_vis).mean() > 0.01, "메시 판정으로 전환되지 않았다"
