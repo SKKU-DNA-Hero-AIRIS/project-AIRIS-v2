@@ -20,9 +20,18 @@ def test_improvement():
     assert math.isnan(e4.improvement(0.6, 0.0))
 
 
+def test_fold_yaw_left_right_and_front_back():
+    # 좌우 거울 θ ≡ −θ, 앞뒤 등가 θ ≡ 180° − θ → 0~90°
+    assert e4.fold_yaw(72.0) == 72.0
+    assert e4.fold_yaw(-72.0) == 72.0
+    assert e4.fold_yaw(108.0) == pytest.approx(72.0)
+    assert e4.fold_yaw(-108.0) == pytest.approx(72.0)
+    assert e4.fold_yaw(180.0) == 0.0 and e4.fold_yaw(90.0) == 90.0 and e4.fold_yaw(0.0) == 0.0
+
+
 def test_fold_pose_mirrors_yaw():
     folded = e4.fold_pose(PoseParams(torso_yaw=-97.0, shoulder_abduction=180.0))
-    assert folded["torso_yaw"] == 97.0
+    assert folded["torso_yaw"] == pytest.approx(83.0)
     assert folded["shoulder_abduction"] == 180.0
     assert list(folded) == e4.POSE_KEYS
 

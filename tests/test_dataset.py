@@ -47,8 +47,8 @@ def test_build_dataset_schema_and_resume(tmp_path):
                  "pose_torso_yaw_raw", "physics_hash"]
                 + [f"body_{k}" for k in dataset.BODY_KEYS] + [f"pose_{k}" for k in dataset.POSE_KEYS]):
         assert col in df.columns, col
-    assert (df["pose_torso_yaw"] >= 0).all(), "yaw 는 |yaw| 로 접는다"
-    assert np.allclose(df["pose_torso_yaw"], df["pose_torso_yaw_raw"].abs())
+    assert df["pose_torso_yaw"].between(0, 90).all(), "yaw 는 0~90° 로 접는다"
+    assert np.allclose(df["pose_torso_yaw"], 90 - (90 - df["pose_torso_yaw_raw"].abs()).abs())
     assert set(df["arm_class"]) <= {"hands_up", "arms_down"}
     wc = df[df["scenario"] == "wheelchair"]
     assert (wc["pose_hip_flexion"] == 90).all() and (wc["pose_knee_flexion"] == 90).all()

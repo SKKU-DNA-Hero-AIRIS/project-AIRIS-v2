@@ -11,7 +11,7 @@ configs/ 파일은 건드리지 않는다. load_physics() 결과 dict 와 Scenar
 지표 (시나리오 × 설정값마다):
     best_mean / best_std       시드별 best 의 평균·표준편차
     arm_counts                 best 자세의 팔 봉우리 (hands_up: 벌림 ≥ 90°, arms_down)
-    same_peak_frac             기준 설정 best 와 같은 봉우리(팔 봉우리 같고 |yaw| 차 ≤ 30°)인 시드 비율
+    same_peak_frac             기준 설정 best 와 같은 봉우리(팔 봉우리 같고 접은 yaw 차 ≤ 30°)인 시드 비율
     peak_gap_mean              hands_up 시작점 best − default 시작점 best
     topk_spearman              기준 설정 상위 k 후보(서로 다른 자세)를 새 설정으로 다시 평가한 점수와
                                기준 점수의 Spearman 순위 상관
@@ -160,7 +160,7 @@ def main(argv: list[str] | None = None) -> int:
             runs.append((exp_id, seed, result))
             print(f"  {scenario.name:<11} {key} = {value!s:<8} seed {seed}  best {result.best_score:.4f}  "
                   f"{sensitivity.arm_class(result.best_pose):<9} "
-                  f"|yaw| {abs(result.best_pose.torso_yaw):5.1f}  {result.elapsed_s:6.1f} s  [{exp_id}]")
+                  f"yaw* {e4.fold_yaw(result.best_pose.torso_yaw):5.1f}  {result.elapsed_s:6.1f} s  [{exp_id}]")
         return evaluator, runs
 
     for name in names:

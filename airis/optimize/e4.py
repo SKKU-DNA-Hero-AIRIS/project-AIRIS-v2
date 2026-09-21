@@ -6,9 +6,9 @@ scripts/run_e4.py 가 시나리오 × 시드 실행 결과를 모아 여기서 �
   기준선이 불가거나 0 이면 NaN.
 - 봉우리 간 차이 = hands_up 시작점 best − default 시작점 best (시드별). 양수면 만세 봉우리가 높다.
   각 시작점 best 는 예산 절반으로 찾은 값이라 봉우리 최댓값의 하한이다.
-- 시드 간 자세 편차는 torso_yaw 를 |yaw| 로 접어서 계산한다. 노즐·부스가 좌우 대칭이라
-  yaw +θ 와 −θ 가 같은 점수이므로 (docs/interfaces.md 회귀 모델 절, 거울 정규화)
-  접지 않으면 같은 해가 ±90 으로 갈려 편차가 부풀려진다.
+- 시드 간 자세 편차는 torso_yaw 를 0~90° 로 접어서 계산한다 (docs/interfaces.md 회귀 모델 절).
+  좌우 거울 대칭이라 yaw θ ≡ −θ, 앞뒤 등가(슬롯 x 대칭, torso_front/back 가중 같음)라 θ ≡ 180° − θ 다.
+  그래서 fold_yaw(θ) = 90° − |90° − |θ||. 접지 않으면 같은 해가 ±72°·±108° 로 갈려 편차가 부풀려진다.
 """
 from __future__ import annotations
 
@@ -30,10 +30,18 @@ def improvement(best: float, base: float, base_infeasible: bool = False) -> floa
     return (best - base) / abs(base)
 
 
+def fold_yaw(yaw_deg: float) -> float:
+    """좌우 거울(|θ|) + 앞뒤 등가(180° − θ) 정규화 → 0~90°. interfaces.md 회귀 계약.
+
+    슬롯 배치의 x 대칭이나 part_weights 의 torso_front/back 이 달라지면 앞뒤 접기는 빼야 한다.
+    """
+    return 90.0 - abs(90.0 - abs(float(yaw_deg)))
+
+
 def fold_pose(pose: PoseParams | dict) -> dict[str, float]:
-    """좌우 거울 정규화: torso_yaw 를 |yaw| 로 접는다."""
+    """자세의 torso_yaw 를 fold_yaw 로 접는다 (나머지 변수는 그대로)."""
     d = asdict(pose) if isinstance(pose, PoseParams) else dict(pose)
-    d["torso_yaw"] = abs(float(d["torso_yaw"]))
+    d["torso_yaw"] = fold_yaw(d["torso_yaw"])
     return {k: float(d[k]) for k in POSE_KEYS}
 
 

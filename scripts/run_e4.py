@@ -8,7 +8,7 @@
 결과:
     outputs/<exp_id>/                     실행마다 meta.json, history.csv, best.json (tag=e4)
     outputs/<group_id>/e4_summary.csv     시나리오별 best 평균·표준편차, B0·B1·B2 대비 개선율,
-                                          시드 간 자세 편차(yaw 는 |yaw| 로 접음)
+                                          시드 간 자세 편차(yaw 는 0~90° 로 접음, e4.fold_yaw)
     outputs/<group_id>/best_poses.json    시드별 best 자세, 시나리오별 평균 자세, 기준선 점수
     outputs/<group_id>/baselines.csv      이번 묶음에서 평가한 B0, B1, B2
 
@@ -107,7 +107,8 @@ def main(argv: list[str] | None = None) -> int:
         "physics_hash": physics_hash,
         "nozzle_hash": nozzle_hash,
         "args": vars(args),
-        "yaw_note": "노즐·부스가 좌우 대칭이라 yaw 부호는 임의. mean_pose_folded 는 |yaw| 로 접은 평균",
+        "yaw_note": "좌우 대칭(θ ≡ −θ)·앞뒤 등가(θ ≡ 180° − θ)라 yaw 는 0~90° 로 접어 비교한다. "
+                    "mean_pose_folded 는 e4.fold_yaw 로 접은 평균",
         "scenarios": {},
     }
 
@@ -199,7 +200,7 @@ def main(argv: list[str] | None = None) -> int:
 
     print()
     print(f"{'시나리오':<12}{'best 평균':>11}{'표준편차':>10}{'B0 대비':>9}{'B1 대비':>9}{'B2 대비':>9}"
-          f"{'|yaw| 편차':>11}{'벌림 편차':>10}  best 시작점")
+          f"{'yaw* 편차':>11}{'벌림 편차':>10}  best 시작점")
     print("-" * 100)
     for row in summary_rows:
         imps = "".join(

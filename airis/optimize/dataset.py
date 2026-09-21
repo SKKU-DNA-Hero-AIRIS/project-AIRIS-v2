@@ -22,7 +22,8 @@ parquet 한 행으로 남긴다.
 열 (interfaces.md 스키마 + 회귀 계약 요구):
     body_idx, body_*                      체형 번호와 BodyParams 필드
     scenario                              시나리오 이름
-    pose_*                                최적 자세. **pose_torso_yaw 는 |yaw| 로 접은 값** (거울 정규화)
+    pose_*                                최적 자세. **pose_torso_yaw 는 0~90° 로 접은 값**
+                                          (좌우 |yaw| + 앞뒤 90° − |90° − |yaw||, e4.fold_yaw, interfaces.md 회귀 계약)
     pose_torso_yaw_raw                    접기 전 yaw
     arm_class                             팔 봉우리 hands_up(벌림 ≥ 90°) / arms_down — 회귀의 봉우리 분류 라벨
     start_best_default, start_best_hands_up, peak_gap   시작점별 best 와 차이(hands_up − default)

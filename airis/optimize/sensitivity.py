@@ -95,7 +95,7 @@ def arm_class(pose: PoseParams | dict) -> str:
 
 
 def same_peak(pose, ref_pose, yaw_tol_deg: float = 30.0) -> bool:
-    """같은 봉우리인가: 팔 봉우리가 같고 |yaw| 차이가 yaw_tol_deg 이하."""
+    """같은 봉우리인가: 팔 봉우리가 같고 0~90° 로 접은 yaw(e4.fold_yaw) 차이가 yaw_tol_deg 이하."""
     return (arm_class(pose) == arm_class(ref_pose)
             and abs(fold_pose(pose)["torso_yaw"] - fold_pose(ref_pose)["torso_yaw"]) <= yaw_tol_deg)
 
