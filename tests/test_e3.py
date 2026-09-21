@@ -85,10 +85,13 @@ def test_patch_shear_equivalences(scenarios):
 def test_arm_class_and_same_peak():
     up = PoseParams(shoulder_abduction=180.0, torso_yaw=-95.0)
     up_mirror = PoseParams(shoulder_abduction=175.0, torso_yaw=88.0)
+    up_front_back = PoseParams(shoulder_abduction=180.0, torso_yaw=-78.0)   # 180 − 102 ≡ 78, 거울
     down = PoseParams(shoulder_abduction=12.0, torso_yaw=90.0)
     front = PoseParams(shoulder_abduction=180.0, torso_yaw=10.0)
     assert sensitivity.arm_class(up) == "hands_up" and sensitivity.arm_class(down) == "arms_down"
     assert sensitivity.same_peak(up_mirror, up), "yaw 부호는 무시"
+    assert sensitivity.same_peak(up_front_back, PoseParams(shoulder_abduction=180.0, torso_yaw=102.0)), \
+        "앞뒤 등가: 102° 와 78° 는 같은 봉우리"
     assert not sensitivity.same_peak(down, up)
     assert not sensitivity.same_peak(front, up)
 
