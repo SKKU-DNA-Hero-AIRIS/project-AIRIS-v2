@@ -10,6 +10,7 @@ cma>=3.3
 scikit-learn>=1.4
 pandas>=2.0
 pyarrow>=15
+torch>=2.2           # 자세 flow matching 모델 (airis/model). ultralytics 도 torch 를 쓴다
 
 # 시각화 / 대시보드
 plotly>=5.20

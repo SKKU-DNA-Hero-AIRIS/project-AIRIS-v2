@@ -32,6 +32,13 @@ parquet 한 행으로 남긴다.
     n_infeasible, elapsed_s
     nozzle_layout_hash, physics_hash, exp_id, commit, seed, max_evals, popsize, patches_per_m2, body_seed,
     body_model                            체형 샘플링·몸 생성에 쓴 몸 모델 (capsule | mesh)
+    candidate_k                           체형당 저장한 근사 최적 후보 수 설정 (0 = 후보 열 없음)
+    cand_pose_*, cand_score, n_candidates  candidate_k > 0 일 때만. CMA-ES 가 평가한 가능한 후보 중
+                                          점수가 best − candidate_tol·|best| 이상인 것을 점수순으로, 서로
+                                          정규화 거리 candidate_min_dist 이상 떨어진 것만 최대 k 개 (목록 열,
+                                          yaw 는 접은 값, 첫 원소 = best 근처). 조건부 flow matching 이 p(자세 |
+                                          체형, 시나리오) 를 배우는 학습 점이다 (airis/model/flow.py,
+                                          docs/proposals/flow_matching.md). 한 행 = 체형 × 시나리오 규약은 그대로다.
 
 재개: 출력 parquet 이 있으면 (body_idx, scenario) 키가 있는 작업을 건너뛴다. 설정 해시·체형 시드가 다르면
 섞지 않고 멈춘다. flush_every 행마다 파일 전체를 임시 파일에 다시 쓰고 바꿔 넣는다.
@@ -54,7 +61,7 @@ KEY_COLS = ("body_idx", "scenario")
 
 #: 이 값들이 다르면 이어 쓰지 않는다 (다른 물리 기준·다른 탐색 설정의 행이 섞인다).
 CONSISTENCY_COLS = ("nozzle_layout_hash", "physics_hash", "body_seed", "max_evals", "popsize",
-                    "patches_per_m2", "evaluator", "body_model")
+                    "patches_per_m2", "evaluator", "body_model", "candidate_k")
 
 #: 몸 모델별 체형 분포: 필드 → (키 대비 비율, 잡음 표준편차 m). 위 모듈 설명 참고.
 BODY_DISTRIBUTIONS: dict[str, dict[str, tuple[float, float]]] = {
@@ -90,6 +97,33 @@ def sample_bodies(n: int, seed: int, model: str = "capsule") -> list[BodyParams]
     return bodies
 
 
+def candidate_columns(candidates: list[dict], scenario, best_score: float, *,
+                      k: int, tol: float, min_dist: float) -> dict:
+    """run_cmaes(record_candidates=True) 의 후보 → cand_* 목록 열 (위 모듈 설명).
+
+    거리는 yaw 를 접은 자세를 시나리오 PoseEncoder 로 다시 정규화한 벡터에서 잰다. 접기 전 x 로 재면
+    yaw ±θ·180° − θ 가 서로 멀어 보여 같은 자세가 여러 번 뽑힌다.
+    """
+    from .e4 import fold_pose
+    from .encoding import PoseEncoder
+    from .sensitivity import diverse_top
+
+    enc = PoseEncoder(scenario)
+    floor = best_score - tol * abs(best_score)
+    near = []
+    for c in candidates:
+        if c["infeasible"] or c["score"] < floor:
+            continue
+        folded = fold_pose(enc.decode(c["x"]))
+        near.append({"x": enc.encode(PoseParams(**folded)), "score": float(c["score"]),
+                     "infeasible": False, "pose": folded})
+    chosen = diverse_top(near, k, min_dist) if k > 0 else []
+    cols: dict = {f"cand_pose_{key}": [c["pose"][key] for c in chosen] for key in POSE_KEYS}
+    cols["cand_score"] = [c["score"] for c in chosen]
+    cols["n_candidates"] = len(chosen)
+    return cols
+
+
 def configured_body_model() -> str:
     """configs/physics.yaml 의 body.model (없으면 capsule). 평가기의 build_body 와 같은 값을 읽는다."""
     from airis.sim.scenario import load_physics
@@ -109,6 +143,10 @@ class DatasetConfig:
     dataset_id: str = "ds"
     #: 체형 분포의 몸 모델. None 이면 physics.yaml body.model. 평가기가 만드는 몸과 달라지면 거부한다.
     body_model: str | None = None
+    #: 체형당 저장할 근사 최적 후보 수 (0 이면 저장하지 않는다). 위 모듈 설명의 cand_* 열.
+    candidate_k: int = 0
+    candidate_tol: float = 0.02
+    candidate_min_dist: float = 0.1
 
 
 # ---------- 작업자 (프로세스마다 평가기 캐시) ----------
@@ -157,6 +195,7 @@ def run_task(task: tuple[int, dict, str]) -> dict:
         evaluator, body, scenario, nozzle,
         max_evals=cfg.max_evals, seed=seed, popsize=cfg.popsize,
         starts=cli.parse_starts(cfg.starts),
+        record_candidates=cfg.candidate_k > 0,
     )
     b2 = evaluate_condition(evaluator, BASELINES["B2"], PoseEncoder(scenario), nozzle, body, scenario)
     start_best = {ps["start"]: ps["best_score"] for ps in result.per_start}
@@ -176,6 +215,10 @@ def run_task(task: tuple[int, dict, str]) -> dict:
     row["discomfort"] = float(result.best_result.discomfort)
     row["n_infeasible"] = int(result.n_infeasible)
     row["elapsed_s"] = time.perf_counter() - t0
+    if cfg.candidate_k > 0:
+        row.update(candidate_columns(result.candidates, scenario, float(result.best_score),
+                                     k=cfg.candidate_k, tol=cfg.candidate_tol,
+                                     min_dist=cfg.candidate_min_dist))
     row["exp_id"] = f"{cfg.dataset_id}_{body_idx:05d}_{scenario_name}"
     row["seed"] = seed
     return row
@@ -230,6 +273,7 @@ def build_dataset(
         "patches_per_m2": cfg.patches_per_m2,
         "evaluator": cfg.evaluator,
         "body_model": body_model,
+        "candidate_k": cfg.candidate_k,
     }
 
     existing = _read(out_path)
@@ -237,6 +281,8 @@ def build_dataset(
     if existing is not None and len(existing):
         if "body_model" not in existing.columns:        # body_model 열 이전 파일은 캡슐판이다
             existing = existing.assign(body_model="capsule")
+        if "candidate_k" not in existing.columns:       # candidate_k 열 이전 파일은 후보를 저장하지 않았다
+            existing = existing.assign(candidate_k=0)
         for col in CONSISTENCY_COLS:
             vals = set(existing[col].astype(str))
             if vals != {str(stamp[col])}:

@@ -79,6 +79,8 @@ parquet, 한 행 = 체형 1개 × 시나리오 1개.
 | `nozzle_layout_hash` | str | 사용한 고정 노즐 배치의 해시 |
 | `score`, `total_removal`, `discomfort` | float | |
 | `exp_id`, `commit`, `seed` | str/int | 재현용 |
+| `candidate_k` | int | 체형당 저장한 근사 최적 후보 수 설정. 0 이면 아래 열 없음 |
+| `cand_pose_*`, `cand_score`, `n_candidates` | list[float] / int | `candidate_k > 0` 일 때만. best 대비 `candidate_tol` 안의 가능한 후보를 점수순·서로 떨어진 것만 최대 k 개 (yaw 접은 값). flow matching 학습 점 (`airis/optimize/dataset.py`) |
 
 ## 회귀 모델 (C → E)
 
@@ -90,10 +92,11 @@ def predict_pose(body: BodyParams, scenario: Scenario) -> PoseParams
 
 - 시나리오는 객체로 받고 안에서는 `scenario.name`으로 구분한다 (데이터셋 열 `scenario`가 str). 학습에 없던 이름은 `KeyError`.
 - 출력은 항상 `PoseEncoder(scenario).clip_pose()`로 투영한다 → `pose_bounds` 안, `fixed_pose` 적용(휠체어 hip/knee 90).
-- 산출물 `data/models/pose_regressor.joblib`에 `nozzle_layout_hash`, `physics_hash`, 학습 커밋을 함께 저장하고, 로드 시 현재 설정과 다르면 경고한다. 물리 기준이 바뀌면 모델은 무효다 (`docs/experiments.md`와 같은 규칙).
+- 구현: 조건부 flow matching (`airis/model/flow.py`, `docs/proposals/flow_matching.md`). 샘플 16개를 뽑아 `clip_pose` 후 학습 데이터와 같은 몸 모델·밀도의 패치판으로 재채점해 최고를 돌려준다 (`airis/model/predict.py`). torch 필요.
+- 산출물 `data/models/pose_flow.pt`(`scripts/train_pose_flow.py`)에 `nozzle_layout_hash`, `physics_hash`, 학습 커밋을 함께 저장하고, 로드 시 현재 설정과 다르면 경고한다. 물리 기준이 바뀌면 모델은 무효다 (`docs/experiments.md`와 같은 규칙).
 - **다봉 지형 처리**: 부스·노즐이 좌우 대칭이라 `torso_yaw ±θ`가 동등하다 → 데이터셋 생성(C 단계 9)에서 yaw를 `|yaw|`로 접는다(거울 정규화). **앞뒤 등가(2026-09-21 메시판 E4에서 확인, C)**: 슬롯 배치가 진행 방향(x)으로도 대칭이고 `part_weights`의 torso_front/back이 같아 `yaw θ`와 `180° − θ`의 점수가 같다(0.6533 vs 0.6534) → 한 번 더 `90° − |90° − |yaw||`로 접어 0~90°로 정규화한다. 원래 yaw 열은 데이터셋에 유지한다. 슬롯 배치의 x 대칭이나 front/back 가중치가 달라지면 이 두 번째 접기는 제거한다. 팔 벌림은 "팔 내림"과 "만세" 두 봉우리 사이 평균(≈90°)이 부스 밖일 수 있으므로, 모델은 봉우리를 먼저 분류하고 그 안에서 회귀하거나 최소한 출력 후 `outside_booth`로 부스 안인지 검사해 가까운 봉우리로 투영한다.
-- 평가(E5): 예측 자세를 시뮬레이터에 넣은 점수 / 직접 최적화 점수 (README H3: 95% 이상).
-- 예외 규약(E의 `recommend_pose`가 스텁으로 폴백할 때 구분한다): 모듈이 없으면 `ImportError`, 산출물 `data/models/pose_regressor.joblib`이 없으면 `FileNotFoundError`, 학습에 없던 시나리오면 `KeyError`. 그 외 예외는 삼키지 않는다.
+- 평가(E5): 예측 자세를 시뮬레이터에 넣은 점수 / 직접 최적화 점수 (README H3: 95% 이상). `scripts/run_e5_flow.py`가 flow(재채점) · flow1(샘플 1개) · MLP 평균 회귀 · 스텁을 holdout 체형에서 비교한다.
+- 예외 규약(E의 `recommend_pose`가 스텁으로 폴백할 때 구분한다): 모듈이 없으면 `ImportError`, 산출물 `data/models/pose_flow.pt`가 없으면 `FileNotFoundError`, 학습에 없던 시나리오면 `KeyError`. 그 외 예외는 삼키지 않는다.
 
 ## 시각화용 상태 덤프 (A → E)
 
