@@ -9,7 +9,7 @@ from collections.abc import Sequence
 
 import numpy as np
 
-from .types import BodyParams, PoseParams, NozzleConfig, Scenario, EvalResult
+from .types import BodyParams, PoseParams, NozzleConfig, Scenario, EvalResult, Plan
 
 
 class Evaluator(ABC):
@@ -22,6 +22,21 @@ class Evaluator(ABC):
         scenario: Scenario,
     ) -> EvalResult:
         """후보 하나 평가. 결정론적이어야 한다 (같은 입력 → 같은 점수)."""
+
+    def evaluate_plan(
+        self,
+        plan: Plan,
+        nozzle: NozzleConfig,
+        body: BodyParams,
+        scenario: Scenario,
+    ) -> EvalResult:
+        """계획(자세 순서 + 구역 세기 + 시간) 평가. docs/plan_extension.md, 00_common 4.4·4.6·4.7.
+
+        nozzle 은 기준 배치(구역 세기 적용 전)다. 평가기가 단계마다 B 의 apply_zone_strengths 로
+        구역 세기를 입힌다. extra 에 energy, duration_s, removal_by_part_per_phase 를 넣는다.
+        구현하지 않은 평가기는 NotImplementedError.
+        """
+        raise NotImplementedError(f"{type(self).__name__} 은 evaluate_plan 을 구현하지 않았다")
 
     def batch_evaluate(
         self,
