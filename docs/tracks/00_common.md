@@ -7,8 +7,8 @@
 | 트랙 | 수정 가능 | 절대 수정 금지 |
 |---|---|---|
 | B | `airis/sim/body.py`, `human_mesh.py`, `jet.py`, `scenario.py`, `airis/viz/debug3d.py`, `configs/*.yaml`, `data/meshes/*`, `scripts/build_sim_mesh.py`, `tests/test_body.py`, `tests/test_jet.py`, `tests/test_human_mesh.py` | |
-| D | `airis/sim/patch_baseline.py`, `airis/sim/scoring.py`, `tests/test_sanity_physics.py`, `tests/fakes.py`, `scripts/compare_evaluators.py`, `scripts/compare_bodies.py` | `configs/` |
-| C | `airis/optimize/*`, `scripts/run_optimize.py`, `scripts/run_baselines.py`, `scripts/run_e4.py`, `scripts/run_e3.py`, `scripts/run_dataset.py`, `docs/experiments.md`, `tests/test_encoding.py`, `tests/test_cmaes_dummy.py` | `configs/` |
+| D | `airis/sim/patch_baseline.py`, `airis/sim/scoring.py`, `tests/test_sanity_physics.py`, `tests/fakes.py`, `scripts/compare_evaluators.py`, `scripts/compare_bodies.py`, `tests/test_plan_eval.py` | `configs/` |
+| C | `airis/optimize/*`, `scripts/run_optimize.py`, `scripts/run_baselines.py`, `scripts/run_e4.py`, `scripts/run_e3.py`, `scripts/run_dataset.py`, `scripts/run_e7.py`, `airis/model/*`, `scripts/train_*.py`, `scripts/run_e5_*.py`, `docs/experiments.md`, `docs/proposals/*`, `tests/test_encoding.py`, `tests/test_cmaes_dummy.py`, `tests/test_plan_encoding.py`, `tests/test_pose_flow.py` | `configs/` |
 | A | `airis/sim/particles.py`, `airis/sim/kernels/*`, `tests/test_particles.py` | `configs/` |
 | E | `airis/realtime/*`, `airis/viz/*`(단 `debug3d.py`는 B), `scripts/run_dashboard.py`, `scripts/render_frames.py`, `tests/test_realtime.py`, `tests/test_viz.py`, `docs/figures/*` | `configs/`, `airis/sim/*` |
 | 전원 | | `airis/sim/types.py`, `airis/sim/interface.py`, `docs/interfaces.md` |
@@ -135,6 +135,17 @@ score       = Σ_부위 scoring.part_weights[부위] · R_부위  −  scoring.d
 
 부위별 제거율 `R_부위`는 면적 가중 평균(D) 또는 입자 수 가중(A).
 
+**계획 점수 (`evaluate_plan`, 2026-09-29 총괄 확정, `docs/plan_extension.md`)**: 단일 자세 `evaluate`의 식은 위 그대로이고, 계획은 아래 식을 쓴다.
+
+```
+T           = Σ_k t_k                              (단계 시간 합, 전환 시간 제외)
+score_plan  = Σ_부위 w_부위 · R_부위(4.6)
+              − scoring.discomfort_weight · Σ_k 불편도_k · t_k / T_ref     (시간 가중 불편도)
+              − scoring.energy_weight · e                                  (4.7)
+              − scoring.time_weight · T / T_ref
+T_ref       = scoring.reference_duration_s (20)
+```
+
 ### 4.5 항력 (A만)
 
 ```
@@ -146,6 +157,40 @@ v_p(t+dt) = v_air + (v_p(t) − v_air) · exp(−dt/τ_p) + g·dt
 ```
 
 지수 완화 형태라 `dt`가 `τ_p`보다 커도 안정하다. 중앙값 20 µm 입자는 `Re ≈ 30`이라 뉴턴 영역에 들어가지 않으며, 로그 정규 꼬리의 수백 µm 입자만 해당한다. 두 식은 `Re = 1000`에서 연속이다 (`1 + 0.15·1000^0.687 ≈ 18.3 = 0.0183·1000`).
+
+### 4.6 시간 의존 제거 (계획 평가 전용. D 닫힌 식, A 입자 확률)
+
+`adhesion.kinetics.enabled`가 참일 때 `evaluate_plan`에만 적용한다. 단일 자세 `evaluate`는 시간 항이 없는 점근값(4.3)을 유지한다.
+
+```
+T_r         = adhesion.kinetics.time_constant_s
+단일 단계    R_i(t) = R∞_i · (1 − exp(−t / T_r)),   R∞_i = 4.3 의 로그 정규 CDF F(τ_i)
+여러 단계    패치 i, 단계 k 의 전단 τ_ik, 시간 t_k. τ_ik 를 오름차순 정렬해 τ_(1) ≤ … ≤ τ_(K), F(τ_(0)) = 0
+            R_i = Σ_j [F(τ_(j)) − F(τ_(j−1))] · (1 − exp(−(Σ_{k: τ_ik ≥ τ_(j)} t_k) / T_r))
+```
+
+- 임계 전단이 `τ_c`인 입자는 `τ_ik > τ_c`인 단계에서만 떨어질 수 있다는 가정에서 나온 정확한 식이다. K = 1이면 단일 단계 식과 같다.
+- 단계 사이 전환 시간 `plan.transition_s` 동안은 제거 0으로 본다.
+- **A (입자판)**: `τ > τ_c`인 부착 입자가 스텝마다 확률 `1 − exp(−dt/T_r)`로 이탈한다. 단계가 바뀌면 몸 자세를 바꾸고 부착 입자는 자기 패치를 따라 움직인다.
+- **B 보장**: 패치는 자세와 무관한 같은 물질점이어야 한다(휴지 자세에서 샘플링 후 스키닝). 단계가 달라도 패치 i는 같은 옷 위치다.
+
+### 4.7 구역 세기, 풍량 한도, 에너지 (B가 구역 → 노즐, C가 한도 보수, D·A가 에너지)
+
+```
+구역        ZONE_NAMES = chest_low, chest_high, back_low, back_high, top  (몸 기준, types.py)
+            chest = 몸 전방 벡터가 향하는 쪽 벽: sin(torso_yaw) ≥ 0 이면 +y 벽, 아니면 −y 벽
+출구 속도    U0_m = s_m · jet.slot.exit_velocity_mps,  s_m = 노즐 m 이 속한 구역의 세기 × 기준 배치 strength
+풍량        Q_m  = s_m · fan.rated_flow_m3_min
+제약        0 ≤ s_z ≤ fan.s_max,   Σ_m s_m ≤ fan.cap_ratio · M
+보수        합이 한도를 넘으면 전 구역 세기를 같은 비율로 줄인다 (C 의 인코더에서, 평가 전)
+쾌적 상한    scenario.nozzle_strength_cap (임산부: chest_low, chest_high ≤ 0.6)
+에너지      e = (Σ_m s_m^p · T) / (M · T_ref),  p = fan.power_exponent (3, 팬 상사 법칙)
+            전 팬 s = 1, T = T_ref 이면 e = 1 (현행 운전)
+```
+
+- 구역 세기는 계획 전체에서 하나다. 단계마다 가슴 쪽 벽이 바뀌면 구역 → 노즐 매핑만 단계별로 다시 계산한다.
+- 몸 기준 구역이라 기존 대칭 접기(`yaw ±θ`, `θ ≡ 180° − θ`)가 계획에서도 성립한다.
+- `T_r`, `energy_weight`, `power_exponent`, `s_max`, `cap_ratio`는 미보정 작업값이며 E3 민감도 대상이다.
 
 ## 5. 좌표계와 부스
 
