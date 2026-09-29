@@ -4,6 +4,7 @@
     python scripts/run_dataset.py --n-bodies 100 --processes 8               # 패치판, 시나리오 3개
     python scripts/run_dataset.py --n-bodies 200 --processes 8               # 같은 파일에 101~200 번 체형만 추가
     python scripts/run_dataset.py --evaluator dummy --n-bodies 4 --max-evals 40 --out data/datasets/try.parquet
+    python scripts/run_dataset.py --n-bodies 100 --processes 8 --candidate-k 16         --out data/datasets/pose_dataset_mesh_cand.parquet                 # flow matching 학습용 후보 열 포함
 
 기본 출력은 data/datasets/pose_dataset.parquet (git 밖). 끝나면 키 구간별 봉우리 요약을 출력하고
 같은 폴더에 <이름>_height_bins.csv 로 남긴다. 스키마와 재개 규칙은 airis/optimize/dataset.py.
@@ -33,6 +34,10 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--patches-per-m2", type=float, default=cli.DEFAULT_PATCHES_PER_M2)
     ap.add_argument("--seed", type=int, default=0, help="CMA-ES 시드 기준값")
     ap.add_argument("--body-seed", type=int, default=0, help="체형 샘플러 시드")
+    ap.add_argument("--candidate-k", type=int, default=0,
+                    help="체형당 저장할 근사 최적 후보 수 (flow matching 학습용, 0 = 저장 안 함)")
+    ap.add_argument("--candidate-tol", type=float, default=0.02, help="best 대비 허용 점수 차 비율")
+    ap.add_argument("--candidate-min-dist", type=float, default=0.1, help="후보 간 최소 정규화 거리")
     ap.add_argument("--processes", type=int, default=1)
     ap.add_argument("--flush-every", type=int, default=100)
     ap.add_argument("--out", default=str(ROOT / "data" / "datasets" / "pose_dataset.parquet"))
@@ -53,7 +58,8 @@ def main(argv: list[str] | None = None) -> int:
     cfg = dataset.DatasetConfig(
         evaluator=args.evaluator, max_evals=args.max_evals, popsize=args.popsize, starts=args.starts,
         patches_per_m2=args.patches_per_m2, seed=args.seed, body_seed=args.body_seed,
-        dataset_id=out.stem,
+        dataset_id=out.stem, candidate_k=args.candidate_k, candidate_tol=args.candidate_tol,
+        candidate_min_dist=args.candidate_min_dist,
     )
     try:
         info = dataset.build_dataset(out, n_bodies=args.n_bodies, scenarios=names, cfg=cfg,
