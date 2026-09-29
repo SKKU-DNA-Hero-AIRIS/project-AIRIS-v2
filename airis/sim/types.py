@@ -12,6 +12,10 @@ import numpy as np
 
 PART_NAMES = ["head", "torso_front", "torso_back", "arms", "legs"]
 
+# 세기 구역 (docs/plan_extension.md 2절). 몸 기준: chest = 몸 전방 벡터가 향하는 쪽 벽, back = 반대쪽 벽.
+# low = 측면 바 z 0.72·0.95, high = 1.18·1.42, top = 천장 바 4개. 구역 → 노즐 매핑은 B (apply_zone_strengths).
+ZONE_NAMES = ["chest_low", "chest_high", "back_low", "back_high", "top"]
+
 
 @dataclass
 class BodyParams:
@@ -112,3 +116,26 @@ class EvalResult:
     total_removal: float
     discomfort: float
     extra: dict = field(default_factory=dict)
+
+
+@dataclass
+class Phase:
+    """계획의 한 단계: 자세 하나를 duration_s 동안 유지. docs/plan_extension.md."""
+    pose: PoseParams
+    duration_s: float
+
+
+@dataclass
+class Plan:
+    """자세 순서 + 구역별 세기. 최적화 변수(C)이자 평가기 입력(evaluate_plan).
+
+    - phases: 1개 이상. 총 시간 = Σ duration_s (단계 사이 plan.transition_s 는 평가기가 따로 다룬다).
+    - zone_strengths: (len(ZONE_NAMES),) 구역 세기. 출구 속도 배수이며 풍량 한도 보수(00_common 4.7)를
+      거친 값이어야 한다. 계획 전체에서 하나다 (단계마다 바뀌지 않는다).
+    """
+    phases: list[Phase]
+    zone_strengths: np.ndarray
+
+    @property
+    def duration_s(self) -> float:
+        return float(sum(p.duration_s for p in self.phases))

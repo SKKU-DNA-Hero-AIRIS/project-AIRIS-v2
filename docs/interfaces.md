@@ -19,6 +19,7 @@
 | `Scenario` | B (`configs/scenarios.yaml`) | C, A, D | 상속 지원 |
 | `BodyState` | B (`build_body`) | A, D, E | 패치 + 캡슐 + `capsule_part`(K,) + `patch_capsule`(N,). 메시 모델이면 `mesh_vertices`(V,3)·`mesh_faces`(F,3)·`mesh_face_part`(F,)·`patch_face`(N,) 추가, `capsules`는 뼈 근사 캡슐 |
 | `EvalResult` | A, D | C, E | `score`는 최적화용, 나머지는 분석용 |
+| `Plan`, `Phase` | C(최적화 변수), 모델 | A, D, E | 자세 순서(`phases`: 자세 + 시간) + 구역 세기 `zone_strengths` (`ZONE_NAMES` 순서, 5개). `docs/plan_extension.md` |
 
 ## 함수 계약
 
@@ -54,6 +55,17 @@
 - 부스 밖 자세(패치가 `|y| > width/2` 또는 `z > height`)는 불가: `score = −1 − 10·d_out`(벽 초과 거리 m), 제거율 0, `extra["infeasible"] = True` (`00_common.md` 5절). 불가 판정은 `score ≤ −1.0`.
 - `score = Σ part_weights · removal_by_part − discomfort_weight · discomfort`
 - `discomfort = Σ discomfort_weights[k] · |pose[k] − pose_default[k]| / range[k]`
+
+### `Evaluator.evaluate_plan(plan, nozzle, body, scenario) -> EvalResult` (D, A)
+
+- 계획 평가. 수식은 `00_common.md` 4.4(계획 점수)·4.6(시간)·4.7(세기·에너지). `nozzle`은 기준 배치이고 평가기가 단계마다 `apply_zone_strengths`를 부른다.
+- `extra`: `energy`(무차원 e), `duration_s`, `removal_by_part_per_phase` (K, 5), 불가면 `infeasible`. 어느 단계든 부스 밖이면 계획 전체가 불가(5절 벌점은 단계 중 최대 `d_out`).
+- 단계 1개, 구역 세기 전부 1, `adhesion.kinetics.enabled` 거짓이면 `evaluate(pose, …)`와 제거율이 같아야 한다 (회귀 테스트).
+- 구현하지 않은 평가기는 `NotImplementedError`.
+
+### `apply_zone_strengths(nozzle, zone_strengths, torso_yaw) -> NozzleConfig` (B)
+
+- 구역 세기를 노즐별 `strengths`에 곱한 새 `NozzleConfig`. 구역 → 노즐 매핑은 `configs/nozzles.yaml`의 `zones`와 `torso_yaw`(가슴 쪽 벽 판정, `00_common.md` 4.7)로 정한다.
 
 ### `Evaluator.batch_evaluate(candidates, body, scenario) -> (B,)` (A 오버라이드)
 
@@ -92,11 +104,22 @@ def predict_pose(body: BodyParams, scenario: Scenario) -> PoseParams
 
 - 시나리오는 객체로 받고 안에서는 `scenario.name`으로 구분한다 (데이터셋 열 `scenario`가 str). 학습에 없던 이름은 `KeyError`.
 - 출력은 항상 `PoseEncoder(scenario).clip_pose()`로 투영한다 → `pose_bounds` 안, `fixed_pose` 적용(휠체어 hip/knee 90).
-- 구현: 조건부 flow matching (`airis/model/flow.py`, `docs/proposals/flow_matching.md`). 샘플 16개를 뽑아 `clip_pose` 후 학습 데이터와 같은 몸 모델·밀도의 패치판으로 재채점해 최고를 돌려준다 (`airis/model/predict.py`). torch 필요.
+- 구현 후보: 조건부 flow matching (`airis/model/flow.py`, `docs/proposals/flow_matching.md`). 샘플 16개를 뽑아 `clip_pose` 후 학습 데이터와 같은 몸 모델·밀도의 패치판으로 재채점해 최고를 돌려준다 (`airis/model/predict.py`, `extra_candidates`로 고정 후보를 함께 재채점할 수 있다). torch 필요. 같은 코드가 출력 공간만 바꿔 계획 모델(`PlanSpace`, 21차원)도 학습한다. **기본 모델 채택은 E5 비교 결과로 정한다** — 메시판 300행(체형당 정답 1개) holdout에서는 kNN + 재채점이 하위 5% 0.994~0.998로 가장 높고 flow + 재채점은 0.936~0.959였다 (2026-09-29, `scripts/run_e5_flow.py`).
 - 산출물 `data/models/pose_flow.pt`(`scripts/train_pose_flow.py`)에 `nozzle_layout_hash`, `physics_hash`, 학습 커밋을 함께 저장하고, 로드 시 현재 설정과 다르면 경고한다. 물리 기준이 바뀌면 모델은 무효다 (`docs/experiments.md`와 같은 규칙).
 - **다봉 지형 처리**: 부스·노즐이 좌우 대칭이라 `torso_yaw ±θ`가 동등하다 → 데이터셋 생성(C 단계 9)에서 yaw를 `|yaw|`로 접는다(거울 정규화). **앞뒤 등가(2026-09-21 메시판 E4에서 확인, C)**: 슬롯 배치가 진행 방향(x)으로도 대칭이고 `part_weights`의 torso_front/back이 같아 `yaw θ`와 `180° − θ`의 점수가 같다(0.6533 vs 0.6534) → 한 번 더 `90° − |90° − |yaw||`로 접어 0~90°로 정규화한다. 원래 yaw 열은 데이터셋에 유지한다. 슬롯 배치의 x 대칭이나 front/back 가중치가 달라지면 이 두 번째 접기는 제거한다. 팔 벌림은 "팔 내림"과 "만세" 두 봉우리 사이 평균(≈90°)이 부스 밖일 수 있으므로, 모델은 봉우리를 먼저 분류하고 그 안에서 회귀하거나 최소한 출력 후 `outside_booth`로 부스 안인지 검사해 가까운 봉우리로 투영한다.
-- 평가(E5): 예측 자세를 시뮬레이터에 넣은 점수 / 직접 최적화 점수 (README H3: 95% 이상). `scripts/run_e5_flow.py`가 flow(재채점) · flow1(샘플 1개) · MLP 평균 회귀 · 스텁을 holdout 체형에서 비교한다.
+- 평가(E5): 예측 자세를 시뮬레이터에 넣은 점수 / 직접 최적화 점수. README H3의 중앙값 95%는 고정 후보표 + 재채점(스텁)이 이미 넘으므로, 채택 기준은 **하위 5% 점수 비율과 0.95 미만 비율**이다. `scripts/run_e5_flow.py`가 flow · flow+stub · flow1(샘플 1개) · kNN + 재채점 · 봉우리별 회귀(clsreg) · HGB·MLP 평균 회귀 · 스텁을 holdout 체형에서 비교하고, 재채점 횟수(`n_evals`)와 경계 구간(wheelchair 키 1.45~1.60 m, 선 자세 키 1.83 m 이상)을 함께 보고한다.
 - 예외 규약(E의 `recommend_pose`가 스텁으로 폴백할 때 구분한다): 모듈이 없으면 `ImportError`, 산출물 `data/models/pose_flow.pt`가 없으면 `FileNotFoundError`, 학습에 없던 시나리오면 `KeyError`. 그 외 예외는 삼키지 않는다.
+
+## 계획 모델 (C → E, 확장)
+
+```python
+def predict_plan(body: BodyParams, scenario: Scenario) -> Plan
+```
+
+- 구현: `airis/model/predict.py`의 `predict_plan` (산출물 `data/models/plan_flow.pt`, 데이터셋 열 `plan_<키>`, 키 순서는 `airis/model/flow.PlanSpace.plan_keys`). 대칭 접기는 계획 전체에 함께 적용하므로 1단계 yaw만 0~90°로 접는다.
+- `predict_pose`와 같은 예외 규약·해시 규칙을 따른다. 자세 산출물을 계획 모델로(또는 반대로) 읽으면 `ValueError`. 출력은 C의 `PlanEncoder(scenario).clip_plan()`으로 투영한다(자세 범위, 시간 범위, 구역 세기 범위·풍량 한도·쾌적 상한).
+- 모델은 출력 길이에 묶이지 않게 만든다(임의 길이 벡터 + 시나리오별 마스크). 단일 자세 모델과 계획 모델이 같은 코드를 쓴다.
+- 평가(E5): 예측 계획의 `evaluate_plan` 점수 / 직접 최적화 점수. 채택 기준은 **하위 5% 점수 비율과 0.95 미만 비율**이 기준선(고정 후보표 + 재채점, kNN + 재채점)보다 나을 것. 재채점 횟수는 같게 맞춘다.
 
 ## 시각화용 상태 덤프 (A → E)
 
