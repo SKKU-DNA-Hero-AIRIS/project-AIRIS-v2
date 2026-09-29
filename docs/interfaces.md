@@ -104,11 +104,13 @@ def predict_pose(body: BodyParams, scenario: Scenario) -> PoseParams
 
 - 시나리오는 객체로 받고 안에서는 `scenario.name`으로 구분한다 (데이터셋 열 `scenario`가 str). 학습에 없던 이름은 `KeyError`.
 - 출력은 항상 `PoseEncoder(scenario).clip_pose()`로 투영한다 → `pose_bounds` 안, `fixed_pose` 적용(휠체어 hip/knee 90).
-- 구현 후보: 조건부 flow matching (`airis/model/flow.py`, `docs/proposals/flow_matching.md`). 샘플 16개를 뽑아 `clip_pose` 후 학습 데이터와 같은 몸 모델·밀도의 패치판으로 재채점해 최고를 돌려준다 (`airis/model/predict.py`, `extra_candidates`로 고정 후보를 함께 재채점할 수 있다). torch 필요. 같은 코드가 출력 공간만 바꿔 계획 모델(`PlanSpace`, 21차원)도 학습한다. **기본 모델 채택은 E5 비교 결과로 정한다** — 메시판 300행(체형당 정답 1개) holdout에서는 kNN + 재채점이 하위 5% 0.994~0.998로 가장 높고 flow + 재채점은 0.936~0.959였다 (2026-09-29, `scripts/run_e5_flow.py`).
+- **기본 구현: 혼합 방식 (총괄 결정 2026-09-30).** 후보 = flow matching 샘플 8 (`airis/model/flow.py`) + 가까운 체형(kNN)의 최적 자세 8 + 호출자가 넘기는 고정 후보(`extra_candidates`, E의 후보표 2) → `clip_pose` 후 학습 데이터와 같은 몸 모델·밀도의 패치판으로 재채점 → 최고 (`airis/model/predict.py`, `backend="hybrid"`). `Prediction.sources`에 후보별 출처(`flow`·`knn`·`extra`)를 남긴다. 같은 입력이면 같은 출력이다(난수 고정).
+- 근거 (체형 5-fold, 메시판 300행, 1,500/m², `outputs/e5cv_20260929`): 하위 5% 점수 비율 · 0.95 미만 비율이 kNN + 고정 후보 0.996 · 1.0%, flow + 고정 후보 0.963 · 2.7%, flow 0.950 · 5.0%, 봉우리별 회귀 0.948 · 5.7%, 고정 후보표만 0.908 · 10.3%, 평균 회귀 0.82 · 41~43%. kNN 단독은 키 1.93 m에서 이웃의 만세가 모두 천장에 걸려 불가가 나오므로 고정 후보를 함께 재채점한다. 합격 기준: 5-fold 하위 5% ≥ 0.99, 0.95 미만 ≤ 2%, 불가 0, 응답 1.5 s 이하.
+- 산출물: `data/models/pose_flow.pt`(flow, torch 필요)와 `data/models/pose_knn.parquet`(kNN 표: `body_*`, `scenario`, `pose_*`, `score`, `arm_class`, 해시·몸 모델·밀도·커밋). 한쪽만 있으면 있는 쪽 + 고정 후보로 동작하고 경고를 한 번 낸다. 같은 코드가 출력 공간만 바꿔 계획 모델(`PlanSpace`, 21차원)도 학습한다.
 - 산출물 `data/models/pose_flow.pt`(`scripts/train_pose_flow.py`)에 `nozzle_layout_hash`, `physics_hash`, 학습 커밋을 함께 저장하고, 로드 시 현재 설정과 다르면 경고한다. 물리 기준이 바뀌면 모델은 무효다 (`docs/experiments.md`와 같은 규칙).
 - **다봉 지형 처리**: 부스·노즐이 좌우 대칭이라 `torso_yaw ±θ`가 동등하다 → 데이터셋 생성(C 단계 9)에서 yaw를 `|yaw|`로 접는다(거울 정규화). **앞뒤 등가(2026-09-21 메시판 E4에서 확인, C)**: 슬롯 배치가 진행 방향(x)으로도 대칭이고 `part_weights`의 torso_front/back이 같아 `yaw θ`와 `180° − θ`의 점수가 같다(0.6533 vs 0.6534) → 한 번 더 `90° − |90° − |yaw||`로 접어 0~90°로 정규화한다. 원래 yaw 열은 데이터셋에 유지한다. 슬롯 배치의 x 대칭이나 front/back 가중치가 달라지면 이 두 번째 접기는 제거한다. 팔 벌림은 "팔 내림"과 "만세" 두 봉우리 사이 평균(≈90°)이 부스 밖일 수 있으므로, 모델은 봉우리를 먼저 분류하고 그 안에서 회귀하거나 최소한 출력 후 `outside_booth`로 부스 안인지 검사해 가까운 봉우리로 투영한다.
 - 평가(E5): 예측 자세를 시뮬레이터에 넣은 점수 / 직접 최적화 점수. README H3의 중앙값 95%는 고정 후보표 + 재채점(스텁)이 이미 넘으므로, 채택 기준은 **하위 5% 점수 비율과 0.95 미만 비율**이다. `scripts/run_e5_flow.py`가 flow · flow+stub · flow1(샘플 1개) · kNN + 재채점 · 봉우리별 회귀(clsreg) · HGB·MLP 평균 회귀 · 스텁을 holdout 체형에서 비교하고, 재채점 횟수(`n_evals`)와 경계 구간(wheelchair 키 1.45~1.60 m, 선 자세 키 1.83 m 이상)을 함께 보고한다.
-- 예외 규약(E의 `recommend_pose`가 스텁으로 폴백할 때 구분한다): 모듈이 없으면 `ImportError`, 산출물 `data/models/pose_flow.pt`가 없으면 `FileNotFoundError`, 학습에 없던 시나리오면 `KeyError`. 그 외 예외는 삼키지 않는다.
+- 예외 규약(E의 `recommend`가 스텁으로 폴백할 때 구분한다): 모듈이 없거나 쓸 수 있는 백엔드가 없으면(`torch` 없음 + kNN 표 없음) `ImportError`, 산출물이 둘 다 없으면 `FileNotFoundError`, 학습에 없던 시나리오면 `KeyError`. 그 외 예외는 삼키지 않는다. `torch`가 없어도 kNN 백엔드는 동작해야 한다.
 
 ## 계획 모델 (C → E, 확장)
 
