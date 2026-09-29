@@ -115,6 +115,8 @@ def predict_plan(body: BodyParams, scenario: Scenario) -> Plan
 
 - `predict_pose`와 같은 예외 규약·해시 규칙을 따른다. 출력은 C의 `PlanEncoder(scenario).clip_plan()`으로 투영한다(자세 범위, 시간 범위, 구역 세기 범위·풍량 한도·쾌적 상한).
 - 모델은 출력 길이에 묶이지 않게 만든다(임의 길이 벡터 + 시나리오별 마스크). 단일 자세 모델과 계획 모델이 같은 코드를 쓴다.
+- 계획 벡터의 키 순서(데이터셋 열 `plan_<키>`, 후보 목록 `cand_plan_<키>`): `p1_<자세 7개>`, `p2_<자세 7개>`, `duration_s`, `share_1`, `zone_chest_low`, `zone_chest_high`, `zone_back_low`, `zone_back_high`, `zone_top`. 단계 시간 = `plan.min_phase_s + (T − K·plan.min_phase_s)·몫`, 마지막 단계가 나머지 몫을 갖는다. 대칭 정규화는 `00_common.md` 4.7 (계획 전체에 함께, 1단계 yaw만 0~90°).
+- 장비 제어 출력(E): 몸 기준 구역 세기와 함께 단계별 실제 팬 값(노즐 12개 속도 비율 = `apply_zone_strengths(…).strengths`)을 낸다.
 - 평가(E5): 예측 계획의 `evaluate_plan` 점수 / 직접 최적화 점수. 채택 기준은 **하위 5% 점수 비율과 0.95 미만 비율**이 기준선(고정 후보표 + 재채점, kNN + 재채점)보다 나을 것. 재채점 횟수는 같게 맞춘다.
 
 ## 시각화용 상태 덤프 (A → E)
