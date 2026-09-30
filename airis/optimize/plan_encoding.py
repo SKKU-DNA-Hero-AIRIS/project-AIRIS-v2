@@ -77,7 +77,7 @@ class PlanLimits:
         )
 
 
-def _default_zone_counts() -> np.ndarray:
+def default_zone_counts() -> np.ndarray:
     """기준 노즐 배치의 구역별 노즐 수. 배치 파일이 없으면 구역마다 1개로 본다.
 
     설정 오류(좌우 노즐 수 불일치 등)는 조용히 넘기지 않고 경고를 낸 뒤 폴백한다.
@@ -145,7 +145,7 @@ class PlanEncoder:
             raise ValueError(
                 f"총 시간 하한 {lo_t} s 가 단계 {self.limits.n_phases}개 × 최소 {self.limits.min_phase_s} s 보다 짧다")
         counts = (np.asarray(zone_nozzle_counts, dtype=np.float64) if zone_nozzle_counts is not None
-                  else _default_zone_counts())
+                  else default_zone_counts())
         if counts.shape != (len(ZONE_NAMES),) or counts.sum() <= 0:
             raise ValueError(f"구역별 노즐 수는 {len(ZONE_NAMES)}개 양수여야 한다: {zone_nozzle_counts}")
         self.zone_counts = counts
