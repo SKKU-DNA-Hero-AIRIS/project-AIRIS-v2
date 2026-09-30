@@ -1,6 +1,6 @@
 """벽면 전단 / 제거율 / 불편도 / 점수. 소유자: D. A와 C도 import한다.
 
-수식의 단일 기준은 `docs/tracks/00_common.md` 4.2~4.4다. 여기가 어긋나면 D와 A의
+수식의 단일 기준은 `docs/tracks/00_common.md` 4.2~4.4(+ 계획 확장 4.6·4.7)다. 여기가 어긋나면 D와 A의
 점수가 달라져 E2(순위 상관)가 실패하므로, 네 함수 모두 문서 수식을 그대로 옮긴다.
 
 물리 상수는 전부 `configs/physics.yaml`(= `physics_cfg` dict)에서 읽는다.
@@ -16,7 +16,7 @@ import math
 import numpy as np
 from scipy.special import erf
 
-from .types import PART_NAMES, PoseParams, Scenario
+from .types import PART_NAMES, Phase, PoseParams, Scenario
 
 _SQRT2 = math.sqrt(2.0)
 
@@ -104,4 +104,93 @@ def score(removal_by_part: np.ndarray, pose: PoseParams, scenario: Scenario,
     weights = np.array([float(part_weights.get(name, 0.0)) for name in PART_NAMES])
     disc = discomfort(pose, scenario)
     total = float(weights @ removal_by_part) - float(scoring_cfg["discomfort_weight"]) * disc
+    return total, disc
+
+
+# --- 계획 확장 (docs/plan_extension.md, 00_common.md 4.4·4.6·4.7) ----------------
+
+def removal_fraction_plan(tau: np.ndarray, durations: np.ndarray,
+                          physics_cfg: dict) -> np.ndarray:
+    """(K,P) 전단과 (K,) 단계 시간 -> (P,) 제거율. `00_common.md` 4.6.
+
+    임계 전단 `tau_c` 인 입자는 `tau_ik >= tau_c` 인 단계에서만 떨어질 수 있다. 단계를 패치마다
+    전단 오름차순으로 정렬해 `tau_(1) <= ... <= tau_(K)`, `F` = 로그 정규 CDF(4.3), `F(tau_(0)) = 0`,
+    `T_r = adhesion.kinetics.time_constant_s` 라 하면
+
+        R_i = sum_j [F(tau_(j)) - F(tau_(j-1))] · (1 - exp(-(sum_{k: tau_ik >= tau_(j)} t_k) / T_r))
+
+    `adhesion.kinetics.enabled` 가 거짓이면 시간 항이 없는 점근값 `R_i = F(max_k tau_ik)` 다
+    (위 식에서 t -> 무한대인 극한이고, 단계가 1개면 `removal_fraction` 과 같다).
+    """
+    tau = np.atleast_2d(np.asarray(tau, dtype=np.float64))
+    durations = np.asarray(durations, dtype=np.float64).reshape(-1)
+    if durations.shape[0] != tau.shape[0]:
+        raise ValueError(f"durations {durations.shape} 가 tau {tau.shape} 의 단계 수와 다르다")
+    if (durations < 0.0).any() or not np.all(np.isfinite(durations)):
+        raise ValueError("durations 는 0 이상의 유한값이어야 한다")
+
+    kinetics = physics_cfg["adhesion"].get("kinetics", {})
+    if not kinetics.get("enabled", False):
+        return removal_fraction(tau.max(axis=0), physics_cfg)
+
+    t_r = float(kinetics["time_constant_s"])
+    if t_r <= 0.0:
+        raise ValueError(f"adhesion.kinetics.time_constant_s 는 양수여야 한다: {t_r}")
+
+    order = np.argsort(tau, axis=0, kind="stable")                  # (K,P) 패치마다 전단 오름차순
+    tau_sorted = np.take_along_axis(tau, order, axis=0)
+    t_sorted = durations[order]                                     # (K,P)
+    # j 번째 밴드가 노출되는 시간 = 전단이 tau_(j) 이상인 단계들의 시간 합 (정렬 뒤 뒤쪽 누적).
+    exposed = np.cumsum(t_sorted[::-1], axis=0)[::-1]
+    f = removal_fraction(tau_sorted, physics_cfg)                   # (K,P)
+    band = np.diff(f, axis=0, prepend=0.0)                          # F(tau_(j)) - F(tau_(j-1))
+    return (band * (1.0 - np.exp(-exposed / t_r))).sum(axis=0)
+
+
+def energy(strengths: np.ndarray, duration_s: float, physics_cfg: dict) -> float:
+    """노즐별 세기 (M,) 와 시간 -> 무차원 에너지 e. `00_common.md` 4.7.
+
+        e = (sum_m s_m^p · T) / (M · T_ref),  p = fan.power_exponent, T_ref = scoring.reference_duration_s
+
+    전 노즐 s = 1, T = T_ref 인 현행 운전이면 e = 1 이다.
+    """
+    s = np.asarray(strengths, dtype=np.float64).reshape(-1)
+    if s.size == 0:
+        raise ValueError("strengths 가 비어 있다")
+    if not np.all(np.isfinite(s)) or (s < 0.0).any():
+        raise ValueError("strengths 는 0 이상의 유한값이어야 한다")
+    p = float(physics_cfg["fan"]["power_exponent"])
+    t_ref = float(physics_cfg["scoring"]["reference_duration_s"])
+    return float((s ** p).sum() * float(duration_s) / (s.size * t_ref))
+
+
+def score_plan(removal_by_part: np.ndarray, phases: list[Phase], scenario: Scenario,
+               physics_cfg: dict, energy_value: float) -> tuple[float, float]:
+    """`00_common.md` 4.4 의 계획 점수 -> (score, 시간 가중 불편도).
+
+        score = sum_부위 w_부위 · R_부위
+                - scoring.discomfort_weight · sum_k 불편도_k · t_k / T_ref
+                - scoring.energy_weight · e
+                - scoring.time_weight · T / T_ref
+
+    두 번째 항의 `sum_k 불편도_k · t_k / T_ref` 를 "시간 가중 불편도"로 함께 돌려준다
+    (`EvalResult.discomfort`). 단일 자세를 T_ref 만큼 유지하면 `discomfort(pose, scenario)` 와 같다.
+    """
+    scoring_cfg = physics_cfg["scoring"]
+    removal_by_part = np.asarray(removal_by_part, dtype=np.float64)
+    if removal_by_part.shape != (len(PART_NAMES),):
+        raise ValueError(
+            f"removal_by_part는 {(len(PART_NAMES),)} 여야 한다: {removal_by_part.shape}")
+    if not phases:
+        raise ValueError("phases 가 비어 있다")
+
+    t_ref = float(scoring_cfg["reference_duration_s"])
+    total_time = float(sum(ph.duration_s for ph in phases))
+    disc = sum(discomfort(ph.pose, scenario) * float(ph.duration_s) for ph in phases) / t_ref
+
+    weights = np.array([float(scoring_cfg["part_weights"].get(name, 0.0)) for name in PART_NAMES])
+    total = (float(weights @ removal_by_part)
+             - float(scoring_cfg["discomfort_weight"]) * disc
+             - float(scoring_cfg["energy_weight"]) * float(energy_value)
+             - float(scoring_cfg.get("time_weight", 0.0)) * total_time / t_ref)
     return total, disc
