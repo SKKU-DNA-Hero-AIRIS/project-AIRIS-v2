@@ -92,7 +92,13 @@ mesh, 1,500/m², 도장은 **옛 file_hash 규약** 값), 커밋 `fde8cdc`, 체�
 
    - flow 학습(약 25 s) → kNN 표(1 s 미만) → 체형 5-fold(약 25분, CPU) → 합격 판정 → 합격이면 설치.
    - 산출물은 먼저 `outputs/refresh_<시각>/`에 만들고, **합격했을 때만** 설치 폴더(`data/models/` 또는
-     환경변수 `AIRIS_MODEL_DIR`)로 복사한다. 기존 파일은 `<이름>.prev`로 남긴다.
+     환경변수 `AIRIS_MODEL_DIR`)로 설치한다. 기존 산출물은 `<이름>.prev`로 남긴다(1세대, flow·kNN 쌍).
+   - 설치는 준비(`.new`·`.prev.new` 복사) → 교체(`os.replace`, 실패하면 바뀐 파일을 되돌림) → `.prev` 확정 순이다.
+     한 번의 실패(복사 중단, 파일 잠김, Ctrl+C)로는 새 flow + 옛 kNN 이 섞인 채 남지 않고 옛 산출물도 잃지 않는다.
+     되돌리기까지 실패하는 이중 실패에서는 옛 산출물 백업(`<이름>.prev.new`)을 남기고 경고한다(손으로 복구).
+     설치가 실패해도 `gate.json`의 `install_error`에 남기고 종료 코드 1.
+   - **설치 전에 본 폴더 `data/models`를 여는 프로세스(E 대시보드)를 내린다.** 통합 관리 세션에 "설치 시작"을
+     알리고 확인을 받은 뒤 설치한다.
    - 결과: `e5cv.csv`(행별), `e5cv_overall.csv`(방법별 전체 지표), `gate.json`(판정·도장·시간),
      `gate.md`(이 문서 2절에 붙일 표). 불합격이면 종료 코드 1.
    - 선택: `--no-install`(재현만), `--skip-cv --install`(판정 없이 설치, 급할 때), `--folds 2 --limit 2 --no-install`
@@ -102,17 +108,23 @@ mesh, 1,500/m², 도장은 **옛 file_hash 규약** 값), 커밋 `fde8cdc`, 체�
 worktree에서 돌릴 때는 데이터셋 경로를 본 폴더로 주고, 설치 폴더를 `--model-dir`(또는 `AIRIS_MODEL_DIR`)로
 본 폴더 `data/models`에 맞춘다.
 
-주의: 지금 `physics_hash`는 `physics.yaml` 파일 바이트 전체의 sha256이라, 물리 값이 같아도 키 추가(#88)나
-줄바꿈으로 바뀐다(예: 커밋 `798b0f1`의 같은 파일이 CRLF 체크아웃 `e9a97f3c`, LF `0964e244`). 경고가 떠도
-물리 값이 그대로이면 재학습은 필요 없다. 총괄 확정(2026-09-30)으로 C가 k 1.4 데이터셋 재생성 전에
-**YAML 파싱 내용을 정렬 직렬화(JSON, sort_keys)한 뒤 sha256** 하는 규약으로 바꾼다(YAML 이 아닌 파일은 바이트 해시).
-`predict._check_stamp`는 그 함수를 그대로 따른다. 그 전에 만든 산출물·기준 행(2.1)의 도장은 옛 규약 값이다.
+도장 규약: `physics_hash`·`nozzle_layout_hash`는 C의 `explog.file_hash`로, #98(2026-09-30)부터 **YAML 파싱 내용을
+정렬 직렬화(JSON, sort_keys)한 뒤 sha256** 한 값이다(주석·줄바꿈·키 순서 무관, YAML 이 아닌 파일은 바이트 해시).
+그 전에는 파일 바이트 전체의 sha256이라 물리 값이 같아도 키 추가(#88)나 줄바꿈으로 바뀌었다(예: 커밋 `798b0f1`의
+같은 파일이 CRLF 체크아웃 `e9a97f3c`, LF `0964e244`). 옛 규약으로 만든 산출물·기준 행(2.1)의 도장은 새 규약과
+비교하면 전부 불일치로 나오며, k 1.4 재생성으로 해소된다. `predict.current_stamp`·`stamp_mismatch`가 판정 기준이고
+로드 경고·갱신 명령·`artifact_status`(E 대시보드)가 모두 이것을 쓴다.
 
 ## 4. 계획 모델
 
 - `predict_plan`은 flow 샘플과 고정 계획을 전부 C의 `PlanEncoder.clip_plan`(자세·시간·구역 세기, 쾌적 상한,
   풍량 한도 보수)으로 투영한 뒤 채점한다. 범위는 `physics.yaml`의 `plan.*`·`fan.*`, 풍량 한도의 구역별 노즐 수는
   실제 장비 구성 `airis.sim.scenario.zone_nozzle_counts()`([2, 2, 2, 2, 4], C의 계획 데이터셋과 같음).
+- 계획 재채점기(`default_rescorer(model, plan=True)`)는 C의 `plan_physics_cfg()`(시간 의존 제거 kinetics 켬)를 쓴다.
+  계획 데이터셋도 같은 함수로 만든다. 자세 재채점은 설정 파일 그대로다(kinetics 는 계획 평가에만 적용).
+- 계획 산출물의 도장에는 `kinetics_enabled`·`time_constant_s`(C의 `plan_kinetics_stamp`)도 들어가고, 로드할 때
+  지금 계획 설정과 비교한다. 자세 산출물에는 이 키가 없어 비교하지 않는다. 계획 모델 학습 스크립트를 만들 때
+  데이터셋의 이 두 열을 meta 에 옮긴다.
 - `PlanSpace`(F)와 `PlanEncoder`(C)의 규격 대조는 `tests/test_model_plan_spec.py`: 같은 설정에서 읽은 범위,
   K = 1~3 단계 시간 식, normalize·clip 뒤 계획이 `PlanSpace` 범위 안인지, 원래 단위 벡터가 같은지,
   to_plan 뒤 clip이 쾌적 상한·풍량 한도만 바꾸는지.
