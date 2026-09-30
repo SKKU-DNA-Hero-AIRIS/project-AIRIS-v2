@@ -33,8 +33,10 @@ from .body import build_body as _default_build_body
 from .interface import Evaluator
 from .jet import slot_mask
 from .jet import velocity_field_per_nozzle as _default_velocity_field_per_nozzle
-from .scenario import load_nozzle_layout
-from .types import PART_NAMES, BodyParams, BodyState, EvalResult, NozzleConfig, PoseParams, Scenario
+from .scenario import apply_zone_strengths, load_nozzle_layout
+from .types import (
+    PART_NAMES, BodyParams, BodyState, EvalResult, NozzleConfig, Plan, PoseParams, Scenario,
+)
 
 _EPS = 1e-12
 # 후보 거르기 여유. float32 반올림보다 충분히 커서 거르기가 항상 보수적이 되게 한다.
@@ -291,7 +293,6 @@ def _visible_from_points(state: BodyState, sources: np.ndarray, physics_cfg: dic
     visible[cm[hit], cn[hit]] = False
     return visible
 
-
 def _area_weighted_by_part(values: np.ndarray, area: np.ndarray,
                            part: np.ndarray) -> np.ndarray:
     """부위별 면적 가중 평균 -> (len(PART_NAMES),). 패치가 없는 부위는 0."""
@@ -360,6 +361,25 @@ class PatchEvaluator(Evaluator):
             return self._build_body(body, pose, scenario)
         return self._build_body(body, pose, scenario, patches_per_m2=self.patches_per_m2)
 
+    def wall_shear_on(self, state: BodyState, nozzle: NozzleConfig) -> tuple[np.ndarray, float]:
+        """몸 상태와 노즐 배치 -> (패치별 벽면 전단 (N,), 보이는 비율 평균).
+
+        `evaluate`와 `evaluate_plan`이 같은 경로를 쓰도록 뺐다 (`00_common.md` 4.1~4.2b).
+        """
+        delta = float(self.cfg["air"]["wall_offset_m"])
+        normal = np.asarray(state.patch_normal, dtype=np.float64)
+        # 공기 속도는 표면에서 wall_offset_m 만큼 띄운 곳에서 조회한다 (4.2).
+        probe = np.asarray(state.patch_pos, dtype=np.float64) + delta * normal
+
+        # 정상 상태 평가라 t = 0. 펄스는 무시한다 (00_common.md 4.1).
+        # 법선을 넘겨 충돌 제트 -> 벽면 제트 보정(00_common.md 4.2b)을 받는다.
+        u_mn = np.asarray(self._velocity_field_per_nozzle(
+            probe, nozzle, 0.0, self.cfg, surface_normals=normal))                       # (M,N,3)
+        visible = occlusion(state, nozzle, self.cfg, self.slot_points)                    # (M,N) 0~1
+        # 보이는 비율을 곱해 합산한다. (M,N,3) 마스크 곱 대신 축약 합으로 한 번에.
+        u = np.einsum("mnk,mn->nk", u_mn, visible.astype(u_mn.dtype)).astype(np.float64)
+        return scoring.wall_shear(u, normal, self.cfg), float(visible.mean())
+
     def evaluate(self, pose: PoseParams, nozzle: NozzleConfig,
                  body: BodyParams, scenario: Scenario) -> EvalResult:
         state = self.build_state(body, pose, scenario)
@@ -373,24 +393,9 @@ class PatchEvaluator(Evaluator):
                 extra={"infeasible": True, "d_out": d_out},
             )
 
-        delta = float(self.cfg["air"]["wall_offset_m"])
-
-        normal = np.asarray(state.patch_normal, dtype=np.float64)
         area = np.asarray(state.patch_area, dtype=np.float64)
         part = np.asarray(state.patch_part, dtype=np.int64)
-
-        # 공기 속도는 표면에서 wall_offset_m 만큼 띄운 곳에서 조회한다 (4.2).
-        probe = np.asarray(state.patch_pos, dtype=np.float64) + delta * normal
-
-        # 정상 상태 평가라 t = 0. 펄스는 무시한다 (00_common.md 4.1).
-        # 법선을 넘겨 충돌 제트 -> 벽면 제트 보정(00_common.md 4.2b)을 받는다.
-        u_mn = np.asarray(self._velocity_field_per_nozzle(
-            probe, nozzle, 0.0, self.cfg, surface_normals=normal))                       # (M,N,3)
-        visible = occlusion(state, nozzle, self.cfg, self.slot_points)                    # (M,N) 0~1
-        # 보이는 비율을 곱해 합산한다. (M,N,3) 마스크 곱 대신 축약 합으로 한 번에.
-        u = np.einsum("mnk,mn->nk", u_mn, visible.astype(u_mn.dtype)).astype(np.float64)
-
-        tau = scoring.wall_shear(u, normal, self.cfg)
+        tau, visible_frac = self.wall_shear_on(state, nozzle)
         removal = scoring.removal_fraction(tau, self.cfg)
 
         removal_by_part = _area_weighted_by_part(removal, area, part)
@@ -402,6 +407,84 @@ class PatchEvaluator(Evaluator):
             removal_by_part=removal_by_part,
             total_removal=total_removal,
             discomfort=disc,
-            extra={"tau": tau, "removal": removal, "visible_frac": float(visible.mean()),
+            extra={"tau": tau, "removal": removal, "visible_frac": visible_frac,
                    "infeasible": False},
+        )
+
+    def evaluate_plan(self, plan: Plan, nozzle: NozzleConfig,
+                      body: BodyParams, scenario: Scenario) -> EvalResult:
+        """계획(자세 순서 + 구역 세기 + 시간) 평가. `00_common.md` 4.4·4.6·4.7.
+
+        단계마다 몸을 만들고 구역 세기를 입힌 노즐로 전단을 구한 뒤, 다단계 닫힌 식
+        (`scoring.removal_fraction_plan`)으로 패치별 제거율을 합친다.
+
+        - `nozzle`은 기준 배치다. 단계마다 `apply_zone_strengths(nozzle, plan.zone_strengths,
+          그 단계의 torso_yaw)`로 몸 기준 구역 세기를 입힌다 (4.7).
+        - 어느 단계든 부스 밖이면 계획 전체가 불가이고 벌점은 단계 중 최대 `d_out`을 쓴다 (5절).
+        - **부위 합산 가중**: 패치 면적은 스키닝 때문에 단계마다 다르므로 단계 면적의
+          **시간 가중 평균**을 쓴다 (B 권고, `docs/plan_extension.md`). 패치와 부위의 대응은
+          단계와 무관하다 (B 보장: 패치는 자세와 무관한 물질점).
+        - 에너지는 단계별 노즐 세기로 계산해 시간으로 더한다
+          (`Σ_k energy(s_k, t_k)`). 구역 → 노즐 매핑이 단계마다 달라도 맞는 값이다.
+        - `extra`: `energy`, `duration_s`, `removal_by_part_per_phase` (K, 5), `tau` (K, N),
+          `removal` (N,), `visible_frac` (K,), `infeasible`.
+        """
+        if not plan.phases:
+            raise ValueError("plan.phases 가 비어 있다")
+
+        states = [self.build_state(body, ph.pose, scenario) for ph in plan.phases]
+        d_out = max(booth_excess(st.patch_pos, self.booth) for st in states)
+        if d_out > 0.0:
+            _, disc = scoring.score_plan(np.zeros(len(PART_NAMES)), plan.phases, scenario,
+                                         self.cfg, 0.0)
+            return EvalResult(
+                score=infeasible_score(d_out),
+                removal_by_part=np.zeros(len(PART_NAMES)),
+                total_removal=0.0,
+                discomfort=disc,
+                extra={"infeasible": True, "d_out": d_out, "energy": 0.0,
+                       "duration_s": plan.duration_s,
+                       "removal_by_part_per_phase": np.zeros((len(plan.phases), len(PART_NAMES)))},
+            )
+
+        n_patch = states[0].patch_pos.shape[0]
+        if any(st.patch_pos.shape[0] != n_patch for st in states):
+            raise ValueError(
+                "단계마다 패치 수가 다르다. 계획 평가는 패치가 자세와 무관한 물질점이어야 한다 "
+                "(00_common.md 4.6 'B 보장')")
+
+        durations = np.array([float(ph.duration_s) for ph in plan.phases], dtype=np.float64)
+        tau = np.empty((len(plan.phases), n_patch), dtype=np.float64)
+        visible_frac = np.empty(len(plan.phases), dtype=np.float64)
+        areas = np.empty((len(plan.phases), n_patch), dtype=np.float64)
+        energy_total = 0.0
+        for k, (ph, state) in enumerate(zip(plan.phases, states)):
+            phase_nozzle = apply_zone_strengths(nozzle, plan.zone_strengths, ph.pose.torso_yaw)
+            tau[k], visible_frac[k] = self.wall_shear_on(state, phase_nozzle)
+            areas[k] = np.asarray(state.patch_area, dtype=np.float64)
+            energy_total += scoring.energy(phase_nozzle.strengths, ph.duration_s, self.cfg)
+
+        weight = durations.sum()
+        area = (areas * durations[:, None]).sum(axis=0) / weight if weight > 0 else areas.mean(axis=0)
+        part = np.asarray(states[0].patch_part, dtype=np.int64)
+
+        removal = scoring.removal_fraction_plan(tau, durations, self.cfg)
+        removal_by_part = _area_weighted_by_part(removal, area, part)
+        total_removal = float((removal * area).sum() / area.sum()) if area.sum() > 0 else 0.0
+        per_phase = np.stack([
+            _area_weighted_by_part(
+                scoring.removal_fraction_plan(tau[k:k + 1], durations[k:k + 1], self.cfg),
+                areas[k], part)
+            for k in range(len(plan.phases))])
+        total, disc = scoring.score_plan(removal_by_part, plan.phases, scenario, self.cfg,
+                                         energy_total)
+
+        return EvalResult(
+            score=total,
+            removal_by_part=removal_by_part,
+            total_removal=total_removal,
+            discomfort=disc,
+            extra={"tau": tau, "removal": removal, "visible_frac": visible_frac,
+                   "infeasible": False, "energy": energy_total,
+                   "duration_s": plan.duration_s, "removal_by_part_per_phase": per_phase},
         )
