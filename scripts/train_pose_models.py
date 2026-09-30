@@ -151,7 +151,9 @@ NAMES = {"hybrid": "혼합 (flow 8 + kNN 8 + 고정 2)", "knn+stub": "kNN + 고�
          "stub": "고정 후보표(E 스텁)", "knn": "kNN", "flow": "flow",
          "hybrid-a": "혼합 A (중복 제거)", "hybrid-b": "혼합 B (중복 제거 + 선별 b)",
          "hybrid-c": "혼합 C (중복 제거 + 선별 c)", "hybrid-d": "혼합 D (중복 제거 + 스레드)",
-         "hybrid-e": "혼합 B + D (선별 b + 스레드)"}
+         "hybrid-e": "혼합 B + D (선별 b + 스레드)",
+         "hybrid-a1": "혼합 A (중복 제거 1°)", "hybrid-a2": "혼합 A (중복 제거 2°)",
+         "hybrid-bx": "혼합 B + 표 유지 (선별 b, 고정 후보는 항상 최종 채점)"}
 
 
 def markdown_table(stats, verdict: dict, info: dict) -> str:
@@ -318,7 +320,6 @@ def main(argv: list[str] | None = None) -> int:
 
     exp = explog.new_exp_id("refresh" + (f"_{args.tag}" if args.tag else ""))
     out_dir = Path(args.out_dir) if args.out_dir else ROOT / "outputs" / exp
-    out_dir.mkdir(parents=True, exist_ok=True)
     model_dir = Path(args.model_dir) if args.model_dir else default_model_dir()
     if not args.no_install:
         # 설치 시점(학습 + 5-fold 약 25분 뒤)이 아니라 시작에서 미리 멈춘다 (install 의 0단계 확인과 같은 조건)
@@ -328,6 +329,7 @@ def main(argv: list[str] | None = None) -> int:
                   "각 <이름>.prev.new 를 <이름> 으로 되돌려(또는 지금 파일이 맞으면 지워) 쌍을 맞춘 뒤 다시 돌린다. "
                   "설치 없이 돌리려면 --no-install.", file=sys.stderr)
             return 2
+    out_dir.mkdir(parents=True, exist_ok=True)
     t_all = time.perf_counter()
     timings: dict[str, float] = {}
 

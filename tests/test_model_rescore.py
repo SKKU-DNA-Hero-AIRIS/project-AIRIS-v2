@@ -86,4 +86,29 @@ def test_run_e5_variant_kwargs():
     assert run_e5_flow.variant_kwargs("hybrid-d", args) == {"dedup_deg": 2.0, "n_threads": 2}
     assert run_e5_flow.variant_kwargs("hybrid-e", args) == {"dedup_deg": 2.0, "screen_density": 500.0,
                                                             "screen_top": 5, "n_threads": 2}
-    assert {"hybrid-a", "hybrid-b", "hybrid-c", "hybrid-d", "hybrid-e"} <= set(run_e5_flow.METHODS)
+    assert run_e5_flow.variant_kwargs("hybrid-a1", args) == {"dedup_deg": 1.0}
+    assert run_e5_flow.variant_kwargs("hybrid-a2", args) == {"dedup_deg": 2.0}
+    assert run_e5_flow.variant_kwargs("hybrid-bx", args) == {"dedup_deg": 2.0, "screen_density": 500.0,
+                                                             "screen_top": 5, "screen_keep_extra": True}
+    assert {"hybrid-a", "hybrid-a1", "hybrid-a2", "hybrid-b", "hybrid-bx", "hybrid-c", "hybrid-d",
+            "hybrid-e"} <= set(run_e5_flow.METHODS)
+
+
+def test_threads_fall_back_to_sequential_for_batch_evaluators():
+    """batch_evaluate 를 재정의한 평가기(입자판 같은)는 스레드 동일성을 확인하지 않았으므로 순차로 채점한다."""
+    from airis.sim import Evaluator
+
+    sc = load_scenarios()["default"]
+
+    class _Batch(Evaluator):
+        def evaluate(self, pose, nozzle, body, scenario):
+            raise AssertionError("batch 경로만 써야 한다")
+
+        def batch_evaluate(self, items, body, scenario):
+            return [p.shoulder_abduction / 180.0 for p, _ in items]
+
+    poses = [_pose(a) for a in (10.0, 90.0, 170.0)]
+    seq = pred.score_candidates(_Batch(), poses, object(), BodyParams(), sc)
+    with pytest.warns(RuntimeWarning, match="순차"):
+        par = pred.score_candidates(_Batch(), poses, object(), BodyParams(), sc, n_threads=3)
+    assert np.array_equal(seq[0], par[0]) and np.array_equal(seq[1], par[1])
