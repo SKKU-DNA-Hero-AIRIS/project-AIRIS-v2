@@ -106,6 +106,8 @@ def artifacts_cached():
     return model_artifacts()
 
 
+# ttl 이 없다: 같은 입력이면 실행 내내 같은 결과를 쓴다. 산출물을 바꾸면 대시보드를 다시 시작해야 반영된다
+# (사이드바 "추천 모델" 설명에 적어 두었다).
 @st.cache_data(show_spinner="추천 자세를 고르는 중 (모델 후보 재채점)…", max_entries=64)
 def recommend_cached(body_t: tuple, scenario: str, body_model: str):
     return recommend(BodyParams(*body_t), get_scenarios()[scenario], model=body_model)
@@ -227,7 +229,8 @@ def main() -> None:
                         None: "설정 비교 불가"}[a.config_ok]
                 st.caption(f"{mark} {a.name}: 학습 커밋 {a.commit or '?'} · {note}")
             st.caption(f"&nbsp;&nbsp;`{a.path}`", unsafe_allow_html=True)
-        st.caption("읽기 전용입니다. 산출물은 추천 모델 담당이 만들고, 물리 설정이 바뀌면 다시 학습해야 합니다.")
+        st.caption("읽기 전용입니다. 산출물은 추천 모델 담당이 만들고, 물리 설정이 바뀌면 다시 학습해야 합니다. "
+                   "**산출물을 새로 설치했으면 대시보드를 다시 시작하세요** (추천 결과는 재시작 전까지 캐시됩니다).")
         st.divider()
         st.caption("카메라 영상은 저장하지 않습니다. 시나리오(임산부·휠체어)는 영상으로 판별하지 않고 "
                    "사용자가 직접 고릅니다.")

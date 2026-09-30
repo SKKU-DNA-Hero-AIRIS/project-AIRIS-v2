@@ -2,8 +2,10 @@
 
 실제 카메라는 열지 않는다. 합성 키포인트 = 몸 모델 관절을 정면 핀홀 카메라에 투영한 것.
 
-학습 산출물(`data/models/pose_flow.pt`·`pose_knn.parquet`)이 있든 없든 통과해야 한다. 표(스텁)를 기대하는
-테스트는 `no_artifacts` 픽스처로 기본 경로를 없는 파일로 돌려 놓는다 (로컬에 산출물이 있으면 모델이 끼어든다).
+학습 산출물(`data/models/pose_flow.pt`·`pose_knn.parquet`)이 있든 없든 **건너뛰는 것 없이** 통과해야 한다.
+표(스텁)를 기대하는 테스트는 `no_artifacts` 픽스처로 기본 경로를 없는 파일로 돌려 놓고(로컬에 산출물이 있으면
+모델이 끼어든다), 모델 경로를 보는 테스트는 `_install_knn` 으로 tmp 에 작은 kNN 표를 만들어 쓴다
+(torch 없이 도는 진짜 예측 경로).
 
 전역 기본값(`BodyParams()`, `configs/physics.yaml` `body.model`)과 독립이다. 캡슐 기준 테스트는
 `model="capsule"`·`profile="capsule"`과 캡슐 시절 체형(`CAPSULE_BODY`)을, 메시 기준 테스트는 `model="mesh"`와
@@ -51,14 +53,6 @@ def no_artifacts(monkeypatch, tmp_path):
     monkeypatch.setattr(predict, "DEFAULT_MODEL_PATH", tmp_path / "없음_pose_flow.pt")
     monkeypatch.setattr(predict, "DEFAULT_KNN_PATH", tmp_path / "없음_pose_knn.parquet")
     return predict
-
-
-def _artifacts_exist() -> bool:
-    try:
-        from airis.model import predict
-    except ImportError:
-        return False
-    return predict.DEFAULT_MODEL_PATH.exists() or predict.DEFAULT_KNN_PATH.exists()
 
 
 BODIES = {
@@ -385,7 +379,7 @@ def test_recommend_falls_back_when_all_candidates_outside_booth(monkeypatch):
 
 @pytest.mark.parametrize("exc,word", [(FileNotFoundError("없다"), "산출물"),
                                       (ImportError("torch 없음"), "torch"),
-                                      (KeyError("default"), "시나리오")])
+                                      (KeyError("학습에 없던 시나리오: default"), "KeyError")])
 def test_recommend_falls_back_to_stub_with_note(monkeypatch, exc, word):
     """모델을 못 쓰면 표로 돌아가고, 왜 그랬는지 화면에 쓸 메모를 남긴다."""
     import airis.model.predict as P
@@ -433,20 +427,69 @@ def test_model_artifacts_real_call():
         assert r.path and isinstance(r.exists, bool)
 
 
-@pytest.mark.skipif(not _artifacts_exist(), reason="학습 산출물이 없다 (F 트랙 산출물)")
+def _install_knn(monkeypatch, tmp_path, pose_of):
+    """tmp 에 작은 kNN 표를 만들어 산출물로 꽂는다 (torch 없이도 도는 진짜 예측 경로).
+
+    flow 는 없는 경로로 두어 kNN + 고정 후보만 쓴다. `pose_of(scenario)` 가 표에 넣을 자세다.
+    """
+    pd = pytest.importorskip("pandas")
+    import airis.model.predict as P
+    from airis.model.flow import BODY_KEYS, POSE_KEYS
+    from airis.model.knn import PoseKNN
+
+    bodies = [MESH_DEFAULT_BODY, replace(MESH_DEFAULT_BODY, height_m=1.60),
+              replace(MESH_DEFAULT_BODY, height_m=1.80)]
+    rows = []
+    for i, b in enumerate(bodies):
+        for name in SCENARIOS:
+            pose = pose_of(name)
+            rows.append({"body_idx": i, "scenario": name, "score": 0.0, "arm_class": "hands_up",
+                         **{f"body_{k}": getattr(b, k) for k in BODY_KEYS},
+                         **{f"pose_{k}": getattr(pose, k) for k in POSE_KEYS}})
+    path = PoseKNN(pd.DataFrame(rows)).save(tmp_path / "pose_knn.parquet")
+    monkeypatch.setattr(P, "DEFAULT_KNN_PATH", path)
+    monkeypatch.setattr(P, "DEFAULT_MODEL_PATH", tmp_path / "없음_pose_flow.pt")
+    return path
+
+
 @pytest.mark.parametrize("scenario", ["default", "pregnant", "wheelchair"])
-def test_recommend_with_real_artifacts(scenario):
-    """산출물이 있으면 모델 후보 + 표 후보를 함께 재채점하고, 표보다 나빠지지 않는다."""
+def test_recommend_with_artifact_keeps_table_candidate_when_it_wins(monkeypatch, tmp_path, scenario):
+    """산출물이 있어도 표 후보를 같은 풀에서 재채점한다 → 표가 이기면 표가 나온다 (표보다 나빠지지 않는다)."""
+    _install_knn(monkeypatch, tmp_path, lambda name: PoseParams())      # 기본 자세만 든 표 (약한 후보)
     sc = SCENARIOS[scenario]
     rec = recommend(MESH_DEFAULT_BODY, sc, model="mesh")
-    if rec.source.startswith("stub"):
-        pytest.skip(f"모델을 쓸 수 없다: {rec.notes}")
-    assert rec.source.startswith("model: hybrid (")
+    assert rec.source == "model: hybrid (extra)"
     assert is_inside_booth(MESH_DEFAULT_BODY, rec.pose, sc, "mesh")
     stats = {s.source: s for s in rec.stats}
-    assert "extra" in stats and stats["extra"].n == len(STUB_TABLE[scenario])
-    best = max(s.best for s in rec.stats if s.best is not None)
-    assert best >= stats["extra"].best - 1e-9        # 표 후보도 같은 풀에 있으니 지지 않는다
+    assert set(stats) == {"knn", "extra"} and stats["extra"].n == len(STUB_TABLE[scenario])
+    assert stats["extra"].best > stats["knn"].best                      # 표(E4) 가 기본 자세보다 높다
+    assert max(s.best for s in rec.stats if s.best is not None) == stats["extra"].best
+
+
+@pytest.mark.parametrize("scenario", ["default", "wheelchair"])
+def test_recommend_with_artifact_uses_model_candidate(monkeypatch, tmp_path, scenario):
+    """모델 후보가 표만큼 좋으면 모델 후보를 쓴다 (풀 전체에서 고른다는 뜻)."""
+    _install_knn(monkeypatch, tmp_path, lambda name: STUB_TABLE[name][0].pose)   # 표와 같은 자세
+    sc = SCENARIOS[scenario]
+    rec = recommend(MESH_DEFAULT_BODY, sc, model="mesh")
+    assert rec.source == "model: hybrid (knn)"       # 동점이면 앞선 후보(kNN)
+    assert rec.label == "모델 추천"
+    stats = {s.source: s for s in rec.stats}
+    assert stats["knn"].best == pytest.approx(stats["extra"].best)
+    assert rec.pose == PoseEncoder(sc).clip_pose(STUB_TABLE[scenario][0].pose)
+
+
+def test_recommend_rejects_model_pose_outside_booth(monkeypatch, tmp_path):
+    """평가기가 가능하다고 해도 E가 부스 안인지 다시 보고, 밖이면 표로 대체한다."""
+    import airis.model.predict as P
+    sc = SCENARIOS["default"]
+    outside = PoseParams(shoulder_abduction=90.0)            # 캡슐 체형에서 옆벽 밖
+    assert not is_inside_booth(CAPSULE_BODY, outside, sc, "capsule")
+    monkeypatch.setattr(P, "predict", lambda b, s, **kw: _fake_prediction(
+        [outside], ["knn"], [9.9], [False]))                 # 불가 아님이라고 우겨도
+    rec = recommend(CAPSULE_BODY, sc, model="capsule")
+    assert rec.source.startswith("stub") and "부스" in rec.notes[-1]
+    assert is_inside_booth(CAPSULE_BODY, rec.pose, sc, "capsule")
 
 
 @pytest.mark.parametrize("scenario", ["default", "wheelchair"])

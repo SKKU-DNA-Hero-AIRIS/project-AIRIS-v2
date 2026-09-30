@@ -174,8 +174,8 @@ def _model_predict(body: BodyParams, scenario: Scenario, model: str,
         note("학습 산출물(data/models/pose_flow.pt · pose_knn.parquet)이 없어 표(E4)로 안내합니다")
     except ImportError as exc:
         note(f"flow 산출물만 있고 torch 가 없어 표(E4)로 안내합니다 ({exc})")
-    except KeyError:
-        note(f"모델 학습에 없던 시나리오({scenario.name})라 표(E4)로 안내합니다")
+    except KeyError as exc:      # 학습에 없던 시나리오. 다른 KeyError 도 삼키지 않게 내용을 그대로 보여 준다
+        note(f"추천 모델이 이 입력을 처리하지 못해 표(E4)로 안내합니다 (KeyError: {exc})")
     return None
 
 
@@ -227,15 +227,19 @@ def recommend(body: BodyParams | None, scenario: Scenario, *, use_model: bool = 
         pred = _model_predict(body, scenario, model, tuple(e.pose for e in entries), notes)
         if pred is not None:
             i, stats = _picked(pred), _source_stats(pred)
+            pose = enc.clip_pose(pred.pose)
             if pred.infeasible is not None and bool(pred.infeasible.all()):
                 notes.append("모델 후보가 모두 부스(천장·벽) 밖이라 표의 자세로 대체")
+            elif not is_inside_booth(body, pose, scenario, model):
+                # 평가기의 불가 판정과 별개로 E가 한 번 더 본다 (clip_pose 로 자세가 바뀌었을 수 있다).
+                notes.append("모델이 고른 자세가 부스(천장·벽) 밖이라 표의 자세로 대체")
             else:
                 src = pred.sources[i] if 0 <= i < len(pred.sources) else pred.source
                 label = "모델 추천"
                 if src == "extra":                 # 고른 것이 표 후보면 표의 이름을 그대로 쓴다
                     j = [k for k, t in enumerate(pred.sources) if t == "extra"].index(i)
                     label = f"모델 추천 · {entries[j].label}"
-                return Recommendation(enc.clip_pose(pred.pose), label, f"model: hybrid ({src})",
+                return Recommendation(pose, label, f"model: hybrid ({src})",
                                       notes, stats, time.perf_counter() - t0)
     inside = []
     for i, e in enumerate(entries):
@@ -290,7 +294,7 @@ def model_artifacts() -> list[ArtifactInfo]:
     for name in ("flow", "knn"):
         e = status[name]
         stamp = e.get("stamp") or {}
-        # 도장이 없는 산출물은 artifact_status 가 match=True 로 주지만, 비교한 것이 없으니 "확인 불가"로 본다.
+        # 도장이 없으면 "확인 불가"로 본다 (#97 뒤 artifact_status 도 None 을 주지만, 화면 판정은 E가 정한다).
         stamped = any(stamp.get(k) is not None for k in STAMP_KEYS)
         out.append(ArtifactInfo(name, e["path"], bool(e["exists"]), stamp.get("commit"),
                                 e["match"] if stamped else None,
