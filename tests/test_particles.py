@@ -1537,15 +1537,20 @@ def _load_plan_compare_script():
 def test_plan_rank_matches_patch_evaluator(scenario):
     """계획 순위가 패치판과 맞는지 (docs/plan_extension.md 6절 검증의 가벼운 판).
 
-    본 검증은 `scripts/compare_plan_evaluators.py --n 50`이고, 여기서는 계획 12개로 하한만 본다.
+    본 검증은 `scripts/compare_plan_evaluators.py --n 50`(입자 2만, ρ 0.996)이고, 여기서는
+    계획 20개·입자 5천으로 하한만 본다.
+
+    문턱은 0.90이다. 계획 12개·입자 5천으로 재면 시드에 따라 score ρ가 0.89~0.99로 흔들리고
+    (n = 12에서는 인접 순위 한 번 뒤바뀜이 ρ 0.007), 다른 GPU·드라이버의 부동소수 차이로도
+    순위가 바뀔 수 있다 (통합 검토 지적). 계획 수를 20개로 늘리고 문턱을 내려 여유를 뒀다.
     """
     mod = _load_plan_compare_script()
     compare, correlations, sample_plans = mod.compare, mod.correlations, mod.sample_plans
 
     cfg = plan_physics_cfg()
-    plans = sample_plans(12, scenario, MESH_DEFAULT_BODY, cfg, seed=3)
+    plans = sample_plans(20, scenario, MESH_DEFAULT_BODY, seed=3)
     rows = compare(plans, scenario, MESH_DEFAULT_BODY, cfg, load_nozzles(), particles=5000)
     rho = correlations(rows)
     assert min(r["patch_total"] for r in rows) > 0.0
-    assert rho["score"] >= 0.95, rho
-    assert rho["total"] >= 0.95, rho
+    assert rho["score"] >= 0.90, rho
+    assert rho["total"] >= 0.90, rho
