@@ -453,8 +453,16 @@ def test_artifact_status_reports_stamps_without_warning(model, tmp_path, monkeyp
     assert k["exists"] and k["error"] is None and k["stamp"]["commit"] == "c0"
     assert k["match"] is False and k["mismatched"] == ["physics_hash"]
 
-    path = model.save(tmp_path / "m.pt")                        # 도장이 없는 산출물은 비교할 키가 없다
-    assert pred.artifact_status(model_path=path, knn_path=knn)["flow"]["match"] is True
+    path = model.save(tmp_path / "m.pt")                        # 도장이 없는 산출물은 확인 불가 (일치로 보지 않는다)
+    flow_st = pred.artifact_status(model_path=path, knn_path=knn)["flow"]
+    assert flow_st["exists"] and flow_st["error"] is None
+    assert flow_st["match"] is None and flow_st["mismatched"] == []
+    assert flow_st["stamp"]["physics_hash"] is None
+
+    matching = model.save(tmp_path / "m2.pt")                   # 도장이 지금 설정과 같으면 True
+    again = flow.PoseFlow.load(matching)
+    again.meta.update({"nozzle_layout_hash": "n0", "physics_hash": "p1"})
+    assert pred.artifact_status(model_path=again.save(matching), knn_path=knn)["flow"]["match"] is True
 
     def broken():
         raise OSError("설정 없음")

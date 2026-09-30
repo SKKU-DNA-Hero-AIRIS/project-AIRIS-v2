@@ -70,6 +70,20 @@ def test_install_keeps_previous(tmp_path):
     tpm.install(src, dst)
     assert (dst / tpm.FLOW_FILE).read_text() == "new" and (dst / tpm.KNN_FILE).read_text() == "new"
     assert (dst / (tpm.FLOW_FILE + ".prev")).read_text() == "old"
+    assert not list(dst.glob("*.new"))
+
+
+def test_install_failure_keeps_old_artifacts(tmp_path):
+    """두 번째 파일 복사가 실패하면 첫 번째도 바꾸지 않는다 (flow·kNN 이 섞이지 않게)."""
+    src, dst = tmp_path / "new", tmp_path / "models"
+    src.mkdir(), dst.mkdir()
+    (src / tpm.FLOW_FILE).write_text("new")                  # kNN 표가 없어 두 번째 복사가 실패한다
+    for name in (tpm.FLOW_FILE, tpm.KNN_FILE):
+        (dst / name).write_text("old")
+    with pytest.raises(FileNotFoundError):
+        tpm.install(src, dst)
+    assert (dst / tpm.FLOW_FILE).read_text() == "old" and (dst / tpm.KNN_FILE).read_text() == "old"
+    assert not list(dst.glob("*.new")) and not list(dst.glob("*.prev"))
 
 
 @pytest.fixture
