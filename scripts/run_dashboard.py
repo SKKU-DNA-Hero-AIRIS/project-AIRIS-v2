@@ -33,9 +33,10 @@ import numpy as np                                                    # noqa: E4
 import streamlit as st                                                # noqa: E402
 
 from airis.realtime import camera, pose_estimate as pe               # noqa: E402
-from airis.realtime.recommend import (RESPONSE_BUDGET_S, compare_with_baselines,  # noqa: E402
-                                      default_body, improvement, model_artifacts,
-                                      pose_instructions, recommend, scoring_patches_per_m2)
+from airis.realtime.recommend import (MESH_E4_BASELINES, MESH_E4_HANDS_UP_SEEDS,  # noqa: E402
+                                      RESPONSE_BUDGET_S, compare_with_baselines, default_body,
+                                      improvement, model_artifacts, pose_instructions, recommend,
+                                      scoring_patches_per_m2)
 from airis.sim.body import build_body                                 # noqa: E402
 from airis.sim.scenario import load_nozzle_layout, load_scenarios     # noqa: E402
 from airis.sim.types import PART_NAMES, BodyParams, PoseParams       # noqa: E402
@@ -339,9 +340,12 @@ def main() -> None:
         st.caption(f"자세 값: {pose_label(rec.pose)}")
         st.caption(f"출처: {rec.source}" + (" (추천 모델 산출물이 없을 때 쓰는 고정 후보표)"
                                               if rec.source.startswith("stub") else ""))
-        st.caption("메시판에서는 세 시나리오 모두 **옆으로 돌아선 만세**가 최적입니다(임산부 포함, 15/15). "
-                   "휠체어는 약 36° 회전. 다만 임산부는 *정면* 만세라면 기본 자세보다 낮습니다"
-                   "(기준선 0.233 < 0.245) — 이득은 만세 자체가 아니라 몸을 옆으로 돌리는 데서 옵니다.")
+        # 수치는 recommend 의 상수에서 만든다 (물리가 바뀌어 기준선을 다시 재면 문구도 따라 바뀐다).
+        b0_p, _, b2_p = MESH_E4_BASELINES["pregnant"]
+        st.caption(f"메시판에서는 세 시나리오 모두 **옆으로 돌아선 만세**가 최적입니다"
+                   f"(임산부 포함, {MESH_E4_HANDS_UP_SEEDS[0]}/{MESH_E4_HANDS_UP_SEEDS[1]} 시드). "
+                   f"휠체어는 약 36° 회전. 다만 임산부는 *정면* 만세라면 기본 자세보다 낮습니다"
+                   f"(기준선 {b2_p:.3f} < {b0_p:.3f}) — 이득은 만세 자체가 아니라 몸을 옆으로 돌리는 데서 옵니다.")
         for note in rec.notes:
             st.info(note)
         over = rec.elapsed_s > RESPONSE_BUDGET_S
