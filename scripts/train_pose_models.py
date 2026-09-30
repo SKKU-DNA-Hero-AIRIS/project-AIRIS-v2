@@ -170,28 +170,54 @@ def markdown_table(stats, verdict: dict, info: dict) -> str:
 # ---------- 6. 설치 ----------
 
 def install(src_dir: Path, model_dir: Path, names=(FLOW_FILE, KNN_FILE)) -> list[Path]:
-    """src_dir 의 산출물을 model_dir 로 설치. 기존 파일은 <이름>.prev 로 남긴다 (1세대).
+    """src_dir 의 산출물을 model_dir 로 설치. 기존 산출물은 <이름>.prev 로 남긴다 (1세대, 쌍으로).
 
-    전부 <이름>.new 로 먼저 복사한 뒤 교체하므로, 복사 중에 실패하면 기존 산출물은 그대로다
-    (flow 만 새것이고 kNN 은 옛것인 섞인 상태가 복사 실패로는 생기지 않는다).
+    flow 와 kNN 표가 섞인 상태(새 flow + 옛 kNN)가 남지 않게 세 단계로 한다.
+
+    1. 준비: 새 파일을 <이름>.new, 기존 파일을 <이름>.prev.new 로 복사한다. 여기서 실패하면 아무것도 바뀌지 않는다.
+    2. 교체: os.replace 로 하나씩 바꾼다. 도중에 실패하면(Windows 에서 대시보드가 파일을 열고 있을 때 등)
+       이미 바꾼 파일을 준비해 둔 옛 파일로 되돌리고 예외를 올린다.
+    3. 확정: <이름>.prev.new → <이름>.prev. 모델 교체는 끝났으므로 여기서 실패하면 세대가 어긋나지 않게
+       .prev 를 모두 지우고 경고만 한다.
+
+    어느 경우든 끝나면 임시 파일(.new, .prev.new)은 남지 않는다. 설치 중에는 산출물을 여는 프로세스(E 대시보드)를 내린다.
     """
     model_dir.mkdir(parents=True, exist_ok=True)
-    staged = []
+    dsts = [model_dir / name for name in names]
+    news = [d.with_name(d.name + ".new") for d in dsts]
+    olds = [d.with_name(d.name + ".prev.new") if d.exists() else None for d in dsts]
+    replaced: list[int] = []
     try:
-        for name in names:
-            tmp = model_dir / (name + ".new")
-            shutil.copy2(src_dir / name, tmp)
-            staged.append((tmp, model_dir / name))
-    except Exception:
-        for tmp, _ in staged:
+        for name, new in zip(names, news):                           # 1. 준비
+            shutil.copy2(src_dir / name, new)
+        for dst, old in zip(dsts, olds):
+            if old is not None:
+                shutil.copy2(dst, old)
+        try:                                                         # 2. 교체
+            for i, (new, dst) in enumerate(zip(news, dsts)):
+                os.replace(new, dst)
+                replaced.append(i)
+        except BaseException:
+            for i in reversed(replaced):                             # 되돌리기
+                if olds[i] is not None:
+                    shutil.copy2(olds[i], dsts[i])
+                else:
+                    dsts[i].unlink(missing_ok=True)
+            raise
+        prevs = [dst.with_name(dst.name + ".prev") for dst in dsts]  # 3. 확정
+        try:
+            for old, prev in zip(olds, prevs):
+                if old is not None:
+                    os.replace(old, prev)
+        except OSError as exc:
+            # 세대가 어긋난 .prev 쌍을 남기지 않는다 (없는 편이 섞인 것보다 낫다)
+            for prev in prevs:
+                prev.unlink(missing_ok=True)
+            print(f"[경고] .prev 갱신 실패 ({exc}). 모델은 새것으로 설치됐고 .prev 는 지웠다.", file=sys.stderr)
+    finally:
+        for tmp in news + [o for o in olds if o is not None]:
             tmp.unlink(missing_ok=True)
-        raise
-    for _, dst in staged:
-        if dst.exists():
-            shutil.copy2(dst, dst.with_name(dst.name + ".prev"))
-    for tmp, dst in staged:
-        os.replace(tmp, dst)
-    return [dst for _, dst in staged]
+    return dsts
 
 
 def default_model_dir() -> Path:

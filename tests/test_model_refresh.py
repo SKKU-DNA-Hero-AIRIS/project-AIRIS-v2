@@ -86,6 +86,99 @@ def test_install_failure_keeps_old_artifacts(tmp_path):
     assert not list(dst.glob("*.new")) and not list(dst.glob("*.prev"))
 
 
+def _dirs(tmp_path, *, prev=False):
+    src, dst = tmp_path / "new", tmp_path / "models"
+    src.mkdir(), dst.mkdir()
+    for name in (tpm.FLOW_FILE, tpm.KNN_FILE):
+        (src / name).write_text("new")
+        (dst / name).write_text("old")
+        if prev:
+            (dst / (name + ".prev")).write_text("older")
+    return src, dst
+
+
+def _state(dst):
+    return {p.name: p.read_text() for p in sorted(dst.iterdir())}
+
+
+def test_install_partial_copy_is_cleaned_up(tmp_path, monkeypatch):
+    """쓰는 도중 실패(디스크 부족·Ctrl+C)해도 부분 .new 가 남지 않고 기존 산출물은 그대로다."""
+    src, dst = _dirs(tmp_path, prev=True)
+    before = _state(dst)
+    real = tpm.shutil.copy2
+
+    def flaky(a, b, *args, **kw):
+        if str(b).endswith(tpm.KNN_FILE + ".new"):
+            Path(b).write_text("partial")
+            raise KeyboardInterrupt
+        return real(a, b, *args, **kw)
+
+    monkeypatch.setattr(tpm.shutil, "copy2", flaky)
+    with pytest.raises(KeyboardInterrupt):
+        tpm.install(src, dst)
+    assert _state(dst) == before
+
+
+def test_install_backup_failure_changes_nothing(tmp_path, monkeypatch):
+    """옛 파일을 .prev.new 로 복사하다 실패하면 아무것도 바뀌지 않는다 (.prev 세대도 그대로)."""
+    src, dst = _dirs(tmp_path, prev=True)
+    before = _state(dst)
+    real = tpm.shutil.copy2
+
+    def flaky(a, b, *args, **kw):
+        if str(b).endswith(tpm.KNN_FILE + ".prev.new"):
+            raise OSError("디스크 부족")
+        return real(a, b, *args, **kw)
+
+    monkeypatch.setattr(tpm.shutil, "copy2", flaky)
+    with pytest.raises(OSError):
+        tpm.install(src, dst)
+    assert _state(dst) == before
+
+
+@pytest.mark.parametrize("had_old", [True, False])
+def test_install_replace_failure_rolls_back(tmp_path, monkeypatch, had_old):
+    """두 번째 교체가 실패하면(대시보드가 파일을 열고 있음 등) 첫 번째 교체를 되돌린다. 새 flow + 옛 kNN 이 남지 않는다."""
+    src, dst = _dirs(tmp_path, prev=True)
+    if not had_old:
+        for p in dst.iterdir():
+            p.unlink()
+    before = _state(dst)
+    real = tpm.os.replace
+
+    def locked(a, b):
+        if str(b).endswith(tpm.KNN_FILE):
+            raise PermissionError("다른 프로세스가 사용 중")
+        return real(a, b)
+
+    monkeypatch.setattr(tpm.os, "replace", locked)
+    with pytest.raises(PermissionError):
+        tpm.install(src, dst)
+    assert _state(dst) == before
+
+
+def test_install_prev_commit_failure_keeps_pair_consistent(tmp_path, monkeypatch):
+    """모델 교체 뒤 .prev 확정이 실패하면 모델은 새것이고, 세대가 어긋난 .prev 쌍은 남기지 않는다."""
+    src, dst = _dirs(tmp_path, prev=True)
+    real = tpm.os.replace
+
+    def locked(a, b):
+        if str(b).endswith(tpm.KNN_FILE + ".prev"):
+            raise PermissionError("잠김")
+        return real(a, b)
+
+    monkeypatch.setattr(tpm.os, "replace", locked)
+    tpm.install(src, dst)
+    assert _state(dst) == {tpm.FLOW_FILE: "new", tpm.KNN_FILE: "new"}
+
+
+def test_install_success_rotates_prev_as_pair(tmp_path):
+    src, dst = _dirs(tmp_path, prev=True)
+    tpm.install(src, dst)
+    assert _state(dst) == {tpm.FLOW_FILE: "new", tpm.FLOW_FILE + ".prev": "old",
+                           tpm.KNN_FILE: "new", tpm.KNN_FILE + ".prev": "old"}
+
+
 @pytest.fixture
 def fake_steps(monkeypatch, tmp_path):
     """학습·표·5-fold 를 가짜로 바꾼다. ratios 로 5-fold 결과를 정한다."""
