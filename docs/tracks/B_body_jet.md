@@ -2,7 +2,7 @@
 
 **목표**: 체형과 자세를 받아 패치와 캡슐로 표현된 마네킹을 만들고, 고정 노즐 배치에서 임의의 점의 공기 속도를 계산한다. 다른 세 트랙의 실제 입력이 여기서 나오므로 가장 먼저 시작하고 가장 먼저 병합한다.
 
-**파일**: `airis/sim/body.py`, `airis/sim/jet.py`, `airis/sim/scenario.py`, `airis/viz/debug3d.py`, `configs/*.yaml`, `tests/test_body.py`, `tests/test_jet.py`
+**파일**: `airis/sim/body.py`, `airis/sim/human_mesh.py`, `airis/sim/jet.py`, `airis/sim/scenario.py`, `airis/viz/debug3d.py`, `configs/*.yaml`, `tests/test_body.py`, `tests/test_jet.py`
 
 **의존성**: 없음. `types.py`와 `configs/`만 있으면 시작 가능.
 
@@ -158,7 +158,7 @@ pelvis
 E의 `airis/viz/human_mesh.py`(MakeHuman 로드·스키닝)를 `airis/sim/human_mesh.py`로 이관해 소유하고 확장한다.
 1. `BodyParams` 5개(키·어깨 관절 간격·가슴 두께·상완+전완 구간 합·고관절 높이) → 뼈 길이별 축척. 임산부는 `stomach-pregnant` 타깃(추가 다운로드는 사용자 승인).
 2. sim 메시: 원본을 약 5~6k 삼각형으로 1회 데시메이션(정점별 뼈 가중치 보존), 좌우 대칭 면 맵·면 → 부위 맵과 함께 `data/meshes/makehuman/`에 커밋. 생성 스크립트 포함.
-3. 패치 샘플링: 면적 비례, 면 법선, y → −y 대칭 쌍, 부위는 뼈 가중치 최댓값 기준(torso front/back은 기존 법선 규칙).
+3. 패치 샘플링: 면적 비례, 면 법선, y → −y 대칭 쌍, 부위는 뼈 가중치 최댓값 기준(torso front/back은 기존 법선 규칙 → PR #88부터 휴지 자세 법선으로 한 번만 판정, 단계 11 참고).
 4. 뼈에 맞춘 근사 캡슐(19개) + 휠체어 프레임(4개) → `capsules`/`capsule_part`.
 5. `build_body(..., model=None)`: `physics.yaml body.model` (E5 기록 후 `mesh` 로 전환 완료). 캡슐 경로는 `model="capsule"` 폴백으로 유지.
 6. `tests/test_human_mesh.py`: 자산 로드, 체형 축척 정확도(측정값 ±1 cm), 대칭, 부위 비율, 부스 밖 판정, 시간(자세+패치 20 ms 이하, 부하 대비 비율 판정).
@@ -184,6 +184,6 @@ E의 `airis/viz/human_mesh.py`(MakeHuman 로드·스키닝)를 `airis/sim/human_
 - 가슴 쪽 벽 규칙: `sin(torso_yaw) ≥ 0`이면 +y 벽이 chest, 반대 벽이 back. `|sin| < 1e−6`(정면·후면, ±180 포함)이면 +y로 고정 (`CHEST_SIN_EPS`, C `PlanEncoder`의 `FRONT_EPS`와 같은 한계).
 - 함수 (`airis/sim/scenario.py`, 계약은 `docs/interfaces.md`): `apply_zone_strengths(nozzle, zone_strengths, torso_yaw, zones=None)`, `nozzle_zone_index`, `zone_nozzle_counts()`(기준 배치 `[2, 2, 2, 2, 4]`), `chest_wall_sign`, `zone_strength_caps(scenario)`, `zone_config()`.
 - `configs/physics.yaml` 새 키 (미보정 작업값): `adhesion.kinetics.{enabled, time_constant_s}`, `fan.{rated_flow_m3_min, s_max, cap_ratio, power_exponent}`, `scoring.{energy_weight, time_weight, reference_duration_s}`, `plan.{n_phases, duration_bounds_s, min_phase_s, transition_s}`.
-- 쾌적 상한 (`configs/scenarios.yaml`): 임산부 `nozzle_strength_cap`을 구역 키 `chest_low`·`chest_high` 0.6으로. 옛 부위 키 `torso_front: 0.6`은 C가 `zone_strength_caps()`로 옮길 때까지만 남긴다. 로더가 키를 검사한다(구역 이름 또는 옛 부위 키만 허용).
+- 쾌적 상한 (`configs/scenarios.yaml`): 임산부 `nozzle_strength_cap`을 구역 키 `chest_low`·`chest_high` 0.6으로. 옛 부위 키 `torso_front: 0.6`은 C가 `zone_strength_caps()`로 옮긴 뒤 PR #103에서 제거했다. 로더(`load_scenarios`)와 `zone_strength_caps`가 키를 검사한다(구역 이름만 허용, 다른 키는 `ValueError`).
 - 패치 물질점 보장 (`00_common.md` 4.6): 메시 몸통 앞뒤(`torso_front`/`torso_back`)를 체형 맞춘 휴지 자세의 면 법선으로 한 번만 판정한다(`human_mesh._rest_face_part`). 이전에는 자세 적용 후 법선으로 판정해 옆구리 면이 자세에 따라 앞뒤를 오갔다. 패치 수·면·무게중심 좌표·부위는 자세와 무관하고, 위치·법선·면적은 스키닝 값이라 자세마다 다르다. 캡슐 마네킹은 수·캡슐·부위·면적·캡슐 위 위치가 모두 같다.
 - 테스트: `tests/test_jet.py`(구역 소속, 좌우 거울·앞뒤 등가, 물리 대칭, 쾌적 상한, 설정 키), `tests/test_human_mesh.py`·`tests/test_body.py`(패치 물질점).
