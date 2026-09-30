@@ -178,6 +178,11 @@ def markdown_table(stats, verdict: dict, info: dict) -> str:
 
 # ---------- 6. 설치 ----------
 
+def leftover_backups(model_dir: Path, names=(FLOW_FILE, KNN_FILE)) -> list[Path]:
+    """앞선 설치가 이중 실패로 남긴 옛 산출물 백업(<이름>.prev.new). 있으면 설치하지 않는다."""
+    return [p for p in (Path(model_dir) / (n + ".prev.new") for n in names) if p.exists()]
+
+
 class InstallRollbackError(RuntimeError):
     """교체가 실패했고 되돌리기도 실패했다 (이중 실패). 옛 산출물 백업(<이름>.prev.new)이 남아 있다."""
 
@@ -206,7 +211,7 @@ def install(src_dir: Path, model_dir: Path, names=(FLOW_FILE, KNN_FILE)) -> list
     dsts = [model_dir / name for name in names]
     news = [d.with_name(d.name + ".new") for d in dsts]
     prevs = [d.with_name(d.name + ".prev") for d in dsts]
-    leftover = [d.with_name(d.name + ".prev.new") for d in dsts if d.with_name(d.name + ".prev.new").exists()]
+    leftover = leftover_backups(model_dir, names)
     if leftover:                                                     # 0. 확인
         raise RuntimeError(
             f"앞선 설치가 남긴 옛 산출물 백업이 있다: {', '.join(p.name for p in leftover)}. 덮어쓰지 않고 멈춘다. "
@@ -314,6 +319,14 @@ def main(argv: list[str] | None = None) -> int:
     out_dir = Path(args.out_dir) if args.out_dir else ROOT / "outputs" / exp
     out_dir.mkdir(parents=True, exist_ok=True)
     model_dir = Path(args.model_dir) if args.model_dir else default_model_dir()
+    if not args.no_install:
+        # 설치 시점(학습 + 5-fold 약 25분 뒤)이 아니라 시작에서 미리 멈춘다 (install 의 0단계 확인과 같은 조건)
+        left = leftover_backups(model_dir)
+        if left:
+            print(f"설치 폴더에 앞선 설치가 남긴 옛 산출물 백업이 있다: {', '.join(p.name for p in left)}. "
+                  "각 <이름>.prev.new 를 <이름> 으로 되돌려(또는 지금 파일이 맞으면 지워) 쌍을 맞춘 뒤 다시 돌린다. "
+                  "설치 없이 돌리려면 --no-install.", file=sys.stderr)
+            return 2
     t_all = time.perf_counter()
     timings: dict[str, float] = {}
 
