@@ -164,7 +164,8 @@ def write_run(log_dir: Path | str, exp_id: str, *, scenario, body,
         "n_evals": int(result.n_evals),
         "n_infeasible": int(result.n_infeasible),
         "per_start": _jsonable(result.per_start),
-        "best_score": float(result.best_score),
+        # float() 로 바로 넣으면 nan 이 JSON 에 NaN 리터럴로 새므로 _jsonable 을 거친다.
+        "best_score": _jsonable(float(result.best_score)),
     }
     (d / "meta.json").write_text(
         json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8"
@@ -175,11 +176,11 @@ def write_run(log_dir: Path | str, exp_id: str, *, scenario, body,
     best = {
         "exp_id": exp_id,
         "best_pose": _jsonable(result.best_pose),
-        "best_score": float(result.best_score),
+        "best_score": _jsonable(float(result.best_score)),
         "removal_by_part": _jsonable(result.best_result.removal_by_part),
         "part_names": list(PART_NAMES),
-        "total_removal": float(result.best_result.total_removal),
-        "discomfort": float(result.best_result.discomfort),
+        "total_removal": _jsonable(float(result.best_result.total_removal)),
+        "discomfort": _jsonable(float(result.best_result.discomfort)),
         "extra": _jsonable(result.best_result.extra),
     }
     (d / "best.json").write_text(

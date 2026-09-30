@@ -292,7 +292,8 @@ def test_pose_bound_patch_discomfort_path_unchanged():
     narrow = ev.evaluate(pose, nozzle, body, narrowed)
 
     assert full.total_removal == pytest.approx(narrow.total_removal), "제거율은 범위와 무관"
-    # 불편도 가중 0.3, 폭이 180 → 90 으로 절반이라 벌림 불편도는 2배가 된다.
+    # 벌림 불편도 가중 0.3(시나리오), 폭이 180 → 90 으로 절반이라 벌림 불편도 항이 2배가 된다.
+    # 점수에는 scoring.discomfort_weight(0.1)가 곱해진다 — 아래에서 설정값으로 확인한다.
     assert narrow.discomfort > full.discomfort
     assert full.score > narrow.score, "좁힌 시나리오로 채점하면 점수가 달라진다 (그래서 쓰면 안 된다)"
     gap = full.score - narrow.score
@@ -309,3 +310,65 @@ def test_jsonable_maps_non_finite_to_null():
     assert out == {"peak_gap": None, "hi": None, "lo": None, "ok": 0.5, "n": 3}
     json.dumps(out, allow_nan=False)                 # 표준 JSON 으로 직렬화된다
     assert explog._jsonable(np.array([float("nan"), 1.0])) == [None, 1.0]
+
+
+def test_write_run_keeps_json_strict_with_nan_score(tmp_path):
+    """best_score 등이 nan 이어도 meta.json·best.json 이 표준 JSON 이다 (통합 2026-10-01 지적 2).
+
+    _jsonable 을 거치지 않던 네 필드(meta best_score, best.json 의 best_score·total_removal·
+    discomfort)가 NaN 리터럴로 새던 것을 막는다.
+    """
+    from types import SimpleNamespace
+
+    import numpy as np
+
+    from airis.optimize import explog
+    from airis.sim import PART_NAMES, BodyParams, PoseParams
+    from airis.sim.scenario import load_scenarios
+
+    nan = float("nan")
+    result = SimpleNamespace(
+        n_evals=1, n_infeasible=0, per_start=[{"start": "default", "best_score": nan}],
+        best_score=nan, best_pose=PoseParams(), history=[],
+        best_result=SimpleNamespace(removal_by_part=np.zeros(len(PART_NAMES)),
+                                    total_removal=nan, discomfort=nan, extra={"x": nan}),
+    )
+    explog.write_run(tmp_path, "t_nan", scenario=load_scenarios()["default"], body=BodyParams(),
+                     nozzle_hash="h", physics_hash="p", commit="c", seed=0, args={}, result=result)
+
+    for name in ("meta.json", "best.json"):
+        text = (tmp_path / "t_nan" / name).read_text(encoding="utf-8")
+        assert "NaN" not in text, f"{name} 에 NaN 리터럴이 남았다"
+        json.loads(text, parse_constant=_reject_constant)      # 엄격 파서로 읽힌다
+
+
+def _reject_constant(name):                                    # json 의 NaN/Infinity 확장 거부
+    raise AssertionError(f"표준 JSON 이 아니다: {name}")
+
+
+def test_pose_bound_warns_and_records_skipped_starts(tmp_path, recwarn):
+    """범위 밖 시작점은 경고를 내고 best_poses.json 에 남는다 (통합 2026-10-01 지적 3)."""
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    from airis.optimize import cli
+    from airis.sim.scenario import load_scenarios
+
+    scenario = load_scenarios()["default"]
+    narrowed = cli.narrow_scenario(scenario, ["shoulder_abduction=0,90"])
+    with pytest.warns(RuntimeWarning, match="시작점을 건너뛴다"):
+        kept, dropped = cli.starts_in_bounds(cli.parse_starts("default,hands_up"), narrowed)
+    assert [s.name for s in kept] == ["default"] and dropped == ["hands_up"]
+
+    root = Path(__file__).resolve().parents[1]
+    out = tmp_path / "outputs"
+    cmd = [sys.executable, str(root / "scripts" / "run_e4.py"),
+           "--evaluator", "dummy", "--scenarios", "default", "--seeds", "0",
+           "--max-evals", "60", "--popsize", "10", "--starts", "default,hands_up",
+           "--pose-bound", "shoulder_abduction=0,90", "--tag", "t", "--log-dir", str(out)]
+    assert subprocess.run(cmd, cwd=root, capture_output=True).returncode == 0
+    data = json.loads(next(out.glob("t_*/best_poses.json")).read_text(encoding="utf-8"))
+    entry = data["scenarios"]["default"]
+    assert entry["starts_used"] == ["default"] and entry["starts_skipped"] == ["hands_up"]
+    assert entry["runs"][0]["peak_gap"] is None, "시작점이 하나면 peak_gap 은 null"
