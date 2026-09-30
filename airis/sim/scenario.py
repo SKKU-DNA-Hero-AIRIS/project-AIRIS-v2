@@ -55,16 +55,12 @@ def _resolve(name: str, raw: dict) -> Scenario:
     )
 
 
-#: 쾌적 상한의 옛 부위 키 → 그 부위를 향한 구역 (전환 기간 호환. 새 설정은 구역 이름 키를 쓴다).
-CAP_PART_ZONES: dict[str, tuple[str, ...]] = {"torso_front": ("chest_low", "chest_high"),
-                                              "torso_back": ("back_low", "back_high")}
-
-
 def _check_strength_cap(name: str, cap: Mapping) -> None:
+    """쾌적 상한 키는 구역 이름만 허용한다. 옛 부위 키(torso_front 등)는 조용히 무시되지 않도록 로드 오류로 막는다."""
     for key, value in cap.items():
-        if key not in ZONE_NAMES and key not in CAP_PART_ZONES:
-            raise ValueError(f"{name}: nozzle_strength_cap 키 {key!r} 는 구역 이름 {ZONE_NAMES} "
-                             f"(또는 옛 부위 키 {sorted(CAP_PART_ZONES)}) 이어야 한다")
+        if key not in ZONE_NAMES:
+            raise ValueError(f"{name}: nozzle_strength_cap 키 {key!r} 는 구역 이름 {ZONE_NAMES} 이어야 한다 "
+                             "(옛 부위 키 torso_front → chest_low·chest_high, torso_back → back_low·back_high)")
         if not float(value) >= 0.0:
             raise ValueError(f"{name}: nozzle_strength_cap[{key!r}] = {value} 는 0 이상이어야 한다")
 
@@ -73,14 +69,13 @@ def zone_strength_caps(scenario: Scenario) -> np.ndarray:
     """(len(ZONE_NAMES),) 구역별 쾌적 상한 (00_common.md 4.7). 상한이 없는 구역은 inf.
 
     `scenario.nozzle_strength_cap` 의 구역 이름 키를 쓴다 (임산부: chest_low, chest_high ≤ 0.6).
-    옛 부위 키(torso_front → chest_*, torso_back → back_*)도 읽고, 겹치면 작은 값을 쓴다.
-    구역이 몸 기준이라 상한도 torso_yaw 와 무관하다.
+    구역이 몸 기준이라 상한도 torso_yaw 와 무관하다. 구역 이름이 아닌 키는 오류다 (`load_scenarios` 도 검사).
     """
     caps = np.full(len(ZONE_NAMES), np.inf)
     for key, value in (scenario.nozzle_strength_cap or {}).items():
-        for z in ((key,) if key in ZONE_NAMES else CAP_PART_ZONES.get(key, ())):
-            i = ZONE_NAMES.index(z)
-            caps[i] = min(caps[i], float(value))
+        if key not in ZONE_NAMES:
+            raise ValueError(f"{scenario.name}: nozzle_strength_cap 키 {key!r} 는 구역 이름 {ZONE_NAMES} 이어야 한다")
+        caps[ZONE_NAMES.index(key)] = float(value)
     return caps
 
 

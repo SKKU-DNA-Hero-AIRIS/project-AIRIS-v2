@@ -16,15 +16,29 @@ from airis.sim.scoring import discomfort
 from .encoding import PoseEncoder
 
 
+def _config_reference_duration() -> float:
+    """scoring.reference_duration_s (T_ref). 설정을 못 읽으면 문서 기본값 20 s."""
+    from airis.sim.scenario import load_physics
+
+    try:
+        return float(load_physics()["scoring"]["reference_duration_s"])
+    except (FileNotFoundError, KeyError):      # 설정이 없거나 키가 아직 없는 단위 테스트
+        return 20.0
+
+
 class DummyEvaluator(Evaluator):
     """정규화 공간에서 목표 자세와의 거리에 음수를 취한 점수.
 
     물리가 없으므로 removal_by_part 는 0 이다. 루프·로그·재현성 검증 전용.
     """
 
-    def __init__(self, target: PoseParams, scenario: Scenario, energy_weight: float = 0.1) -> None:
+    def __init__(self, target: PoseParams, scenario: Scenario, energy_weight: float = 0.1,
+                 reference_duration_s: float | None = None) -> None:
         self.scenario = scenario
         self.energy_weight = float(energy_weight)      # evaluate_plan 의 에너지 가중 (E7 스윕 확인용)
+        # T_ref: 불편도·에너지를 나누는 기준 시간. 설정(scoring.reference_duration_s)에서 읽는다.
+        self.reference_duration_s = (float(reference_duration_s) if reference_duration_s is not None
+                                     else _config_reference_duration())
         self.encoder = PoseEncoder(scenario)
         # 목표도 시나리오 제약 안으로 투영해 둔다 (fixed_pose 가 있으면 도달 가능한 목표가 된다).
         self.target = self.encoder.clip_pose(target)
@@ -55,7 +69,7 @@ class DummyEvaluator(Evaluator):
         물리는 없지만 계획 탐색이 (a) 시간을 늘리면 이득, (b) 에너지가 크면 손해라는
         구조를 흉내 내 루프·인코더·로그를 검증할 수 있다 (docs/plan_extension.md 4.4·4.6·4.7 형태).
         """
-        t_ref = 20.0            # scoring.reference_duration_s (docs/plan_extension.md 4.4)
+        t_ref = self.reference_duration_s       # docs/plan_extension.md 4.4
         total = plan.duration_s
         zones = np.asarray(plan.zone_strengths, dtype=np.float64)
         parts = []

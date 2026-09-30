@@ -345,3 +345,44 @@ def test_dummy_plan_discomfort_uses_reference_duration(scenarios):
     nz = load_nozzles()
     assert ev.evaluate_plan(half, nz, BodyParams(), sc).discomfort == pytest.approx(d_pose * 10.0 / 20.0)
     assert ev.evaluate_plan(full, nz, BodyParams(), sc).discomfort == pytest.approx(d_pose)
+
+
+# ---------- 구역 노즐 수 폴백 (#98 검토 후속 3) ----------
+
+def test_default_zone_counts_warns_on_broken_config(monkeypatch):
+    """배치 파일이 없으면 조용히 1, 설정이 어긋나면 경고를 내고 1."""
+    import warnings
+
+    import numpy as np
+
+    from airis.optimize import plan_encoding as pe
+
+    ones = np.ones(len(pe.ZONE_NAMES))
+
+    def missing():
+        raise FileNotFoundError("nozzles.yaml")
+
+    monkeypatch.setattr(pe, "_load_zone_counts", missing)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")          # 경고가 나면 실패
+        assert np.array_equal(pe.default_zone_counts(), ones)
+
+    def broken():
+        raise ValueError("좌우 노즐 수가 다르다")
+
+    monkeypatch.setattr(pe, "_load_zone_counts", broken)
+    with pytest.warns(RuntimeWarning, match="구역별 노즐 수"):
+        assert np.array_equal(pe.default_zone_counts(), ones)
+
+
+def test_dummy_reference_duration_comes_from_config():
+    """더미의 T_ref 는 설정값이고, 넘기면 그 값을 쓴다 (#98 검토 후속 2)."""
+    from airis.optimize.dummy import DummyEvaluator, _config_reference_duration
+    from airis.sim import PoseParams
+    from airis.sim.scenario import load_physics, load_scenarios
+
+    scenario = load_scenarios()["default"]
+    expected = float(load_physics()["scoring"]["reference_duration_s"])
+    assert _config_reference_duration() == expected
+    assert DummyEvaluator(PoseParams(), scenario).reference_duration_s == expected
+    assert DummyEvaluator(PoseParams(), scenario, reference_duration_s=7.5).reference_duration_s == 7.5

@@ -36,7 +36,7 @@ import numpy as np                                            # noqa: E402
 from airis.optimize import baselines, cli, explog, sensitivity  # noqa: E402
 from airis.optimize.cmaes_runner import Start, run_cmaes, run_cmaes_plan  # noqa: E402
 from airis.optimize.plan_encoding import (                    # noqa: E402
-    PlanLimits, plan_kinetics_stamp, plan_physics_cfg,
+    PlanLimits, default_zone_counts, plan_kinetics_stamp, plan_physics_cfg,
 )
 from airis.sim import PART_NAMES, BodyParams, PoseParams      # noqa: E402
 from airis.sim.scenario import load_physics, load_scenarios   # noqa: E402
@@ -91,16 +91,6 @@ def with_energy_weight(base_cfg: dict, scenario, w: float):
         return cfg, scenario
 
 
-def PlanEncoder_counts():
-    """기록용 구역별 노즐 수 (B 의 zone_nozzle_counts, 풍량 한도에 쓰는 값과 같다)."""
-    from airis.sim.scenario import zone_nozzle_counts
-
-    try:
-        return zone_nozzle_counts()
-    except Exception:
-        return [1.0] * 5
-
-
 def plan_summary(plan) -> dict:
     """계획을 사람이 읽는 dict 로 (JSON 저장·표시용)."""
     return {
@@ -147,7 +137,7 @@ def main(argv: list[str] | None = None) -> int:
     rows: list[dict] = []
     plans_out: dict = {"group_id": group_id, "commit": commit, "physics_hash": physics_hash,
                        "nozzle_hash": nozzle_hash, "args": vars(args), **kinetics,
-                       "zone_nozzle_counts": [float(v) for v in PlanEncoder_counts()],
+                       "zone_nozzle_counts": [float(v) for v in default_zone_counts()],
                        "scenarios": {}}
 
     for name in names:

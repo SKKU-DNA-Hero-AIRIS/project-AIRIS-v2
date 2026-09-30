@@ -47,9 +47,9 @@ K=1이면 단일 단계 식과 같다. 단계 전환 시간 `plan.transition_s` 
 ### 4.7 세기, 풍량 한도, 에너지
 
 ```
-출구 속도  U0_m = s_m · jet.slot.exit_velocity_mps          (기존)
+출구 속도  U0_m = s_m · jet.slot.exit_velocity_mps          (기존. s_m = 노즐 m 이 속한 구역의 세기 s_z × 기준 배치 strength)
 풍량      Q_m  = s_m · fan.rated_flow_m3_min                (9.2 m³/min)
-제약      0 ≤ s_m ≤ fan.s_max,   Σ_m s_m ≤ fan.cap_ratio · M
+제약      0 ≤ s_z ≤ fan.s_max,   Σ_m s_m ≤ fan.cap_ratio · M
 보수      Σ s_m 이 한도를 넘으면 전 구역을 같은 비율로 줄인다 (인코더에서, 평가 전)
 에너지    e = (Σ_m s_m^p · T) / (M · T_ref),  p = fan.power_exponent = 3 (팬 상사 법칙)
           현행 운전(전 팬 s=1, T = T_ref = 20 s)이면 e = 1
@@ -69,13 +69,13 @@ score = Σ_부위 w_부위 · R_부위
 
 | 키 | 값 | 근거 |
 |---|---|---|
-| `adhesion.kinetics.enabled` | false → 확장 실험에서 true | 기존 단일 자세 결과 보존 |
+| `adhesion.kinetics.enabled` | false → 확장 실험에서 true (계획 경로는 `airis.optimize.plan_encoding.plan_physics_cfg()`가 복사본에서 켠다) | 기존 단일 자세 결과 보존 |
 | `adhesion.kinetics.time_constant_s` | 2.0 (스윕 1·2·5) | 추정. B가 문헌(Keedy 2008 등) 확인 |
 | `fan.rated_flow_m3_min` | 9.2 | 퓨리움 사양 |
 | `fan.s_max` | 1.0 (현 장비) / 1.5 (재배분 실험) | 팬 개별 제어·과속 가능 여부 퓨리움 확인 |
 | `fan.cap_ratio` | 1.0 (추가 실험 0.7) | 총 풍량 110 m³/min |
 | `fan.power_exponent` | 3 (스윕 2·3) | 팬 상사 법칙 |
-| `scoring.energy_weight` | 0.1 (스윕 0·0.05·0.1·0.2·0.4) | 불편도 가중과 같은 크기 |
+| `scoring.energy_weight` | 0.1 (스윕 0·0.01·0.03·0.1) | 불편도 가중과 같은 크기 |
 | `scoring.time_weight` | 0.0 | 필요 시 처리량 반영 |
 | `scoring.reference_duration_s` | 20 | 제품 기본 동작 시간 |
 | `plan.n_phases` | 2 | 21차원. 3단계는 후속 |
