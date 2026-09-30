@@ -400,20 +400,20 @@ def test_recommend_without_artifacts_uses_stub(no_artifacts):
 
 
 def test_model_artifacts_uses_predict_status(monkeypatch):
-    """산출물 상태는 C의 artifact_status() 를 그대로 옮긴다. 도장이 없으면 '확인 불가'로 본다."""
+    """산출물 상태는 C·F의 artifact_status() 를 그대로 옮긴다 (E는 판정을 다시 하지 않는다)."""
     import airis.model.predict as P
     from airis.realtime.recommend import model_artifacts
 
     monkeypatch.setattr(P, "artifact_status", lambda *a, **k: {
         "current": {"nozzle_layout_hash": "n", "physics_hash": "p"}, "current_error": None,
-        # 도장 없는 산출물: artifact_status 는 match=True 로 주지만 비교한 것이 없다
-        "flow": {"path": "a.pt", "exists": True, "match": True, "mismatched": [], "error": None,
-                 "stamp": {"nozzle_layout_hash": None, "physics_hash": None, "commit": "abc1234"}},
+        # 도장이 없거나 일부만 찍힌 산출물은 match=None (#99). 화면에도 "확인 불가"여야 한다.
+        "flow": {"path": "a.pt", "exists": True, "match": None, "mismatched": [], "error": None,
+                 "stamp": {"nozzle_layout_hash": None, "physics_hash": "p", "commit": "abc1234"}},
         "knn": {"path": "b.parquet", "exists": False, "match": None, "mismatched": [], "error": None,
                 "stamp": {}}})
     flow, knn = model_artifacts()
     assert flow.name == "flow" and flow.exists and flow.commit == "abc1234"
-    assert flow.config_ok is None                      # True 로 보이면 "설정 일치"로 오해한다
+    assert flow.config_ok is None                      # "설정 일치"로 보이면 오해한다
     assert not knn.exists and knn.message == "없음" and knn.config_ok is None
 
 

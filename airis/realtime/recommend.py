@@ -285,7 +285,7 @@ def model_artifacts() -> list[ArtifactInfo]:
     화면 쪽에서 캐시한다.
     """
     try:
-        from ..model.predict import STAMP_KEYS, artifact_status
+        from ..model.predict import artifact_status
     except ImportError as exc:
         return [ArtifactInfo("model", "-", False, message=str(exc))]
 
@@ -293,12 +293,9 @@ def model_artifacts() -> list[ArtifactInfo]:
     out: list[ArtifactInfo] = []
     for name in ("flow", "knn"):
         e = status[name]
-        stamp = e.get("stamp") or {}
-        # 도장이 없으면 "확인 불가"로 본다 (#97 뒤 artifact_status 도 None 을 주지만, 화면 판정은 E가 정한다).
-        stamped = any(stamp.get(k) is not None for k in STAMP_KEYS)
-        out.append(ArtifactInfo(name, e["path"], bool(e["exists"]), stamp.get("commit"),
-                                e["match"] if stamped else None,
-                                e["error"] or ("" if e["exists"] else "없음")))
+        # match 를 그대로 쓴다: #99 뒤 도장이 없거나 일부만 찍힌 산출물도 None(확인 불가)으로 온다.
+        out.append(ArtifactInfo(name, e["path"], bool(e["exists"]), (e.get("stamp") or {}).get("commit"),
+                                e["match"], e["error"] or ("" if e["exists"] else "없음")))
     return out
 
 
