@@ -39,7 +39,7 @@ import numpy as np                                           # noqa: E402
 from airis.optimize import cli, explog                       # noqa: E402
 from airis.sim.scenario import load_scenarios                # noqa: E402
 
-METHODS = ("flow", "flow+stub", "flow1", "knn", "clsreg", "hgb", "mlp", "stub")
+METHODS = ("hybrid", "flow", "flow+stub", "flow1", "knn", "knn+stub", "clsreg", "hgb", "mlp", "stub")
 RATIO_FLOOR = 0.95
 
 
@@ -49,6 +49,11 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--dataset", default=None, help="기본값: 산출물 meta 의 dataset")
     ap.add_argument("--methods", default=",".join(METHODS))
     ap.add_argument("--n-samples", type=int, default=16, help="flow·knn 의 재채점 후보 수 (같은 값으로 맞춘다)")
+    ap.add_argument("--n-flow", type=int, default=8, help="hybrid 의 flow 후보 수")
+    ap.add_argument("--n-knn", type=int, default=8, help="hybrid 의 kNN 후보 수")
+    ap.add_argument("--folds", type=int, default=0,
+                    help="체형 K-fold 교차검증 (0 이면 산출물 meta 의 holdout 체형만). fold 마다 flow 를 다시 학습한다")
+    ap.add_argument("--fold-seed", type=int, default=0)
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--limit", type=int, default=None, help="holdout 행 수 상한 (빠른 점검용)")
     ap.add_argument("--out", default=None, help="기본값: outputs/e5flow_<시각>.csv")
@@ -159,6 +164,100 @@ def summarize(res):
                .reset_index())
 
 
+def fold_indices(body_idx: np.ndarray, folds: int, seed: int) -> list[np.ndarray]:
+    """체형 단위 K-fold. 같은 (체형 목록, folds, seed) 면 같은 분할."""
+    ids = np.unique(body_idx)
+    shuffled = np.random.default_rng(seed).permutation(ids)
+    return [np.sort(part) for part in np.array_split(shuffled, folds)]
+
+
+def train_fold_model(train, scenarios, base_model, meta: dict):
+    """fold 학습 체형만으로 flow 를 다시 학습한다 (설정은 산출물과 같게)."""
+    from airis.model.flow import train_pose_flow
+
+    return train_pose_flow(train, scenarios, base_model.cfg, meta=dict(meta), log=None)
+
+
+def run_split(test, train, model, methods, args, evaluator, nozzle, scenarios, *, fold=None,
+              knn_path=None, model_path=None) -> list[dict]:
+    """holdout(test) 행마다 방법별로 자세를 예측하고 점수 비율을 잰다."""
+    import time as _time
+
+    from airis.model import predict as pred
+    from airis.model.flow import BODY_KEYS, body_from_row
+    from airis.optimize.cmaes_runner import score_batch
+    from airis.optimize.encoding import PoseEncoder
+
+    mlp = hgb = None
+    if "mlp" in methods or "hgb" in methods:
+        mlp, hgb = fit_mean_regressors(train, model)
+    peaks = PeakRegressor(train, model.space) if "clsreg" in methods else None
+    near = (NearestBodies(train, model.space)
+            if {"knn", "knn+stub"} & set(methods) else None)
+    stub_table = None
+    if {"stub", "flow+stub", "knn+stub", "hybrid"} & set(methods):
+        from airis.realtime.recommend import STUB_TABLE as stub_table
+
+    n = max(1, int(args.n_samples))
+    rows: list[dict] = []
+    t_all = _time.perf_counter()
+    for i, row in test.iterrows():
+        body, scenario = body_from_row(row), scenarios[row["scenario"]]
+        ref = float(row["score"])
+        enc = PoseEncoder(scenario)
+        stub_cands = [enc.clip_pose(e.pose) for e in stub_table[scenario.name]] if stub_table else []
+        seed = args.seed + int(row["body_idx"])
+        for m in methods:
+            t0 = _time.perf_counter()
+            if m == "hybrid":
+                p = pred.predict(body, scenario, backend="hybrid", n_flow=args.n_flow, n_knn=args.n_knn,
+                                 seed=seed, path=model_path or args.model, knn_path=knn_path,
+                                 evaluator=evaluator, nozzle=nozzle, extra_candidates=stub_cands)
+                pose, n_evals = p.pose, len(p.candidates)
+            elif m == "flow":
+                p = pred.predict(body, scenario, backend="flow", n_samples=n, seed=seed, path=model_path or args.model,
+                                 evaluator=evaluator, nozzle=nozzle)
+                pose, n_evals = p.pose, len(p.candidates)
+            elif m == "flow+stub":
+                p = pred.predict(body, scenario, backend="flow", n_samples=max(1, n - len(stub_cands)),
+                                 seed=seed, path=model_path or args.model, evaluator=evaluator, nozzle=nozzle,
+                                 extra_candidates=stub_cands)
+                pose, n_evals = p.pose, len(p.candidates)
+            elif m == "flow1":
+                pose = pred.predict(body, scenario, backend="flow", n_samples=1, rescore=False,
+                                    seed=seed, path=model_path or args.model).pose
+                n_evals = 0
+            elif m == "knn":
+                pose, n_evals = best_of(evaluator, near.candidates(body, scenario, n), nozzle, body, scenario)
+            elif m == "knn+stub":
+                cands = near.candidates(body, scenario, max(1, n - len(stub_cands))) + stub_cands
+                pose, n_evals = best_of(evaluator, cands, nozzle, body, scenario)
+            elif m == "clsreg":
+                pose, n_evals = best_of(evaluator, peaks.candidates(body, scenario), nozzle, body, scenario)
+            elif m in ("mlp", "hgb"):
+                bvec = np.array([[getattr(body, k) for k in BODY_KEYS]], dtype=np.float32)
+                x = (mlp if m == "mlp" else hgb).predict(model._cond(bvec, [scenario.name]).numpy())
+                pose, n_evals = model.space.to_pose(x[0], scenario), 0
+            else:
+                pose, n_evals = best_of(evaluator, stub_cands, nozzle, body, scenario)
+            ms = (_time.perf_counter() - t0) * 1000.0
+            score, infeasible = score_batch(evaluator, [pose], nozzle, body, scenario)
+            rows.append({
+                "body_idx": int(row["body_idx"]), "scenario": scenario.name, "method": m,
+                "height_m": body.height_m, "boundary": in_boundary(scenario.name, body.height_m),
+                "ref_score": ref, "score": float(score[0]),
+                "ratio": float(score[0]) / ref if ref > 0 else float("nan"),
+                "infeasible": bool(infeasible[0]), "n_evals": n_evals, "ms": ms,
+                "shoulder_abduction": pose.shoulder_abduction, "torso_yaw": pose.torso_yaw,
+                "ref_arm_class": row.get("arm_class"), "fold": fold,
+            })
+        if (i + 1) % 10 == 0 or i + 1 == len(test):
+            tag = "" if fold is None else f"fold {fold} "
+            print(f"[e5flow] {tag}{i + 1}/{len(test)}  {_time.perf_counter() - t_all:.0f} s")
+
+    return rows
+
+
 def main(argv: list[str] | None = None) -> int:
     cli.enable_utf8_stdout()
     args = build_parser().parse_args(argv)
@@ -177,72 +276,42 @@ def main(argv: list[str] | None = None) -> int:
 
     model = pred.load_model(args.model, kind="pose")
     df = pd.read_parquet(args.dataset or model.meta["dataset"])
-    holdout = set(model.meta.get("holdout_body_idx", []))
-    if not holdout:
-        print("산출물에 holdout 체형이 없다 (train_pose_flow.py --holdout-frac 0 으로 학습).", file=sys.stderr)
-        return 2
-    test = df[df["body_idx"].isin(holdout)].reset_index(drop=True)
-    if args.limit:
-        test = test.head(args.limit)
-    train = df[~df["body_idx"].isin(holdout)].reset_index(drop=True)
     scenarios = load_scenarios()
     evaluator, nozzle = pred.default_rescorer(model)
-    n = max(1, int(args.n_samples))
 
-    mlp = hgb = None
-    if "mlp" in methods or "hgb" in methods:
-        mlp, hgb = fit_mean_regressors(train, model)
-    peaks = PeakRegressor(train, model.space) if "clsreg" in methods else None
-    near = NearestBodies(train, model.space) if "knn" in methods else None
-    stub_table = None
-    if "stub" in methods or "flow+stub" in methods:
-        from airis.realtime.recommend import STUB_TABLE as stub_table
+    if args.folds and args.folds > 1:
+        rows = []
+        folds = fold_indices(df["body_idx"].to_numpy(), args.folds, args.fold_seed)
+        tmp = Path(args.out).parent if args.out else ROOT / "outputs"
+        tmp.mkdir(parents=True, exist_ok=True)
+        for f, ids in enumerate(folds):
+            test = df[df["body_idx"].isin(ids)].reset_index(drop=True)
+            train = df[~df["body_idx"].isin(ids)].reset_index(drop=True)
+            if args.limit:
+                test = test.head(args.limit)
+            print(f"[e5flow] fold {f}: 학습 {len(train)}행 / 평가 {len(test)}행 — flow 재학습")
+            fold_model = train_fold_model(train, scenarios, model, model.meta)
+            fold_model_path = tmp / f"_fold{f}_flow.pt"
+            fold_model.save(fold_model_path)
+            knn_path = None
+            if {"hybrid"} & set(methods):
+                from airis.model.knn import PoseKNN
 
-    rows = []
-    t_all = time.perf_counter()
-    for i, row in test.iterrows():
-        body, scenario = body_from_row(row), scenarios[row["scenario"]]
-        ref = float(row["score"])
-        enc = PoseEncoder(scenario)
-        stub_cands = [enc.clip_pose(e.pose) for e in stub_table[scenario.name]] if stub_table else []
-        seed = args.seed + int(row["body_idx"])
-        for m in methods:
-            t0 = time.perf_counter()
-            if m == "flow":
-                p = pred.predict(body, scenario, n_samples=n, seed=seed, path=args.model,
-                                 evaluator=evaluator, nozzle=nozzle)
-                pose, n_evals = p.pose, len(p.candidates)
-            elif m == "flow+stub":
-                p = pred.predict(body, scenario, n_samples=max(1, n - len(stub_cands)), seed=seed,
-                                 path=args.model, evaluator=evaluator, nozzle=nozzle,
-                                 extra_candidates=stub_cands)
-                pose, n_evals = p.pose, len(p.candidates)
-            elif m == "flow1":
-                pose = pred.predict(body, scenario, n_samples=1, rescore=False, seed=seed, path=args.model).pose
-                n_evals = 0
-            elif m == "knn":
-                pose, n_evals = best_of(evaluator, near.candidates(body, scenario, n), nozzle, body, scenario)
-            elif m == "clsreg":
-                pose, n_evals = best_of(evaluator, peaks.candidates(body, scenario), nozzle, body, scenario)
-            elif m in ("mlp", "hgb"):
-                bvec = np.array([[getattr(body, k) for k in BODY_KEYS]], dtype=np.float32)
-                x = (mlp if m == "mlp" else hgb).predict(model._cond(bvec, [scenario.name]).numpy())
-                pose, n_evals = model.space.to_pose(x[0], scenario), 0
-            else:
-                pose, n_evals = best_of(evaluator, stub_cands, nozzle, body, scenario)
-            ms = (time.perf_counter() - t0) * 1000.0
-            score, infeasible = score_batch(evaluator, [pose], nozzle, body, scenario)
-            rows.append({
-                "body_idx": int(row["body_idx"]), "scenario": scenario.name, "method": m,
-                "height_m": body.height_m, "boundary": in_boundary(scenario.name, body.height_m),
-                "ref_score": ref, "score": float(score[0]),
-                "ratio": float(score[0]) / ref if ref > 0 else float("nan"),
-                "infeasible": bool(infeasible[0]), "n_evals": n_evals, "ms": ms,
-                "shoulder_abduction": pose.shoulder_abduction, "torso_yaw": pose.torso_yaw,
-                "ref_arm_class": row.get("arm_class"),
-            })
-        if (i + 1) % 10 == 0 or i + 1 == len(test):
-            print(f"[e5flow] {i + 1}/{len(test)}  {time.perf_counter() - t_all:.0f} s")
+                knn_path = tmp / f"_fold{f}_knn.parquet"
+                PoseKNN.from_dataset(train).save(knn_path)
+            rows += run_split(test, train, fold_model, methods, args, evaluator, nozzle, scenarios,
+                              fold=f, knn_path=knn_path, model_path=fold_model_path)
+    else:
+        holdout = set(model.meta.get("holdout_body_idx", []))
+        if not holdout:
+            print("산출물에 holdout 체형이 없다 (train_pose_flow.py --holdout-frac 0 으로 학습, 또는 --folds 5).",
+                  file=sys.stderr)
+            return 2
+        test = df[df["body_idx"].isin(holdout)].reset_index(drop=True)
+        if args.limit:
+            test = test.head(args.limit)
+        train = df[~df["body_idx"].isin(holdout)].reset_index(drop=True)
+        rows = run_split(test, train, model, methods, args, evaluator, nozzle, scenarios, fold=None)
 
     res = pd.DataFrame(rows)
     summary = summarize(res)
