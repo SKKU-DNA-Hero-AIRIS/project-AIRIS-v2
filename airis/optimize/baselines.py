@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from airis.sim import PART_NAMES, BodyParams, Evaluator, NozzleConfig, PoseParams, Scenario
+from airis.sim import PART_NAMES, ZONE_NAMES, BodyParams, Evaluator, NozzleConfig, PoseParams, Scenario
 
 from .cmaes_runner import is_infeasible
 from .encoding import PoseEncoder
@@ -88,4 +88,62 @@ def evaluate_all(
     return {
         cond: evaluate_condition(evaluator, poses, encoder, nozzle, body, scenario)
         for cond, poses in BASELINES.items()
+    }
+
+
+# ---------- 계획 기준선 (E7, docs/plan_extension.md 6절) ----------
+
+#: P1 의 몸 회전 단계 수 (제품 안내 "머문 상태에서 몸을 회전"을 순서로 평가한다).
+P1_PHASES = 12
+
+
+def plan_baseline(name: str, scenario: Scenario, limits, best_pose: PoseParams | None = None) -> "Plan":
+    """계획 기준선.
+
+        P0  기본 자세 1단계, 전 구역 최대 세기, 총 시간 상한 (현행 운전)
+        P1  기본 자세로 몸을 12단계 회전 (제품 안내), 세기·시간은 P0 과 같다
+        P2  단일 자세 최적(best_pose)을 K 단계 모두에, 세기·시간은 P0 과 같다
+
+    시나리오 yaw 범위를 넘는 회전 단계는 범위 안으로 투영된다(휠체어 ±45°).
+    """
+    from airis.sim import Phase, Plan
+
+    from .plan_encoding import PlanEncoder
+
+    enc = PlanEncoder(scenario, limits)
+    total = enc.limits.duration_bounds_s[1]
+    zones = np.full(len(ZONE_NAMES), enc.limits.s_max, dtype=np.float64)
+    if name == "P0":
+        plan = Plan([Phase(enc.pose_encoder.clip_pose(PoseParams()), total)], zones)
+    elif name == "P1":
+        step = total / P1_PHASES
+        plan = Plan([Phase(enc.pose_encoder.clip_pose(PoseParams(torso_yaw=y if y <= 180 else y - 360)), step)
+                     for y in (360 * i / P1_PHASES for i in range(P1_PHASES))], zones)
+    elif name == "P2":
+        if best_pose is None:
+            raise ValueError("P2 는 단일 자세 최적(best_pose)이 필요하다")
+        plan = enc.plan_from_pose(best_pose, duration_s=total)
+    else:
+        raise ValueError(f"계획 기준선 이름은 P0 | P1 | P2: {name!r}")
+    return Plan(plan.phases, enc.clip_zone_strengths(plan.zone_strengths))
+
+
+def evaluate_plan_row(evaluator, plan, nozzle, body, scenario: Scenario) -> dict:
+    """계획 하나를 평가해 CSV 행 재료로 만든다 (기준선·최적 결과 공통)."""
+    from .cmaes_runner import is_infeasible
+
+    result = evaluator.evaluate_plan(plan, nozzle, body, scenario)
+    extra = result.extra or {}
+    return {
+        "infeasible": is_infeasible(result),
+        "score": float(result.score),
+        "total_removal": float(result.total_removal),
+        "discomfort": float(result.discomfort),
+        "energy": float(extra.get("energy", float("nan"))),
+        "duration_s": float(extra.get("duration_s", plan.duration_s)),
+        "n_phases": len(plan.phases),
+        "phase_durations_s": ";".join(f"{p.duration_s:.2f}" for p in plan.phases),
+        "zone_strengths": ";".join(f"{v:.3f}" for v in np.asarray(plan.zone_strengths, dtype=float)),
+        "removal_by_part": np.asarray(result.removal_by_part, dtype=np.float64),
+        "plan": plan,
     }

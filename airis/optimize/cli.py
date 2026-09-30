@@ -141,7 +141,8 @@ def make_evaluator(
     기본 자세로 한 번 시험 평가해 본다. 미구현이면 TrackNotMerged 를 던진다.
     """
     if name == "dummy":
-        return DummyEvaluator(dummy_target or DEFAULT_DUMMY_TARGET, scenario)
+        weight = float((physics_cfg or {}).get("scoring", {}).get("energy_weight", 0.1))
+        return DummyEvaluator(dummy_target or DEFAULT_DUMMY_TARGET, scenario, energy_weight=weight)
 
     if name not in _OWNER:
         raise SystemExit(f"알 수 없는 평가기: {name} (가능: {', '.join(EVALUATOR_CHOICES)})")
