@@ -1,7 +1,7 @@
 # 시나리오별 자세 제약과 페널티. 소유자: B.
 # nozzle_height_range_m 은 README 12절 노즐 확장용. 현재는 읽기만 하고 쓰지 않는다.
 # nozzle_strength_cap 은 구역 세기 쾌적 상한 {구역 이름: 상한} (00_common.md 4.7, ZONE_NAMES, 계획 평가 전용).
-#   scenario.zone_strength_caps 가 읽는다. 옛 부위 키(torso_front → chest_*, torso_back → back_*)도 전환 기간에 읽는다.
+#   scenario.zone_strength_caps 가 읽는다. 구역 이름이 아닌 키(옛 부위 키 torso_front 등)는 로드 오류다.
 # pose 변수 단위: degree. 범위 밖은 최적화 대상에서 제외.
 
 default:
@@ -30,10 +30,8 @@ pregnant:
     # 가슴 쪽 벽 구역 (몸 기준, torso_yaw 와 무관) 세기 ≤ 0.6. 배를 향한 측면 바 4개.
     chest_low: 0.6
     chest_high: 0.6
-    # 옛 부위 키. C 의 PlanEncoder 가 구역 키(zone_strength_caps)로 옮기면 지운다. 값은 위와 같게 둔다.
-    torso_front: 0.6
   # 메시 몸(body.model: mesh)에 적용할 MakeHuman 모디파이어 타깃 {파일 이름: 가중치}. 파일은 data/meshes/makehuman/.
-  # 파일이 없으면 적용하지 않는다 (stomach-pregnant-incr.target 다운로드는 사용자 승인 대기).
+  # 파일이 없으면 적용하지 않는다 (stomach-pregnant-incr.target 은 CC0, 사용자 승인 후 커밋됨 — PR #53).
   mesh_targets:
     stomach-pregnant-incr: 1.0
 
