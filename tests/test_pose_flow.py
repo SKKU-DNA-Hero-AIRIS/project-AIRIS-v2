@@ -1,4 +1,4 @@
-"""조건부 flow matching 자세 모델 테스트. 소유자: C. docs/proposals/flow_matching.md.
+"""조건부 flow matching 자세 모델 테스트. 소유자: F. docs/proposals/flow_matching.md.
 
 합성 데이터로 (1) 봉우리 두 개를 평균 내지 않고 둘 다 뽑는지, (2) 체형 조건에 따라 봉우리가 바뀌는지,
 (3) interfaces.md 회귀 계약(clip_pose, fixed_pose, 예외 규약)을 지키는지 본다.
@@ -193,7 +193,7 @@ def test_recommend_uses_flow_model(model, scenarios, tmp_path, monkeypatch):
 
     monkeypatch.setattr(pred, "DEFAULT_MODEL_PATH", model.save(tmp_path / "pose_flow.pt"))
     r = rec.recommend(BodyParams(), scenarios["wheelchair"], model="capsule")
-    assert r.source.startswith("model: hybrid (")     # 고른 후보의 출처까지 적는다
+    assert r.source.startswith("model")          # "model" 또는 "model: hybrid (flow|knn|extra)" (E #95)
     assert r.pose.hip_flexion == 90.0 and r.pose.knee_flexion == 90.0
 
 
@@ -355,7 +355,8 @@ def test_predict_plan_contract_and_rescoring(plan_model, model, scenarios, tmp_p
     ideal = _plan(DOWN, ZONES_B)
     q = pred.predict_plan_candidates(BodyParams(), sc, n_samples=8, path=path, evaluator=_PlanEvaluator(),
                                      nozzle=object(), extra_candidates=[ideal])
-    assert q.plan is ideal
+    assert np.allclose(plan_model.space.from_plan(q.plan), plan_model.space.from_plan(ideal)), \
+        "범위 안의 고정 계획은 투영해도 그대로이고, 그것이 뽑힌다"
 
     # evaluate_plan 을 구현하지 않은 평가기는 NotImplementedError 를 그대로 올린다
     # (DummyEvaluator 는 계획용 더미를 갖고 있으므로 자세만 구현한 평가기로 확인한다)
@@ -374,6 +375,55 @@ def test_predict_plan_contract_and_rescoring(plan_model, model, scenarios, tmp_p
                           evaluator=_PlanEvaluator(), nozzle=object())
 
 
+def test_predict_plan_clips_before_rescoring(plan_model, scenarios, tmp_path):
+    """계획 후보(flow 샘플 + 고정 계획)는 채점 전에 전부 PlanEncoder.clip_plan 을 거친다."""
+    from dataclasses import replace
+
+    from airis.optimize.plan_encoding import PlanLimits
+
+    path = plan_model.save(tmp_path / "plan.pt")
+    # 구역 이름 키만 쓴 쾌적 상한 (옛 부위 키 torso_front 없이도 걸려야 한다, #92).
+    # plan_model 은 default·wheelchair 로만 학습했으므로 이름은 default 로 둔다.
+    capped = replace(scenarios["default"], nozzle_strength_cap={"chest_low": 0.6, "chest_high": 0.6})
+    chest = [ZONE_NAMES.index(z) for z in ("chest_low", "chest_high")]
+    raw = plan_model.sample_plans(BodyParams(), capped, 16, seed=0)
+    assert any(np.any(p.zone_strengths[chest] > 0.6) for p in raw), "투영 전에는 쾌적 상한을 넘는 샘플이 있다"
+
+    seen: list[Plan] = []
+
+    class _Recorder(_PlanEvaluator):
+        def evaluate_plan(self, plan, nozzle, body, scenario):
+            seen.append(plan)
+            return super().evaluate_plan(plan, nozzle, body, scenario)
+
+    wild = _plan(UP, np.ones(len(ZONE_NAMES)), t1=30.0, t2=30.0)          # 총 60 s, 가슴 1.0
+    pred.predict_plan_candidates(BodyParams(), capped, n_samples=16, path=path, evaluator=_Recorder(),
+                                 nozzle=object(), extra_candidates=[wild])
+    assert len(seen) == 17
+    for plan in seen:
+        assert np.all(plan.zone_strengths[chest] <= 0.6 + 1e-12)
+        assert 5.0 - 1e-9 <= plan.duration_s <= 20.0 + 1e-9
+        assert min(ph.duration_s for ph in plan.phases) >= 2.0 - 1e-9
+    assert seen[-1].duration_s == pytest.approx(20.0), "범위 밖 고정 계획도 투영한다"
+
+    only = pred.predict_plan_candidates(BodyParams(), capped, n_samples=4, rescore=False, path=path)
+    assert np.all(only.plan.zone_strengths[chest] <= 0.6 + 1e-12), "재채점을 꺼도 투영한다"
+
+    # 풍량 한도 보수: Σ_구역 노즐 수 × 세기 ≤ cap_ratio × 노즐 수. 노즐 수는 실제 장비 구성이 기본이다.
+    from airis.sim.scenario import zone_nozzle_counts
+
+    counts = zone_nozzle_counts()
+    tight = pred.predict_plan_candidates(BodyParams(), scenarios["default"], n_samples=8, path=path,
+                                         evaluator=_PlanEvaluator(), nozzle=object(),
+                                         limits=PlanLimits(cap_ratio=0.5))
+    assert all(counts @ c.zone_strengths <= 0.5 * counts.sum() + 1e-9 for c in tight.candidates)
+    assert any(counts @ p.zone_strengths > 0.5 * counts.sum() for p in raw), "투영 전에는 한도를 넘는 샘플이 있다"
+    even = pred.predict_plan_candidates(BodyParams(), scenarios["default"], n_samples=8, path=path,
+                                        evaluator=_PlanEvaluator(), nozzle=object(),
+                                        limits=PlanLimits(cap_ratio=0.5), zone_nozzle_counts=np.ones(len(ZONE_NAMES)))
+    assert all(c.zone_strengths.sum() <= 0.5 * len(ZONE_NAMES) + 1e-9 for c in even.candidates)
+
+
 # ---------- 혼합 추천 (flow + kNN + 고정 후보), 총괄 2026-09-30 ----------
 
 def _knn_table(tmp_path, df=None, exclude=()):
@@ -386,6 +436,31 @@ def _knn_table(tmp_path, df=None, exclude=()):
     d = d.assign(nozzle_layout_hash="n0", physics_hash="p0", body_model="capsule",
                  patches_per_m2=400.0, commit="c0")
     return PoseKNN.from_dataset(d).save(tmp_path / "pose_knn.parquet")
+
+
+def test_artifact_status_reports_stamps_without_warning(model, tmp_path, monkeypatch):
+    """E 대시보드용 산출물 상태: 경로·존재·도장·지금 설정과 일치 여부. _check_stamp 와 같은 기준."""
+    import warnings
+
+    monkeypatch.setattr(pred, "current_stamp", lambda: {"nozzle_layout_hash": "n0", "physics_hash": "p1"})
+    knn = _knn_table(tmp_path)                                  # 도장 n0 · p0
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        st = pred.artifact_status(model_path=tmp_path / "none.pt", knn_path=knn)
+    assert st["current"] == {"nozzle_layout_hash": "n0", "physics_hash": "p1"} and st["current_error"] is None
+    assert st["flow"]["exists"] is False and st["flow"]["match"] is None
+    k = st["knn"]
+    assert k["exists"] and k["error"] is None and k["stamp"]["commit"] == "c0"
+    assert k["match"] is False and k["mismatched"] == ["physics_hash"]
+
+    path = model.save(tmp_path / "m.pt")                        # 도장이 없는 산출물은 비교할 키가 없다
+    assert pred.artifact_status(model_path=path, knn_path=knn)["flow"]["match"] is True
+
+    def broken():
+        raise OSError("설정 없음")
+    monkeypatch.setattr(pred, "current_stamp", broken)
+    st = pred.artifact_status(model_path=path, knn_path=knn)
+    assert st["current"] is None and "설정 없음" in st["current_error"] and st["knn"]["match"] is None
 
 
 def test_knn_candidates_are_nearest_and_deterministic(tmp_path, scenarios):
