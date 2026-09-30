@@ -23,7 +23,8 @@ jet:
     # 충돌 제트 → 벽면 제트 보정, 00_common.md 4.2b (B 단계 8, 총괄 ⑩ 으로 필수 격상).
     # velocity_field(_per_nozzle) 에 surface_normals 를 넘길 때만 적용된다.
     enabled: true
-    # 벽면 제트 진폭 k. 1.0 은 자유 제트 중심 속도를 그대로 쓰는 중립값이다 (미보정, E3 스윕 변수).
+    # 벽면 제트 진폭 k. 1.0 → 1.4 (2026-09-30 총괄 결정). 기준 장비가 슬롯 12개라 아래 문헌 재추정의 슬롯 값을 쓴다.
+    # 미보정, E3 스윕 변수 (1.0·1.4·1.6·2.0 권장). 1.0 은 자유 제트 중심 속도를 그대로 쓰는 중립값이었다.
     # 문헌 재추정 (2026-09-30). [원문] = PDF 원문에서 직접 확인, [2차] = 인용문으로만 확인.
     #   - [원문] Phares, Smedley & Flagan 2000 (J. Fluid Mech. 418:351) 그림 3a: 완전 발달 평면 충돌 제트(H/D > 6)의
     #     경계층 밖 표면 속도 U/u_s 는 0 에서 단조 증가해 1 로 수렴하고 넘지 않는다 (u_s = 충돌 높이의 자유 제트 중심
@@ -41,7 +42,7 @@ jet:
     #     0.03~0.05 Pa (약 5배 작음), k 1.4 에서 0.05~0.10 Pa (약 2.3배 작음). Tu & Wood 정체압 6.5·P_d·h/Z 는 4.1b 중심
     #     속도와 6% 안 → 남는 차이는 충돌 영역 Cf (층류 경계층이 얇아 벽면 제트 구간 0.004~0.009 보다 크다) 쪽이다.
     #     절대 전단 규모는 fabric_roughness_factor 보정이 흡수한다.
-    wall_jet_gain: 1.0
+    wall_jet_gain: 1.4
   pulse:
     enabled: false
     period_s: 0.5
@@ -67,7 +68,7 @@ particles:
   drag_model: schiller_naumann
 
 adhesion:                         # rock'n'roll 모델 근사
-  # 실효 중앙값 tau_med = critical_shear_pa_median × fabric_roughness_factor (00_common.md 4.3) = 0.125 Pa.
+  # 실효 중앙값 tau_med = critical_shear_pa_median × fabric_roughness_factor (00_common.md 4.3) = 0.225 Pa.
   # 미보정 작업값, E3 민감도 스윕 대상 (jet.impingement.wall_jet_gain 과 함께). 제거율은 이 곱에만 의존한다.
   # 이탈 전단 중앙값 (Ibrahim, Dunn & Brach 2003, J. Aerosol Sci. 34:765). [원문] 확인 (2026-09-30): 측정 입자는 30~77 µm
   # 이고 20 µm 측정은 없다. 이탈 문턱 속도(그림 11)를 식 1 u* = 0.0375U + 0.0387 로 전단에 옮기면 32 µm 유리 입자
@@ -77,10 +78,11 @@ adhesion:                         # rock'n'roll 모델 근사
   critical_shear_sigma_log: 0.8
   # 거친 표면에서 이탈 전단이 낮아지는 비율 (같은 논문: 표면 거칠기가 부착력을 줄여 문턱을 낮춘다). 옷감 값으로
   # 보정되지 않은 맞춤값이다.
-  # 1.0 → 0.1 (PR #10) → 0.25 (B 단계 8). 4.2b 벽면 제트 보정(k = 1)을 켜고 퓨리움 부스(폭 1.46)에서
-  # 기준 자세 PoseParams() 전신 R ≈ 7.9% 가 되도록 맞췄다 (목표 5~10%, 7.5% 에 해당하는 값 0.26 을 반올림).
-  # 보정 없이(법선을 넘기지 않는 평가기) 이 값을 쓰면 기준 자세 R ≈ 1.6% 다.
-  fabric_roughness_factor: 0.25
+  # 1.0 → 0.1 (PR #10) → 0.25 (B 단계 8, k 1, 캡슐 몸 기준 자세 R ≈ 7.9%) → 0.45 (k 1.0 → 1.4).
+  # k 를 올려도 기준 자세 PoseParams() 전신 R 이 그대로이도록 다시 맞췄다: 메시 몸·퓨리움 부스·PatchEvaluator
+  # 1,500/m² 에서 k 1.0·f 0.25 → R 8.13%, k 1.4 에서 같은 R 은 f 0.444 → 반올림 0.45 (R 8.01%, 목표 5~10%).
+  # k 1.4·f 0.25 그대로면 R 14.1%. 보정 없이(법선을 넘기지 않는 평가기) 쓰면 기준 자세 R 은 더 낮다.
+  fabric_roughness_factor: 0.45
   redeposition_prob: 0.05
   kinetics:
     # 시간 의존 제거 R(t) = R∞·(1 − exp(−t/T_r)) (00_common.md 4.6). 계획 평가 evaluate_plan 에만 적용하고
