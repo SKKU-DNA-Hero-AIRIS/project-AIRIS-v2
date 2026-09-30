@@ -64,6 +64,18 @@ def at_bounds(pose: dict, scenario) -> list[str]:
     return hit
 
 
+def bundle_path_label(path: Path) -> str:
+    """저장소 기준 상대 경로. 밖(다른 worktree)이면 폴더 이름만 남긴다.
+
+    사용자 홈 경로가 그대로 들어가면 공개 파일에 개인 경로가 남고, 다른 기계에서 쓸모도 없다.
+    """
+    resolved = path.resolve()
+    try:
+        return resolved.relative_to(ROOT).as_posix()
+    except ValueError:
+        return resolved.name
+
+
 def read_bundle(path: Path) -> tuple[dict, dict]:
     """(best_poses.json, {시나리오: e4_summary.csv 행})."""
     poses = json.loads((path / "best_poses.json").read_text(encoding="utf-8"))
@@ -123,7 +135,7 @@ def main(argv: list[str] | None = None) -> int:
         group = poses.get("group_id", path.name)
         out["bundles"].append({
             "group_id": group,
-            "path": str(path),
+            "path": bundle_path_label(path),
             "commit": poses.get("commit"),
             "physics_hash": poses.get("physics_hash"),
             "nozzle_hash": poses.get("nozzle_hash"),
@@ -134,8 +146,11 @@ def main(argv: list[str] | None = None) -> int:
             "note": notes.get(group),
         })
 
+        pose_bound = bundle_args.get("pose_bound") or []
         for name, entry in poses["scenarios"].items():
             scenario = scenarios[name]
+            # --pose-bound 로 좁힌 상자의 경계도 따로 본다 (시나리오 범위와 다르다).
+            search_scenario = cli.narrow_scenario(scenario, pose_bound) if pose_bound else scenario
             block = out["scenarios"].setdefault(name, {"baselines": {}, "peaks": []})
             block["baselines"][group] = baseline_block(entry, summary.get(name), bundle_args)
 
@@ -148,13 +163,15 @@ def main(argv: list[str] | None = None) -> int:
                     "seed": run["seed"],
                     "start": run.get("best_start"),
                     "arm_class": sensitivity.arm_class(PoseParams(**pose_raw)),
-                    "constraint": ";".join(bundle_args.get("pose_bound") or []) or None,
+                    "constraint": ";".join(pose_bound) or None,
                     "pose_raw": pose_raw,
                     "pose_folded": pose_folded,
                     "at_bound": at_bounds(pose_raw, scenario),
+                    "at_search_bound": at_bounds(pose_raw, search_scenario) if pose_bound else [],
                     "score": run.get("rescore_score", run["best_score"]),
                     "score_search": run["best_score"],
                     "score_folded": None,
+                    "folded_rescored": bool(args.rescore),
                 }
                 if args.rescore:
                     ev = evaluators.get(name)
