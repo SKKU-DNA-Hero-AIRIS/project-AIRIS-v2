@@ -187,3 +187,30 @@ def test_file_hash_ignores_comments_and_line_endings(tmp_path):
 
     # YAML 이 아닌 파일은 바이트 해시 그대로 (줄바꿈이 다르면 다른 해시).
     assert explog.file_hash(write("a.txt", "x\n")) != explog.file_hash(write("b.txt", "x\n", "\r\n"))
+
+
+def test_best_poses_records_baselines_per_density(tmp_path):
+    """best_poses.json 은 탐색 밀도와 재채점 밀도의 기준선을 따로 남긴다 (통합 2026-09-30).
+
+    한 덩어리로 남기면 재채점 점수(2,000/m²)를 탐색 밀도(1,500/m²) 기준선과 비교하는
+    실수가 난다 — 실제로 한 번 냈다.
+    """
+    import json
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[1]
+    out = tmp_path / "outputs"
+    cmd = [sys.executable, str(root / "scripts" / "run_e4.py"),
+           "--evaluator", "dummy", "--scenarios", "default", "--seeds", "0",
+           "--max-evals", "60", "--popsize", "10", "--starts", "default",
+           "--tag", "t", "--log-dir", str(out)]
+    assert subprocess.run(cmd, cwd=root, capture_output=True).returncode == 0
+
+    group = next(p for p in out.iterdir() if (p / "best_poses.json").exists())
+    data = json.loads((group / "best_poses.json").read_text(encoding="utf-8"))["scenarios"]["default"]
+    assert data["baselines_patches_per_m2"] is not None
+    # 더미 평가기는 재채점을 하지 않으므로 재채점 기준선은 비어 있고, 키 자체는 있다.
+    assert "baselines_rescored" in data and "baselines_rescored_patches_per_m2" in data
+    assert set(data["baselines"]) == {"B0", "B1", "B2"}

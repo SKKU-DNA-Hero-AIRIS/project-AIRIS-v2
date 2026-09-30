@@ -180,6 +180,7 @@ def main(argv: list[str] | None = None) -> int:
 
         summary = e4.summarize_scenario(runs, base)
         row = {"scenario": name, **summary}
+        base_fine = None
         if rescore:
             # 같은 자세를 촘촘한 격자로 다시 평가한다 (탐색은 하지 않는다).
             fine = cli.make_evaluator(args.evaluator, scenario, body=body, nozzle=nozzle,
@@ -205,7 +206,13 @@ def main(argv: list[str] | None = None) -> int:
                 "pose": cli.pose_dict(r["best_pose"]), "pose_folded": e4.fold_pose(r["best_pose"]),
             } for r in runs],
             "mean_pose_folded": {k: summary[f"pose_mean_{k}"] for k in e4.POSE_KEYS},
+            # 기준선은 밀도별로 따로 남긴다. 시드별 best 의 rescore_score 와 비교할 때는
+            # 반드시 baselines_rescored(재채점 밀도) 쪽을 써야 한다 (통합 2026-09-30 지적).
             "baselines": {c: {"score": a["score"], "infeasible": a["infeasible"]} for c, a in base.items()},
+            "baselines_patches_per_m2": args.patches_per_m2,
+            "baselines_rescored": ({c: {"score": a["score"], "infeasible": a["infeasible"]}
+                                    for c, a in base_fine.items()} if base_fine else None),
+            "baselines_rescored_patches_per_m2": args.rescore_patches_per_m2 if base_fine else None,
         }
 
     group_dir.mkdir(parents=True, exist_ok=True)
