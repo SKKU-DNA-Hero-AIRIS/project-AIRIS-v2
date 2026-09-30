@@ -1318,3 +1318,25 @@ def test_mesh_occlusion_switches_to_raycast(scenario):
                                      mesh_face_part=None, patch_face=None)
     capsule_vis = occlusion(as_capsule, nozzle, cfg)
     assert np.abs(mesh_vis - capsule_vis).mean() > 0.01, "메시 판정으로 전환되지 않았다"
+
+
+def test_stagnation_shear_factor_is_rejected_until_kernel_has_it():
+    """4.2b 충돌 영역 전단 배율 g(xi)(B #104)는 아직 커널에 없다. m != 1이면 패치판과 조용히
+    갈라지므로 평가기를 만들 때 막는다. 기본값 m = 1과 보정 꺼짐은 그대로 동작한다.
+
+    TODO(A): 커널에 g(xi)를 넣으면 이 테스트를 m ∈ {1, 3, 6} 패치판 대조로 바꾼다.
+    """
+    cfg = copy.deepcopy(load_physics())
+    assert cfg["jet"]["impingement"]["stagnation_shear_factor"] == 1.0    # 기본값
+    ev = ParticleEvaluator(cfg, max_candidates=1, particles_per_candidate=1, duration_s=0.0)
+    ev.destroy()                                                         # m = 1은 통과
+
+    bad = copy.deepcopy(cfg)
+    bad["jet"]["impingement"]["stagnation_shear_factor"] = 3.0
+    with pytest.raises(NotImplementedError, match="stagnation_shear_factor"):
+        ParticleEvaluator(bad, max_candidates=1, particles_per_candidate=1, duration_s=0.0)
+
+    off = copy.deepcopy(bad)                    # 보정이 꺼져 있으면 g를 쓸 일이 없다
+    off["jet"]["impingement"]["enabled"] = False
+    ev = ParticleEvaluator(off, max_candidates=1, particles_per_candidate=1, duration_s=0.0)
+    ev.destroy()
