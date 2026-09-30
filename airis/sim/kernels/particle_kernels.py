@@ -10,7 +10,13 @@ numpy 준비와 업로드만 한다.
 - 4.2 벽면 전단         -> `k_detach`
 - 4.2b 충돌 제트 보정  -> `ParticleFields.impingement` (ti.func). 부착 입자의 `k_detach`에만 더한다.
                           부유 입자(`k_advect`)는 자유 제트 그대로 (00_common.md 4.2b 계약)
-- 4.3 이탈 판정         -> `k_detach` (입자별 tau_crit 비교)
+- 4.3 이탈 판정         -> `detach_one` (입자별 tau_crit 비교)
+- 4.6 시간 의존 이탈    -> `detach_one` (kinetics). tau > tau_crit인 부착 입자가 스텝마다
+                          확률 1 - exp(-dt/T_r)로 이탈한다. 구현은 입자마다 지수분포 난수
+                          (호스트에서 뽑은 `detach_budget` ~ Exp(1))를 두고 노출 시간을
+                          누적해 `exposure >= detach_budget · T_r`이면 떼는 방식이다.
+                          이탈까지 걸리는 시간이 Exp(T_r)인 것은 같고, GPU 난수를 쓰지 않아
+                          결정론이 유지된다 (단계 3의 원칙)
 - 가림 (occlusion)      -> 부착 입자의 이탈 판정에서 노즐 m의 기여(자유 제트 + 4.2b)에
                           D의 `patch_baseline.occlusion` 가시 비율을 곱한다. 부유 입자는 가림 없음
                           (몸에 부딪히는 것은 캡슐 충돌로 처리된다)
@@ -55,7 +61,9 @@ C_SLOT_K = 19        # jet.slot.decay_constant (K_p)
 C_SLOT_SPREAD = 20   # jet.slot.spread_rate
 C_IMP_ON = 21        # jet.impingement.enabled (0/1)
 C_IMP_K = 22         # jet.impingement.wall_jet_gain (4.2b k)
-NUM_CONST = 23
+C_KIN_ON = 23        # adhesion.kinetics.enabled (0/1). 계획 평가에서만 켠다
+C_KIN_TR = 24        # adhesion.kinetics.time_constant_s (4.6 T_r)
+NUM_CONST = 25
 
 IMPINGEMENT_XI_MIN = 1e-6   # 4.2b: xi < 1e-6 이면 w = 0 (정체점)
 
@@ -143,10 +151,13 @@ class ParticleFields:
         self.part = ti.field(ti.i32)               # 현재 부위 (재부착으로 바뀔 수 있음)
         self.part_init = ti.field(ti.i32)          # 초기 부위. 집계는 이쪽으로 (단계 7)
         self.patch_idx = ti.field(ti.i32)          # 붙어 있는 패치 번호. -1 = 재부착 (가림 없음)
+        self.detach_budget = ti.field(ti.f32)      # 4.6 이탈까지 필요한 노출량 ~ Exp(1) (호스트 난수)
+        self.exposure = ti.field(ti.f32)           # tau > tau_crit인 동안 누적한 시간 (s)
         fb.dense(ti.i, bn).place(
             self.pos, self.vel, self.normal, self.diam, self.tau_crit,
             self.tau_crit_respawn, self.rand_redep,
             self.state, self.part, self.part_init, self.patch_idx,
+            self.detach_budget, self.exposure,
         )
 
         self.capsules = ti.field(ti.f32)           # (B, K, 7) = [p0(3), p1(3), r]
@@ -337,7 +348,13 @@ class ParticleFields:
 
     # ----------------------------------------------------------- 단계 5. 이탈
     @ti.func
-    def detach_one(self, i, t):
+    def detach_one(self, i, t, dt):
+        """부착 입자의 이탈 판정 (4.2 전단, 4.3 임계 전단, 켜져 있으면 4.6 시간).
+
+        반환: 1이면 "이 자리에서는 앞으로도 떨어질 수 없다"(tau <= tau_crit). k_run의 조기
+        종료가 쓴다. 시간 항이 켜져 있어도 tau > tau_crit이면 언젠가 떨어지므로 0이다.
+        """
+        no_chance = 0
         if self.state[i] == 0:
             nrm = self.normal[i]
             u = self.surface_velocity(self.pos[i] + self.cst[C_WALL_OFF] * nrm, nrm, t,
@@ -345,8 +362,16 @@ class ParticleFields:
             u_t = u - u.dot(nrm) * nrm                              # 4.2 접선 성분
             tau = 0.5 * self.cst[C_RHO_AIR] * self.cst[C_CF] * u_t.norm_sqr()
             if tau > self.tau_crit[i]:
-                self.state[i] = 1
-                self.vel[i] = u_t * 0.1 + nrm * 0.05                # 작은 초기 속도
+                leaves = True
+                if self.cst[C_KIN_ON] > 0.5:                        # 4.6 시간 의존 이탈
+                    self.exposure[i] += dt
+                    leaves = self.exposure[i] >= self.detach_budget[i] * self.cst[C_KIN_TR]
+                if leaves:
+                    self.state[i] = 1
+                    self.vel[i] = u_t * 0.1 + nrm * 0.05            # 작은 초기 속도
+            else:
+                no_chance = 1
+        return no_chance
 
     # -------------------------------------------------- 단계 6. 부유 입자 적분
     @ti.func
@@ -401,6 +426,7 @@ class ParticleFields:
                         self.part[i] = cp
                         self.normal[i] = n_hit
                         self.tau_crit[i] = self.tau_crit_respawn[i]
+                        self.exposure[i] = 0.0         # 새 자리라 4.6 노출 시간도 새로 센다
                         self.patch_idx[i] = -1          # 재부착 자리는 패치가 아니다: 가림 없음
                         v = ti.Vector([0.0, 0.0, 0.0], dt=ti.f32)
                         break
@@ -423,14 +449,16 @@ class ParticleFields:
     def step_one(self, i, step, dt):
         """입자 i의 한 스텝. 시각은 커널 안에서 t = f32(step)·dt로 계산해 두 경로가 같게 한다.
 
-        반환: 1이면 "부착 상태로 스텝을 시작했고 이탈 판정을 통과하지 못했다" (k_run 조기 종료용).
-        이탈했다가 같은 스텝에 재부착된 입자는 새 위치·법선·tau_crit를 가지므로 0이다.
+        반환: 1이면 "부착 상태로 스텝을 시작했고 이 자리에서는 앞으로도 떨어질 수 없다"
+        (tau <= tau_crit). k_run 조기 종료용. 이탈했다가 같은 스텝에 재부착된 입자는 새 위치·
+        법선·tau_crit를 가지므로 0이다. 시간 항(4.6)이 켜져 tau > tau_crit인 채 기다리는
+        입자도 0이라 계속 돈다.
         """
         t = ti.cast(step, ti.f32) * dt
         start = self.state[i]
-        self.detach_one(i, t)
+        no_chance = self.detach_one(i, t, dt)
         held = 0
-        if start == 0 and self.state[i] == 0:
+        if start == 0 and self.state[i] == 0 and no_chance == 1:
             held = 1
         self.advect_one(i, t, dt)
         self.collide_one(i)
@@ -453,9 +481,9 @@ class ParticleFields:
         조기 종료 (결과는 매 스텝 도는 k_step과 같다):
         - 제거(state 2)된 입자는 더 바뀌지 않는다.
         - 펄스가 꺼져 있으면 부착 입자의 이탈 판정 입력(위치, 법선, tau_crit, 공기 속도)이
-          시각과 무관하다. 이탈 판정을 통과하지 못한 부착 입자(step_one이 1을 돌려줌)는
-          이후 모든 스텝에서도 같은 판정을 받으므로 여기서 끝낸다. 한 스텝 안에서 이탈 후
-          재부착된 입자는 입력이 바뀌었으므로 계속 돈다.
+          시각과 무관하다. tau <= tau_crit이라 떨어질 수 없는 부착 입자(step_one이 1을
+          돌려줌)는 이후 모든 스텝에서도 같은 판정을 받으므로 여기서 끝낸다. 한 스텝 안에서
+          이탈 후 재부착된 입자, 그리고 시간 항(4.6)으로 노출 시간을 쌓는 중인 입자는 계속 돈다.
         """
         steady = self.cst[C_PULSE_ON] < 0.5
         for i in range(n_act * self.N):
@@ -564,6 +592,9 @@ def pack_constants(cfg: dict, booth: dict) -> np.ndarray:
             "입자판 커널에 4.2b 충돌 영역 전단 배율 g(xi)가 아직 없다: "
             f"jet.impingement.stagnation_shear_factor = {m_factor} (1.0만 지원). "
             "패치판과 갈라지므로 막는다. 1.0으로 두거나 impingement.enabled를 끄고 쓴다.")
+    kinetics = (cfg["adhesion"].get("kinetics") or {})
+    c[C_KIN_ON] = 1.0 if kinetics.get("enabled", False) else 0.0
+    c[C_KIN_TR] = kinetics.get("time_constant_s", 1.0) or 1.0
     slot = jet.get("slot")
     if slot:        # 없으면 0. 슬롯 노즐이 들어오면 호스트(_upload_nozzles)가 막는다.
         c[C_SLOT_H] = slot["height_m"]
