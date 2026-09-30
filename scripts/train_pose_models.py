@@ -24,6 +24,7 @@
 from __future__ import annotations
 
 import argparse
+import filecmp
 import json
 import os
 import shutil
@@ -175,48 +176,77 @@ def install(src_dir: Path, model_dir: Path, names=(FLOW_FILE, KNN_FILE)) -> list
     flow 와 kNN 표가 섞인 상태(새 flow + 옛 kNN)가 남지 않게 세 단계로 한다.
 
     1. 준비: 새 파일을 <이름>.new, 기존 파일을 <이름>.prev.new 로 복사한다. 여기서 실패하면 아무것도 바뀌지 않는다.
-    2. 교체: os.replace 로 하나씩 바꾼다. 도중에 실패하면(Windows 에서 대시보드가 파일을 열고 있을 때 등)
-       이미 바꾼 파일을 준비해 둔 옛 파일로 되돌리고 예외를 올린다.
-    3. 확정: <이름>.prev.new → <이름>.prev. 모델 교체는 끝났으므로 여기서 실패하면 세대가 어긋나지 않게
-       .prev 를 모두 지우고 경고만 한다.
+    2. 교체: os.replace 로 하나씩 바꾼다. 도중에 실패하면(Windows 에서 대시보드가 파일을 열고 있을 때, Ctrl+C 등)
+       바꾼 파일을 백업(.prev.new)에서 os.replace 로 되돌리고 예외를 올린다. 되돌리기마저 실패하면 백업을
+       지우지 않고 남긴 채 경고한다 (손으로 복구할 수 있게).
+    3. 확정: <이름>.prev.new → <이름>.prev. 옛 파일이 없던 쪽의 묵은 .prev 는 지운다 (.prev 는 늘 같은 세대의 쌍).
+       모델 교체는 끝났으므로 여기서 실패하면(잠김, Ctrl+C) .prev 를 모두 지우려 하고 경고한다.
+       지우지 못한 .prev 는 경고에 적는다. Ctrl+C 는 정리 뒤 다시 올리고, 그 밖의 실패로는 예외를 내지 않는다.
 
-    어느 경우든 끝나면 임시 파일(.new, .prev.new)은 남지 않는다. 설치 중에는 산출물을 여는 프로세스(E 대시보드)를 내린다.
+    끝나면 임시 파일(.new, .prev.new)은 남지 않는다 (2의 되돌리기가 실패해 남긴 백업은 예외).
+    설치 중에는 산출물을 여는 프로세스(E 대시보드)를 내린다.
     """
     model_dir.mkdir(parents=True, exist_ok=True)
     dsts = [model_dir / name for name in names]
     news = [d.with_name(d.name + ".new") for d in dsts]
     olds = [d.with_name(d.name + ".prev.new") if d.exists() else None for d in dsts]
-    replaced: list[int] = []
+    prevs = [d.with_name(d.name + ".prev") for d in dsts]
+    keep: set[Path] = set()
     try:
         for name, new in zip(names, news):                           # 1. 준비
             shutil.copy2(src_dir / name, new)
         for dst, old in zip(dsts, olds):
             if old is not None:
                 shutil.copy2(dst, old)
-        try:                                                         # 2. 교체
-            for i, (new, dst) in enumerate(zip(news, dsts)):
-                os.replace(new, dst)
-                replaced.append(i)
-        except BaseException:
-            for i in reversed(replaced):                             # 되돌리기
-                if olds[i] is not None:
-                    shutil.copy2(olds[i], dsts[i])
-                else:
-                    dsts[i].unlink(missing_ok=True)
-            raise
-        prevs = [dst.with_name(dst.name + ".prev") for dst in dsts]  # 3. 확정
+
+        touched: list[int] = []                                      # 2. 교체
         try:
+            for i, (new, dst) in enumerate(zip(news, dsts)):
+                touched.append(i)                # replace 전에 적는다 (직후 Ctrl+C 에도 되돌린다)
+                os.replace(new, dst)
+        except BaseException:
+            failed = []
+            for i in reversed(touched):
+                try:
+                    if olds[i] is not None:
+                        # 교체되지 않은 파일(잠겨서 실패한 그 파일 등)은 이미 옛것이다
+                        if not (dsts[i].exists() and filecmp.cmp(olds[i], dsts[i], shallow=False)):
+                            os.replace(olds[i], dsts[i])
+                    else:
+                        dsts[i].unlink(missing_ok=True)
+                except OSError as exc:
+                    failed.append(f"{dsts[i].name}: {exc}")
+            if failed:
+                keep.update(o for o in olds if o is not None and o.exists())
+                print(f"[경고] 교체 실패 뒤 되돌리기도 실패했다 ({'; '.join(failed)}). 옛 산출물 백업을 남긴다: "
+                      f"{', '.join(str(k) for k in sorted(keep))}", file=sys.stderr)
+            raise
+
+        try:                                                         # 3. 확정
             for old, prev in zip(olds, prevs):
                 if old is not None:
                     os.replace(old, prev)
-        except OSError as exc:
-            # 세대가 어긋난 .prev 쌍을 남기지 않는다 (없는 편이 섞인 것보다 낫다)
-            for prev in prevs:
-                prev.unlink(missing_ok=True)
-            print(f"[경고] .prev 갱신 실패 ({exc}). 모델은 새것으로 설치됐고 .prev 는 지웠다.", file=sys.stderr)
+                else:
+                    prev.unlink(missing_ok=True)
+        except BaseException as exc:
+            stuck = []
+            for prev in prevs:                   # 세대가 어긋난 .prev 쌍을 남기지 않는다
+                try:
+                    prev.unlink(missing_ok=True)
+                except OSError:
+                    stuck.append(prev.name)
+            note = f" 지우지 못한 묵은 .prev: {', '.join(stuck)} (직접 지울 것)" if stuck else ""
+            print(f"[경고] .prev 갱신 실패 ({type(exc).__name__}: {exc}). 모델은 새 쌍으로 설치됐고 .prev 는 지웠다."
+                  + note, file=sys.stderr)
+            if not isinstance(exc, Exception):
+                raise
     finally:
         for tmp in news + [o for o in olds if o is not None]:
-            tmp.unlink(missing_ok=True)
+            if tmp not in keep:
+                try:
+                    tmp.unlink(missing_ok=True)
+                except OSError:
+                    pass
     return dsts
 
 
@@ -294,11 +324,18 @@ def main(argv: list[str] | None = None) -> int:
 
     do_install = args.install or (verdict["passed"] and not args.no_install)
     print("[refresh] 4/4 설치" + ("" if do_install else " 안 함"))
-    installed = [str(p) for p in install(out_dir, model_dir)] if do_install else []
+    installed: list[str] = []
+    install_error = None
+    if do_install:
+        try:
+            installed = [str(p) for p in install(out_dir, model_dir)]
+        except Exception as exc:            # 설치 실패도 gate.json 에 남긴다 (모델은 install 이 되돌린다)
+            install_error = f"{type(exc).__name__}: {exc}"
 
     timings["total_s"] = time.perf_counter() - t_all
     report = {"dataset": str(dataset), "dataset_stamp": stamp, "current_stamp": current_stamp(),
-              "warnings": warns, "gate": asdict(Gate()), "verdict": verdict, "installed": installed,
+              "warnings": warns, "gate": asdict(Gate()), "verdict": verdict,
+              "installed": installed, "install_error": install_error,
               "model_dir": str(model_dir), "timings": {k: round(v, 1) for k, v in timings.items()},
               "args": vars(args)}
     (out_dir / "gate.json").write_text(json.dumps(report, ensure_ascii=False, indent=2, default=str),
@@ -307,9 +344,12 @@ def main(argv: list[str] | None = None) -> int:
     print()
     if (out_dir / "gate.md").exists():
         print((out_dir / "gate.md").read_text(encoding="utf-8"))
-    print(f"설치: {', '.join(installed) if installed else '안 함'}")
+    print(f"설치: {', '.join(installed) if installed else '안 함'}"
+          + (f"  — 설치 실패 {install_error} (기존 산출물 유지)" if install_error else ""))
     print(f"결과 {out_dir}  (총 {timings['total_s'] / 60:.1f}분)")
-    # 판정을 돌렸는데 불합격이면 1 (자동화에서 알아채게). 건너뛰었거나 빠른 점검이면 0.
+    # 판정을 돌렸는데 불합격이거나 설치가 실패하면 1 (자동화에서 알아채게). 건너뛰었거나 빠른 점검이면 0.
+    if install_error:
+        return 1
     return 0 if args.skip_cv or args.limit or verdict["passed"] else 1
 
 
