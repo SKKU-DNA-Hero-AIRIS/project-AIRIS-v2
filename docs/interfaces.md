@@ -58,14 +58,22 @@
 
 ### `Evaluator.evaluate_plan(plan, nozzle, body, scenario) -> EvalResult` (D, A)
 
-- 계획 평가. 수식은 `00_common.md` 4.4(계획 점수)·4.6(시간)·4.7(세기·에너지). `nozzle`은 기준 배치이고 평가기가 단계마다 `apply_zone_strengths`를 부른다.
+- 계획 평가. 수식은 `00_common.md` 4.4(계획 점수)·4.6(시간)·4.7(세기·에너지). `nozzle`은 기준 배치이고 평가기가 단계마다 `apply_zone_strengths`(`airis.sim.scenario`)를 부른다.
 - `extra`: `energy`(무차원 e), `duration_s`, `removal_by_part_per_phase` (K, 5), 불가면 `infeasible`. 어느 단계든 부스 밖이면 계획 전체가 불가(5절 벌점은 단계 중 최대 `d_out`).
 - 단계 1개, 구역 세기 전부 1, `adhesion.kinetics.enabled` 거짓이면 `evaluate(pose, …)`와 제거율이 같아야 한다 (회귀 테스트).
 - 구현하지 않은 평가기는 `NotImplementedError`.
 
-### `apply_zone_strengths(nozzle, zone_strengths, torso_yaw) -> NozzleConfig` (B)
+### `apply_zone_strengths(nozzle, zone_strengths, torso_yaw, zones=None) -> NozzleConfig` (B)
 
-- 구역 세기를 노즐별 `strengths`에 곱한 새 `NozzleConfig`. 구역 → 노즐 매핑은 `configs/nozzles.yaml`의 `zones`와 `torso_yaw`(가슴 쪽 벽 판정, `00_common.md` 4.7)로 정한다.
+- 위치: `airis.sim.scenario` (`from airis.sim.scenario import apply_zone_strengths`, #88). `airis/sim/__init__.py` 재수출은 없다.
+- 구역 세기를 노즐별 `strengths`에 곱한 새 `NozzleConfig` (`s_m = zone_strengths[구역(m)] × nozzle.strengths[m]`). 구역 → 노즐 매핑은 `configs/nozzles.yaml`의 `zones`와 `torso_yaw`(degree, 가슴 쪽 벽 판정, `00_common.md` 4.7)로 정한다.
+- `zones`는 구역 정의 `{side_low_z, side_high_z, z_tolerance_m}`. `None`이면 `nozzles.yaml`의 `active` 배치 구역 정의(`zone_config()`)를 쓴다.
+- 입력 `nozzle`은 바꾸지 않는다. 한도(`fan.s_max`, 풍량 한도, 쾌적 상한) 보수는 하지 않는다 (C의 인코더 몫). `zone_strengths`가 `ZONE_NAMES` 순서 5개가 아니거나 음수·비유한값이면 `ValueError`. 어느 구역에도 들지 않는 노즐이 있어도 `ValueError`.
+- 보조 함수 (같은 모듈, B):
+  - `nozzle_zone_index(nozzle, torso_yaw, zones=None) -> (M,)`: 노즐별 구역 번호(`ZONE_NAMES` 인덱스).
+  - `zone_nozzle_counts(nozzle=None, zones=None) -> (5,)`: 구역별 노즐 수. 기준 배치 `slot_bars`는 `[2, 2, 2, 2, 4]`. `nozzle`이 `None`이면 `load_nozzles()`. C의 풍량 한도 보수(`Σ_m s_m ≤ cap_ratio · M`)에 쓴다.
+  - `chest_wall_sign(torso_yaw) -> int`: 가슴 쪽 벽의 y 부호(+1 = +y 벽, −1 = −y 벽). `sin(yaw) ≥ 0`이면 +1, 정면·후면(`|sin| < 1e−6`, ±180 포함)은 +1로 고정.
+  - `zone_strength_caps(scenario) -> (5,)`: 구역별 쾌적 상한(`scenario.nozzle_strength_cap`의 구역 이름 키). 상한이 없는 구역은 `inf`. 옛 부위 키(`torso_front` → `chest_*`, `torso_back` → `back_*`)도 읽고, 겹치면 작은 값을 쓴다.
 
 ### `Evaluator.batch_evaluate(candidates, body, scenario) -> (B,)` (A 오버라이드)
 
