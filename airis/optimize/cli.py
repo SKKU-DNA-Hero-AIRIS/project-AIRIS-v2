@@ -50,6 +50,53 @@ def parse_starts(raw: str) -> list[Start]:
     return [START_PRESETS[n] for n in names]
 
 
+def parse_pose_bound(spec: str) -> tuple[str, tuple[float, float]]:
+    """'shoulder_abduction=0,90' → ('shoulder_abduction', (0.0, 90.0))."""
+    key, _, rng = spec.partition("=")
+    lo_s, _, hi_s = rng.partition(",")
+    try:
+        lo, hi = float(lo_s), float(hi_s)
+    except ValueError:
+        raise SystemExit(f"--pose-bound 형식이 '변수=lo,hi' 가 아니다: {spec!r}") from None
+    return key.strip(), (lo, hi)
+
+
+def narrow_scenario(scenario: Scenario, specs: list[str] | None) -> Scenario:
+    """pose_bounds 를 실행 시점에 좁힌 시나리오 **복사본**. configs/scenarios.yaml 은 건드리지 않는다.
+
+    제약을 건 탐색(예: 천장에 닿지 않는 팔 내림 봉우리 = 벌림 ≤ 90° 그리고 어깨 굽힘 ≤ 90°)에 쓴다.
+    넓히지는 못하고 원래 범위와 **교집합**만 취한다 — 시나리오가 허용하지 않는 자세를 실험이
+    슬쩍 허용하는 일을 막는다. fixed_pose 로 고정된 변수는 거부한다.
+    """
+    if not specs:
+        return scenario
+    from dataclasses import replace
+
+    bounds = dict(scenario.pose_bounds)
+    for spec in specs:
+        key, (lo, hi) = parse_pose_bound(spec)
+        if key in scenario.fixed_pose:
+            raise SystemExit(f"{key} 는 시나리오 {scenario.name} 에서 고정된 변수라 범위를 못 좁힌다")
+        if key not in bounds:
+            raise SystemExit(f"{key} 의 pose_bounds 가 시나리오 {scenario.name} 에 없다 "
+                             f"(가능: {', '.join(sorted(bounds))})")
+        olo, ohi = bounds[key]
+        nlo, nhi = max(olo, min(lo, hi)), min(ohi, max(lo, hi))
+        if not nlo < nhi:
+            raise SystemExit(f"{key}: 좁힌 범위 [{lo:g}, {hi:g}] 가 시나리오 범위 "
+                             f"[{olo:g}, {ohi:g}] 와 겹치지 않는다")
+        bounds[key] = (nlo, nhi)
+    return replace(scenario, pose_bounds=bounds)
+
+
+def format_bounds_note(scenario: Scenario, original: Scenario) -> str:
+    """좁힌 변수만 'key [lo, hi] ← [lo, hi]' 로 한 줄."""
+    parts = [f"{k} [{scenario.pose_bounds[k][0]:g}, {scenario.pose_bounds[k][1]:g}]"
+             f" ← [{v[0]:g}, {v[1]:g}]"
+             for k, v in original.pose_bounds.items() if scenario.pose_bounds[k] != v]
+    return ", ".join(parts)
+
+
 def format_starts_table(per_start: list[dict]) -> str:
     """시작점별 요약 표."""
     lines = [f"{'시작점':<10}{'sigma0':>8}{'평가':>7}{'불가':>6}{'best':>11}  종료", "-" * 58]

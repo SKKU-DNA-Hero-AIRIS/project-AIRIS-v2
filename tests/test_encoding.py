@@ -86,3 +86,44 @@ def test_all_free_keys_bounded_by_config(scenarios, name):
     enc = PoseEncoder(scenario)
     assert set(enc.free_keys) <= set(scenario.pose_bounds)
     assert enc.bounds_for("knee_flexion") == (0.0, 30.0)
+
+
+# ---------- 실행 시점 범위 좁히기 (--pose-bound) ----------
+
+def test_narrow_scenario_intersects_and_keeps_original(scenarios):
+    """좁힌 범위는 원래 범위와 교집합이고, 원본 Scenario 는 그대로다."""
+    from airis.optimize import cli
+
+    base = scenarios["default"]
+    before = dict(base.pose_bounds)
+    narrowed = cli.narrow_scenario(base, ["shoulder_abduction=0,90", "shoulder_flexion=-30,90"])
+
+    assert narrowed.pose_bounds["shoulder_abduction"] == (0.0, 90.0)
+    assert narrowed.pose_bounds["shoulder_flexion"] == (-30.0, 90.0)
+    assert narrowed.pose_bounds["torso_yaw"] == before["torso_yaw"]   # 안 건드린 변수는 그대로
+    assert base.pose_bounds == before, "원본 시나리오를 바꾸면 안 된다"
+    assert cli.narrow_scenario(base, []) is base
+
+    # 넓히려 해도 원래 범위를 못 넘는다 (교집합).
+    wide = cli.narrow_scenario(base, ["shoulder_abduction=-90,900"])
+    assert wide.pose_bounds["shoulder_abduction"] == before["shoulder_abduction"]
+
+    # 좁힌 범위는 PoseEncoder 에 그대로 들어간다.
+    assert PoseEncoder(narrowed).bounds_for("shoulder_abduction") == (0.0, 90.0)
+    decoded = PoseEncoder(narrowed).decode(np.ones(PoseEncoder(narrowed).dim))
+    assert decoded.shoulder_abduction == pytest.approx(90.0)
+
+
+def test_narrow_scenario_rejects_bad_specs(scenarios):
+    from airis.optimize import cli
+
+    base = scenarios["default"]
+    for spec in ["shoulder_abduction=0", "없는변수=0,90", "shoulder_abduction=200,300"]:
+        with pytest.raises(SystemExit):
+            cli.narrow_scenario(base, [spec])
+
+    seated = scenarios["wheelchair"]
+    fixed = next(iter(seated.fixed_pose), None)
+    if fixed:                                  # 고정된 변수는 좁히지 못한다
+        with pytest.raises(SystemExit):
+            cli.narrow_scenario(seated, [f"{fixed}=0,10"])

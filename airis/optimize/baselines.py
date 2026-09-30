@@ -55,6 +55,11 @@ def evaluate_condition(
 ) -> dict:
     """조건 하나를 평가해 집계한다. 반환 dict 는 CSV 행의 재료가 된다."""
     usable = [p for p in poses if in_bounds(p, scenario)]
+    if not usable:
+        raise ValueError(
+            f"시나리오 {scenario.name} 의 pose_bounds 안에 드는 기준 자세가 없다 "
+            f"(자세 {len(poses)}개). 범위를 좁혀 돌리는 중이라면 기준선은 원래 범위로 평가한다."
+        )
     # 시나리오 제약(pose_bounds + fixed_pose)으로 투영한다. 휠체어는 여기서 고관절·무릎이 90도가 된다.
     projected = [encoder.clip_pose(p) for p in usable]
     results = [evaluator.evaluate(p, nozzle, body, scenario) for p in projected]

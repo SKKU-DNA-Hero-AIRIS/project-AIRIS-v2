@@ -19,6 +19,13 @@
     0 이면 끈다. 패치판이 아니면 무시한다.
 
 요약 파일은 실행 묶음마다 <group_id> 폴더에 따로 남긴다 (다시 돌려도 이전 요약을 덮어쓰지 않는다).
+범위를 좁힌 탐색 (--pose-bound):
+    configs/scenarios.yaml 을 건드리지 않고 pose_bounds 를 실행 시점에 좁힌다 (원래 범위와 교집합).
+    예: 천장(2.15 m)에 손이 닿지 않는 팔 내림 봉우리를 찾을 때
+        --starts default --pose-bound shoulder_abduction=0,90 --pose-bound shoulder_flexion=-30,90
+    벌림만 막으면 최적화가 어깨 굽힘(팔을 앞으로 들기)으로 빠져나가니 둘 다 건다.
+    좁힌 범위는 meta.json·best_poses.json 의 args 에 남는다.
+
 docs/tracks/C_optimize.md 단계 7.
 """
 from __future__ import annotations
@@ -55,6 +62,9 @@ def build_parser() -> argparse.ArgumentParser:
                     help="패치판 표면 패치 밀도 (--evaluator patch 에만 적용)")
     ap.add_argument("--rescore-patches-per-m2", type=float, default=2000.0,
                     help="best 자세·기준선 재채점 밀도 (패치판만, 0 이면 끔)")
+    ap.add_argument("--pose-bound", action="append", default=[], metavar="변수=lo,hi",
+                    help="pose_bounds 를 실행 시점에 좁힌다 (원래 범위와 교집합). 여러 번 쓸 수 있다. "
+                         "예: --pose-bound shoulder_abduction=0,90")
     ap.add_argument("--body", default=None, help="BodyParams 덮어쓰기 JSON")
     ap.add_argument("--tag", default="e4", help="exp_id·group_id 접두어")
     ap.add_argument("--log-dir", default=str(ROOT / "outputs"))
@@ -113,7 +123,13 @@ def main(argv: list[str] | None = None) -> int:
     }
 
     for name in names:
-        scenario = all_scenarios[name]
+        # 기준선(B0·B1·B2)은 **원래 범위**로 평가한다. 좁힌 범위로 재면 B2(만세)가 범위 밖으로
+        # 밀려 나가 개선율이 다른 E4 묶음과 비교 불가능해진다. 탐색만 좁힌 범위로 한다.
+        full_scenario = all_scenarios[name]
+        scenario = cli.narrow_scenario(full_scenario, args.pose_bound)
+        if args.pose_bound:
+            print(f"  [{name}] 좁힌 범위: {cli.format_bounds_note(scenario, full_scenario)}"
+                  f"  (기준선은 원래 범위로 평가)")
         try:
             evaluator = cli.make_evaluator(
                 args.evaluator, scenario, body=body, nozzle=nozzle, dummy_target=dummy_target,
@@ -123,7 +139,7 @@ def main(argv: list[str] | None = None) -> int:
             print(str(exc), file=sys.stderr)
             return 3
 
-        base = baselines.evaluate_all(evaluator, nozzle, body, scenario)
+        base = baselines.evaluate_all(evaluator, nozzle, body, full_scenario)
         for cond, agg in base.items():
             row = {"scenario": name, "condition": cond, "infeasible": agg["infeasible"],
                    "score": agg["score"], "total_removal": agg["total_removal"],
@@ -168,7 +184,7 @@ def main(argv: list[str] | None = None) -> int:
             # 같은 자세를 촘촘한 격자로 다시 평가한다 (탐색은 하지 않는다).
             fine = cli.make_evaluator(args.evaluator, scenario, body=body, nozzle=nozzle,
                                       patches_per_m2=args.rescore_patches_per_m2)
-            base_fine = baselines.evaluate_all(fine, nozzle, body, scenario)
+            base_fine = baselines.evaluate_all(fine, nozzle, body, full_scenario)
             for r in runs:
                 r["rescore_score"] = float(fine.evaluate(r["best_pose"], nozzle, body, scenario).score)
             fine_summary = e4.summarize_scenario(
