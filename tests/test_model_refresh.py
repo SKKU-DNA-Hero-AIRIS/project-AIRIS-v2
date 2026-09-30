@@ -259,8 +259,9 @@ def test_install_double_failure_keeps_backup(tmp_path, monkeypatch, capsys):
         return real(a, b)
 
     monkeypatch.setattr(tpm.os, "replace", locked)
-    with pytest.raises(tpm.InstallRollbackError):
+    with pytest.raises(tpm.InstallRollbackError) as err:
         tpm.install(src, dst)
+    assert isinstance(err.value.__cause__, PermissionError), "원래 예외(교체 실패)가 원인으로 이어진다"
     state = _state(dst)
     assert state[tpm.FLOW_FILE + ".prev.new"] == "old", "되돌리지 못한 옛 flow 는 백업으로 남는다"
     assert state[tpm.KNN_FILE] == "old" and state[tpm.FLOW_FILE + ".prev"] == "older"
@@ -419,3 +420,16 @@ def test_check_dataset_ignores_kinetics_for_pose(monkeypatch):
     assert stamp["kinetics_enabled"] == "False" and warns == []
     _, warns = tpm.check_dataset(df.assign(physics_hash=["p9"]))
     assert len(warns) == 1 and warns[0].startswith("physics_hash")
+
+
+def test_refresh_stops_early_when_backup_left_over(fake_steps, tmp_path):
+    """설치 폴더에 .prev.new 가 남아 있으면 학습·5-fold 전에 멈춘다. --no-install 이면 그대로 돈다."""
+    calls, _, ds = fake_steps
+    models = tmp_path / "m"
+    models.mkdir()
+    (models / (tpm.FLOW_FILE + ".prev.new")).write_text("old")
+    assert tpm.main(["--dataset", str(ds), "--out-dir", str(tmp_path / "o"), "--model-dir", str(models)]) == 2
+    assert calls == [], "학습도 5-fold 도 시작하지 않는다"
+    assert tpm.main(["--dataset", str(ds), "--out-dir", str(tmp_path / "o2"), "--model-dir", str(models),
+                     "--no-install"]) == 0
+    assert calls == ["train", "knn", "cv"]

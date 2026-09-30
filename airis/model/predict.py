@@ -35,7 +35,7 @@ from __future__ import annotations
 import os
 import warnings
 from collections.abc import Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
 from functools import lru_cache
 from pathlib import Path
 
@@ -56,6 +56,7 @@ N_SAMPLES = 16
 N_FLOW = 8
 N_KNN = 8
 BACKENDS = ("hybrid", "flow", "knn")
+POSE_YAW_INDEX = [f.name for f in fields(PoseParams)].index("torso_yaw")
 
 
 @dataclass
@@ -66,6 +67,10 @@ class Prediction:
     infeasible: np.ndarray | None
     sources: list[str] = field(default_factory=list)   # 후보마다 "flow" | "knn" | "extra"
     source: str = ""                                   # 고른 후보의 출처
+    #: 재채점 단축 옵션을 썼을 때의 기록 (기본 동작에서는 n_dropped 0, screen_scores None, n_rescored = 후보 수)
+    n_dropped: int = 0                                 # 중복 제거로 뺀 후보 수 (candidates 에는 남은 것만)
+    screen_scores: np.ndarray | None = None            # 저밀도 선별 점수 (선별을 안 했으면 None)
+    n_rescored: int = 0                                # 최종 평가기로 채점한 후보 수
 
 
 @dataclass
@@ -317,19 +322,86 @@ def _gather(body: BodyParams, scenario: Scenario, *, backend: str, n_flow: int, 
     return candidates, sources, (model.meta if model is not None else knn.meta)
 
 
+def _pose_gap(a: PoseParams, b: PoseParams) -> float:
+    """두 자세의 관절 각도 차 최대값(°). yaw 는 접은 값(좌우 거울·앞뒤 등가는 점수가 같다)으로 비교한다."""
+    from airis.optimize.e4 import fold_yaw
+
+    va, vb = a.to_vector().astype(np.float64), b.to_vector().astype(np.float64)
+    iy = POSE_YAW_INDEX
+    va[iy], vb[iy] = fold_yaw(va[iy]), fold_yaw(vb[iy])
+    return float(np.max(np.abs(va - vb)))
+
+
+def dedup_candidates(candidates: Sequence[PoseParams], sources: Sequence[str],
+                     tol_deg: float) -> tuple[list[PoseParams], list[str], int]:
+    """관절 각도 차 최대값이 tol_deg 이하인 후보를 하나로 묶는다. (남은 후보, 출처, 뺀 수).
+
+    고정 후보("extra")는 전부 남긴다 (E 가 extra 안의 순서로 표 항목과 짝짓는다). flow·kNN 후보는 앞에서부터
+    보며, 고정 후보나 앞서 남긴 후보와 겹치면 뺀다. 순서는 바꾸지 않으므로 결과는 결정적이다.
+    """
+    if tol_deg <= 0:
+        return list(candidates), list(sources), 0
+    extras = [c for c, s in zip(candidates, sources) if s == "extra"]
+    kept_other: list[PoseParams] = []
+    out_c: list[PoseParams] = []
+    out_s: list[str] = []
+    for c, s in zip(candidates, sources):
+        if s != "extra":
+            if any(_pose_gap(c, k) <= tol_deg for k in extras + kept_other):
+                continue
+            kept_other.append(c)
+        out_c.append(c)
+        out_s.append(s)
+    return out_c, out_s, len(candidates) - len(out_c)
+
+
+def score_candidates(evaluator: Evaluator, poses: Sequence[PoseParams], nozzle: NozzleConfig, body: BodyParams,
+                     scenario: Scenario, *, n_threads: int = 1) -> tuple[np.ndarray, np.ndarray]:
+    """score_batch 와 같은 (점수, 불가). n_threads > 1 이면 후보마다 스레드로 나눠 채점한다 (순서 유지).
+
+    D 확인(2026-09-30): 패치판은 같은 인스턴스를 여러 스레드가 동시에 불러도 결과가 비트 단위로 같고,
+    속도는 스레드 2~3개에서 1.6~1.7배로 포화한다 (GIL).
+    """
+    from airis.optimize.cmaes_runner import score_batch
+
+    poses = list(poses)
+    if n_threads <= 1 or len(poses) <= 1:
+        return score_batch(evaluator, poses, nozzle, body, scenario)
+    from concurrent.futures import ThreadPoolExecutor
+
+    with ThreadPoolExecutor(max_workers=int(n_threads)) as pool:
+        parts = list(pool.map(lambda p: score_batch(evaluator, [p], nozzle, body, scenario), poses))
+    return (np.concatenate([sc for sc, _ in parts]).astype(np.float64),
+            np.concatenate([bad for _, bad in parts]).astype(bool))
+
+
+def _pick(scores: np.ndarray, infeasible: np.ndarray) -> int:
+    """가능한 후보 중 최고. 전부 불가면 벌점이 가장 작은(벽을 가장 적게 넘는) 후보. 동률은 앞 후보."""
+    pick = np.where(infeasible, -np.inf, scores) if not infeasible.all() else scores
+    return int(np.argmax(pick))
+
+
 def predict(body: BodyParams, scenario: Scenario, *, backend: str = "hybrid",
             n_flow: int = N_FLOW, n_knn: int = N_KNN, n_samples: int | None = None,
             rescore: bool = True, seed: int = 0, path: Path | str | None = None,
             knn_path: Path | str | None = None,
             evaluator: Evaluator | None = None, nozzle: NozzleConfig | None = None,
-            extra_candidates: Sequence[PoseParams] = ()) -> Prediction:
+            extra_candidates: Sequence[PoseParams] = (),
+            dedup_deg: float = 0.0, screen_density: float | None = None, screen_top: int = 3,
+            screen_evaluator: Evaluator | None = None, n_threads: int = 1) -> Prediction:
     """후보까지 돌려주는 예측. evaluator·nozzle 을 주지 않으면 default_rescorer.
 
     backend "hybrid"(기본) = flow n_flow 개 + kNN n_knn 개 + extra_candidates, "flow"·"knn" 은 한 쪽만 쓴다.
     n_samples 를 주면 쓰는 쪽 후보 수를 그 값으로 맞춘다 (backend="flow"·"knn" 의 예전 인자 이름).
     extra_candidates 는 시나리오 제약으로 투영해 함께 재채점한다 (rescore=False 면 첫 후보를 그대로 돌려준다).
+
+    재채점 단축 옵션 (기본값이면 지금까지와 같은 동작. 총괄 2026-09-30, E5 로 비교 중):
+    - dedup_deg > 0: 관절 각도 차 최대값이 이 값 이하인 후보를 하나로 묶는다 (dedup_candidates, 고정 후보는 남김).
+    - screen_density: 모든 후보를 이 패치 밀도로 먼저 채점하고 상위 screen_top 개만 최종 평가기로 다시 채점한다.
+      선별 평가기는 screen_evaluator 로 줄 수 있다 (없으면 산출물의 몸 모델로 만든 패치판).
+      선별했으면 scores 는 최종 채점한 후보만 값이 있고 나머지는 NaN, infeasible 은 그 밖의 후보에서 선별 결과다.
+    - n_threads > 1: 채점을 스레드로 나눈다 (score_candidates). 결과는 순차와 같다.
     """
-    from airis.optimize.cmaes_runner import score_batch
 
     if backend not in BACKENDS:
         raise ValueError(f"backend 는 {BACKENDS} 중 하나: {backend!r}")
@@ -347,14 +419,37 @@ def predict(body: BodyParams, scenario: Scenario, *, backend: str = "hybrid",
     if not rescore or len(candidates) == 1:
         return Prediction(candidates[0], candidates, None, None, sources, sources[0])
 
+    candidates, sources, n_dropped = dedup_candidates(candidates, sources, dedup_deg)
     if evaluator is None or nozzle is None:
         ev, nz = default_rescorer(meta)
         evaluator, nozzle = evaluator or ev, nozzle or nz
-    scores, infeasible = score_batch(evaluator, candidates, nozzle, body, scenario)
-    # 가능한 후보 중 최고. 전부 불가면 벌점이 가장 작은(벽을 가장 적게 넘는) 후보.
-    pick = np.where(infeasible, -np.inf, scores) if not infeasible.all() else scores
-    i = int(np.argmax(pick))
-    return Prediction(candidates[i], candidates, scores, infeasible, sources, sources[i])
+
+    screening = screen_density is not None or screen_evaluator is not None
+    if not screening or len(candidates) <= max(1, int(screen_top)):
+        scores, infeasible = score_candidates(evaluator, candidates, nozzle, body, scenario, n_threads=n_threads)
+        i = _pick(scores, infeasible)
+        return Prediction(candidates[i], candidates, scores, infeasible, sources, sources[i],
+                          n_dropped=n_dropped, n_rescored=len(candidates))
+
+    if screen_evaluator is None:
+        from airis.optimize.dataset import configured_body_model
+
+        screen_evaluator = _rescore_evaluator(str(meta.get("body_model") or configured_body_model()),
+                                              float(screen_density))
+    screen, screen_bad = score_candidates(screen_evaluator, candidates, nozzle, body, scenario,
+                                          n_threads=n_threads)
+    # 선별 순위: 가능한 후보 먼저, 그 안에서 점수 내림차순, 동률은 앞 후보 (안정 정렬이라 결정적)
+    key = np.where(screen_bad, -np.inf, screen) if not screen_bad.all() else screen
+    top = sorted(np.argsort(-key, kind="stable")[:max(1, int(screen_top))].tolist())
+    final, final_bad = score_candidates(evaluator, [candidates[j] for j in top], nozzle, body, scenario,
+                                        n_threads=n_threads)
+    i = top[_pick(final, final_bad)]
+    scores = np.full(len(candidates), np.nan)
+    scores[top] = final
+    infeasible = screen_bad.copy()
+    infeasible[top] = final_bad
+    return Prediction(candidates[i], candidates, scores, infeasible, sources, sources[i],
+                      n_dropped=n_dropped, screen_scores=screen, n_rescored=len(top))
 
 
 def predict_pose(body: BodyParams, scenario: Scenario, **kwargs) -> PoseParams:

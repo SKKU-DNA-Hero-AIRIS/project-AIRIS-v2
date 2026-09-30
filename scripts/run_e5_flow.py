@@ -15,6 +15,14 @@ README 6절 E5, docs/proposals/flow_matching.md 5절, docs/interfaces.md "계획
     mlp       MLPRegressor 평균 회귀 (0, README 5.6 기본안)
     stub      recommend.py 스텁: 시나리오별 고정 후보표(만세·팔 내림) → 이 체형으로 재채점 → 최고 (2)
 
+재채점 단축 변형 (총괄 2026-09-30, 혼합과 같은 후보에 predict 의 단축 옵션을 건다. n_evals = 최종 밀도 재채점 수)
+    hybrid-a  중복 제거 (--dedup-deg, 기본 3°)
+    hybrid-b  중복 제거 + 저밀도 선별 (--screen-b "밀도:상위", 기본 400:4)
+    hybrid-c  중복 제거 + 저밀도 선별 (--screen-c, 기본 800:3)
+    hybrid-d  중복 제거 + 스레드 재채점 (--threads, 기본 3). 고르는 자세는 hybrid-a 와 같다(테스트로 고정),
+              품질 비교에서는 빼고 응답 시간만 잰다.
+    hybrid-e  hybrid-b + 스레드 재채점 (선별·최종 채점 모두 스레드). 고르는 자세는 hybrid-b 와 같다, 시간만 잰다.
+
 채택 기준: 중앙값이 아니라 **하위 5% 점수 비율과 0.95 미만 비율**이 stub·knn 보다 나을 것.
 중앙값 0.95(README H3)는 stub 이 이미 넘는다 (메시판 300행: 중앙값 0.996~0.999, 하위 5% 0.90~0.96).
 경계 구간(wheelchair 키 1.45~1.60 m, 선 자세 키 1.83 m 이상)은 따로 집계한다.
@@ -39,7 +47,8 @@ import numpy as np                                           # noqa: E402
 from airis.optimize import cli, explog                       # noqa: E402
 from airis.sim.scenario import load_scenarios                # noqa: E402
 
-METHODS = ("hybrid", "flow", "flow+stub", "flow1", "knn", "knn+stub", "clsreg", "hgb", "mlp", "stub")
+METHODS = ("hybrid", "hybrid-a", "hybrid-b", "hybrid-c", "hybrid-d", "hybrid-e",
+           "flow", "flow+stub", "flow1", "knn", "knn+stub", "clsreg", "hgb", "mlp", "stub")
 RATIO_FLOOR = 0.95
 
 
@@ -51,6 +60,10 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--n-samples", type=int, default=16, help="flow·knn 의 재채점 후보 수 (같은 값으로 맞춘다)")
     ap.add_argument("--n-flow", type=int, default=8, help="hybrid 의 flow 후보 수")
     ap.add_argument("--n-knn", type=int, default=8, help="hybrid 의 kNN 후보 수")
+    ap.add_argument("--dedup-deg", type=float, default=3.0, help="hybrid-a~d 의 중복 판정 각도(°)")
+    ap.add_argument("--screen-b", default="400:4", help="hybrid-b 의 선별 '밀도:상위 개수'")
+    ap.add_argument("--screen-c", default="800:3", help="hybrid-c 의 선별 '밀도:상위 개수'")
+    ap.add_argument("--threads", type=int, default=3, help="hybrid-d 의 재채점 스레드 수")
     ap.add_argument("--folds", type=int, default=0,
                     help="체형 K-fold 교차검증 (0 이면 산출물 meta 의 holdout 체형만). fold 마다 flow 를 다시 학습한다")
     ap.add_argument("--fold-seed", type=int, default=0)
@@ -58,6 +71,27 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--limit", type=int, default=None, help="holdout 행 수 상한 (빠른 점검용)")
     ap.add_argument("--out", default=None, help="기본값: outputs/e5flow_<시각>.csv")
     return ap
+
+
+def _screen_spec(text: str) -> tuple[float, int]:
+    density, top = text.split(":")
+    return float(density), int(top)
+
+
+def variant_kwargs(method: str, args) -> dict:
+    """hybrid-a~d → predict 의 재채점 단축 옵션."""
+    if method == "hybrid-a":
+        return {"dedup_deg": args.dedup_deg}
+    if method in ("hybrid-b", "hybrid-c"):
+        density, top = _screen_spec(args.screen_b if method == "hybrid-b" else args.screen_c)
+        return {"dedup_deg": args.dedup_deg, "screen_density": density, "screen_top": top}
+    if method == "hybrid-d":
+        return {"dedup_deg": args.dedup_deg, "n_threads": args.threads}
+    if method == "hybrid-e":
+        density, top = _screen_spec(args.screen_b)
+        return {"dedup_deg": args.dedup_deg, "screen_density": density, "screen_top": top,
+                "n_threads": args.threads}
+    return {}
 
 
 def in_boundary(scenario: str, height_m: float) -> bool:
@@ -195,7 +229,7 @@ def run_split(test, train, model, methods, args, evaluator, nozzle, scenarios, *
     near = (NearestBodies(train, model.space)
             if {"knn", "knn+stub"} & set(methods) else None)
     stub_table = None
-    if {"stub", "flow+stub", "knn+stub", "hybrid"} & set(methods):
+    if {"stub", "flow+stub", "knn+stub"} & set(methods) or any(m.startswith("hybrid") for m in methods):
         from airis.realtime.recommend import STUB_TABLE as stub_table
 
     n = max(1, int(args.n_samples))
@@ -209,11 +243,15 @@ def run_split(test, train, model, methods, args, evaluator, nozzle, scenarios, *
         seed = args.seed + int(row["body_idx"])
         for m in methods:
             t0 = _time.perf_counter()
-            if m == "hybrid":
+            n_cands = n_screen = None
+            if m == "hybrid" or m.startswith("hybrid-"):
                 p = pred.predict(body, scenario, backend="hybrid", n_flow=args.n_flow, n_knn=args.n_knn,
                                  seed=seed, path=model_path or args.model, knn_path=knn_path,
-                                 evaluator=evaluator, nozzle=nozzle, extra_candidates=stub_cands)
-                pose, n_evals = p.pose, len(p.candidates)
+                                 evaluator=evaluator, nozzle=nozzle, extra_candidates=stub_cands,
+                                 **variant_kwargs(m, args))
+                pose, n_evals = p.pose, p.n_rescored
+                n_cands = len(p.candidates)
+                n_screen = len(p.candidates) if p.screen_scores is not None else 0
             elif m == "flow":
                 p = pred.predict(body, scenario, backend="flow", n_samples=n, seed=seed, path=model_path or args.model,
                                  evaluator=evaluator, nozzle=nozzle)
@@ -248,6 +286,7 @@ def run_split(test, train, model, methods, args, evaluator, nozzle, scenarios, *
                 "ref_score": ref, "score": float(score[0]),
                 "ratio": float(score[0]) / ref if ref > 0 else float("nan"),
                 "infeasible": bool(infeasible[0]), "n_evals": n_evals, "ms": ms,
+                "n_cands": n_cands, "n_screen": n_screen,
                 "shoulder_abduction": pose.shoulder_abduction, "torso_yaw": pose.torso_yaw,
                 "ref_arm_class": row.get("arm_class"), "fold": fold,
             })
@@ -294,7 +333,7 @@ def main(argv: list[str] | None = None) -> int:
             fold_model_path = tmp / f"_fold{f}_flow.pt"
             fold_model.save(fold_model_path)
             knn_path = None
-            if {"hybrid"} & set(methods):
+            if any(m.startswith("hybrid") for m in methods):
                 from airis.model.knn import PoseKNN
 
                 knn_path = tmp / f"_fold{f}_knn.parquet"
