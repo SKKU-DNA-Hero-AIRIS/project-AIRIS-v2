@@ -1,4 +1,4 @@
-"""E5 일반화: flow matching 추천 vs 비교군, holdout 체형에서 점수 비율. 소유자: C.
+"""E5 일반화: flow matching 추천 vs 비교군, holdout 체형에서 점수 비율. 소유자: F.
 README 6절 E5, docs/proposals/flow_matching.md 5절, docs/interfaces.md "계획 모델" 채택 기준.
 
     점수 비율 = score(예측 자세) / score(그 체형·시나리오를 직접 CMA-ES 로 최적화한 자세 = 데이터셋 score)
