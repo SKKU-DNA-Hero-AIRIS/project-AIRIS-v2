@@ -79,6 +79,13 @@ def narrow_scenario(scenario: Scenario, specs: list[str] | None) -> Scenario:
     제약을 건 탐색(예: 천장에 닿지 않는 팔 내림 봉우리 = 벌림 ≤ 90° 그리고 어깨 굽힘 ≤ 90°)에 쓴다.
     넓히지는 못하고 원래 범위와 **교집합**만 취한다 — 시나리오가 허용하지 않는 자세를 실험이
     슬쩍 허용하는 일을 막는다. fixed_pose 로 고정된 변수는 거부한다.
+
+    경계:
+    - 원래 범위를 벗어난 값은 교집합으로 줄이고 RuntimeWarning 을 낸다. 그래서 '-inf,inf' 는
+      경고 한 줄과 함께 원래 범위 그대로 통과한다 (오타를 조용히 넘기지는 않는다는 뜻).
+    - 같은 변수를 여러 번 주면 **차례로 교집합**을 취한다: '0,90' 다음 '0,45' 는 [0, 45] 다.
+    - 좁힌 시나리오는 탐색 상자(PoseEncoder)·시작점 판정·기록에만 쓴다. 채점에 쓰면
+      discomfort 정규화가 달라져 점수가 다른 묶음과 비교 불가능해진다 (run_e4.py 참고).
     """
     if not specs:
         return scenario
@@ -120,6 +127,9 @@ def starts_in_bounds(starts: list[Start], scenario: Scenario) -> tuple[list[Star
         (dropped.append(st.name) if out else kept.append(st))
     if not kept:
         raise SystemExit(f"시작점이 모두 시나리오 {scenario.name} 의 범위 밖이다: {', '.join(dropped)}")
+    if dropped:
+        warnings.warn(f"{scenario.name}: 좁힌 상자 밖 시작점을 건너뛴다: {', '.join(dropped)}",
+                      RuntimeWarning, stacklevel=2)
     return kept, dropped
 
 
