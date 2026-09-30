@@ -495,6 +495,9 @@ def test_recommend_prefers_model_candidate_that_beats_the_table(monkeypatch, tmp
 
     표는 메시 기본 체형의 봉우리라 캡슐 체형에서는 최적이 아니다. 회전만 바꿔 더 높은 자세를 찾아
     (테스트 안에서 직접 재서 확인) kNN 표에 넣는다.
+
+    여유가 크지 않다 (현재 +0.0104, 약 1.9%). 물리 상수·패치 격자가 바뀌어 캡슐 체형의 봉우리가
+    옮겨가면 첫 단언에서 실패한다 — 가리지 말고 그때 후보 자세를 다시 고르라는 뜻의 경보다.
     """
     from airis.realtime.recommend import _nozzles, patch_evaluator
     sc, ev, nz = SCENARIOS["default"], patch_evaluator("capsule"), _nozzles()
@@ -592,7 +595,7 @@ def test_stub_ranks_candidates_by_score_for_this_body(monkeypatch, no_artifacts)
 def test_pose_instructions():
     from airis.realtime.recommend import pose_instructions
     lines = pose_instructions(STUB_TABLE["default"][0].pose, SCENARIOS["default"])
-    assert any("만세" in s for s in lines) and any("약 70°" in s for s in lines)   # yaw 71.0 → 5° 단위
+    assert any("만세" in s for s in lines) and any("약 70°" in s for s in lines)   # yaw 70.5 → 5° 단위
     lines = pose_instructions(PoseParams(torso_yaw=-92.0), SCENARIOS["default"])
     assert any("약 90°" in s and "옆으로" in s for s in lines)                  # 좌우 부호는 말하지 않는다
     lines = pose_instructions(STUB_TABLE["wheelchair"][0].pose, SCENARIOS["wheelchair"])
