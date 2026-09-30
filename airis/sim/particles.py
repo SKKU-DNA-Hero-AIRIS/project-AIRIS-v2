@@ -9,6 +9,9 @@
 - 부착 입자의 이탈 판정에는 4.2b 충돌 제트 보정을 더하고, 노즐별 기여에 D의
   `patch_baseline.occlusion` 가시 비율(몸에 가린 정도)을 곱한다. 부유 입자는 자유 제트 그대로
 - 부스 밖 자세(00_common.md 5절)는 시뮬레이션하지 않고 score = -1 - 10·d_out (벽 초과 거리 벌점)
+- 계획 평가(`evaluate_plan`, docs/plan_extension.md): 단계마다 자세를 바꾸고 부착 입자는 자기
+  패치를 따라 옮긴다. 이탈은 4.6 시간 항(kinetics), 구역 세기는 4.7, 점수·에너지는 D의
+  `scoring.score_plan`·`energy`를 그대로 쓴다
 
 구현 상태 (A_particles.md 기준)
 - 단계 1~12 완료. 단계 11(성능): 입자 단위 한 스텝 함수를 여러 스텝씩 한 커널에서 돈다.
@@ -30,11 +33,12 @@ from .body import build_body
 from .interface import Evaluator
 from .jet import SLOT_AXIS_PERP_TOL, slot_mask
 from .kernels import ParticleFields, init_taichi, pack_constants
+from .kernels.particle_kernels import C_KIN_ON
 from .kernels.particle_kernels import PART_TORSO_BACK, PART_TORSO_FRONT
 from .patch_baseline import occlusion as patch_occlusion
-from .scenario import load_nozzle_layout
+from .scenario import apply_zone_strengths, load_nozzle_layout
 from .types import (
-    PART_NAMES, BodyParams, BodyState, EvalResult, NozzleConfig, PoseParams, Scenario,
+    PART_NAMES, BodyParams, BodyState, EvalResult, NozzleConfig, Plan, PoseParams, Scenario,
 )
 
 N_PARTS = len(PART_NAMES)
@@ -94,7 +98,12 @@ class ParticleEvaluator(Evaluator):
 
         self.f = ParticleFields(self.max_candidates, self.N, max_capsules, max_nozzles,
                                 max_patches)
-        self.f.cst.from_numpy(pack_constants(physics_cfg, self.booth))
+        # 4.6 시간 항은 계획 평가에서만 켠다. 단일 자세 `evaluate`는 D의 `evaluate`와 같이
+        # 점근값(전단이 임계를 넘으면 바로 이탈)이라야 기존 E2~E4 비교가 유지된다.
+        self._cst_steady = pack_constants(physics_cfg, self.booth)
+        self._cst_plan = self._cst_steady.copy()
+        self._cst_steady[C_KIN_ON] = 0.0
+        self.f.cst.from_numpy(self._cst_steady)
 
         # 호스트 스테이징 버퍼. from_numpy는 필드 전체 형상을 요구하므로 최대 크기로 둔다.
         bn = self.max_candidates * self.N
@@ -110,6 +119,8 @@ class ParticleEvaluator(Evaluator):
             "part": np.zeros(bn, np.int32),
             "part_init": np.zeros(bn, np.int32),
             "patch_idx": np.zeros(bn, np.int32),
+            "detach_budget": np.ones(bn, np.float32),
+            "exposure": np.zeros(bn, np.float32),
         }
         self._h_caps = np.zeros((self.max_candidates, self.f.K, 7), np.float32)
         self._h_cap_part = np.full((self.max_candidates, self.f.K), -1, np.int32)
@@ -269,6 +280,150 @@ class ParticleEvaluator(Evaluator):
             particles_per_candidate=np.int32(self.N),
         )
 
+    # --------------------------------------------- 계획 평가 (plan_extension.md)
+    def evaluate_plan(self, plan: Plan, nozzle: NozzleConfig,
+                      body: BodyParams, scenario: Scenario) -> EvalResult:
+        """계획(자세 순서 + 구역 세기 + 시간) 평가. `00_common.md` 4.4·4.6·4.7.
+
+        D의 패치판 `PatchEvaluator.evaluate_plan`과 같은 입력·출력 계약이다. 입자판이 다르게
+        하는 부분만 적는다.
+
+        - **단계 전환**: 단계가 바뀌면 몸을 새 자세로 만들고, 부착 입자를 자기 패치의 새 위치·
+          법선으로 옮긴다 (패치는 자세와 무관한 물질점. B 보장). 캡슐·가림·전방 벡터도 다시
+          올린다. 부유 입자는 그대로 둔다.
+        - **전환 시간** `plan.transition_s`는 시뮬레이션하지 않는다. 패치판도 그 동안 제거 0이고
+          총 시간 T에서 빼므로, 두 평가기가 같은 시간을 본다.
+        - **이탈**: `adhesion.kinetics.enabled`면 4.6대로 시간에 따라 떨어진다 (커널 참고).
+        - **부위 합산**: 입자 수 가중이다. 입자는 첫 단계의 패치 면적에 비례해 뿌렸으므로,
+          패치판이 쓰는 "단계 면적의 시간 가중 평균"과는 스키닝으로 면적이 변한 만큼 다르다
+          (메시 몸에서 단계 간 총 면적 차이는 0.4% 수준이라 작다).
+        - **비행 시간 지연**: 제거는 입자가 부스 밖으로 나간 시점에 센다. 떨어진 뒤 날아 나가는
+          데 걸리는 시간 때문에 짧은 계획일수록 닫힌 식(4.6)보다 낮게 나온다. 실측 R/R_inf
+          (입자 / 식): 1 s 0.23/0.39, 2 s 0.50/0.63, 4 s 0.79/0.87, 10 s 0.98/0.99, 20 s 0.99/1.00.
+          순위 비교에는 영향이 작지만 절대값 비교에는 감안해야 한다.
+        - `extra`: `energy`, `duration_s`, `removal_by_part_per_phase` (K, 5), `infeasible`,
+          그리고 입자판 값들 (`count_init`, `count_removed`, `n_steps_per_phase`, `seed`).
+          `removal_by_part_per_phase`는 **단계별 증분**(합 = 전체)이다. 패치판의 같은 이름은
+          "그 단계만 단독으로 돌렸을 때의 제거율"이라 뜻이 다르다. 불가일 때 벌점 거리 키는
+          입자판이 `d_out_m`, 패치판이 `d_out`이다 (기존 차이).
+        """
+        if not plan.phases:
+            raise ValueError("plan.phases 가 비어 있다")
+
+        states = [build_body(body, ph.pose, scenario) for ph in plan.phases]
+        d_out = max(booth_overshoot(st.patch_pos, self.booth) for st in states)
+        zeros = np.zeros(N_PARTS, dtype=np.float32)
+        if d_out > 0.0:
+            _, disc = scoring.score_plan(np.zeros(N_PARTS), plan.phases, scenario, self.cfg, 0.0)
+            return EvalResult(
+                score=INFEASIBLE_BASE - INFEASIBLE_SLOPE_PER_M * d_out,
+                removal_by_part=zeros, total_removal=0.0, discomfort=disc,
+                extra={"evaluator": "particle", "infeasible": True, "d_out_m": d_out,
+                       "energy": 0.0, "duration_s": plan.duration_s,
+                       "removal_by_part_per_phase": np.zeros((len(plan.phases), N_PARTS))},
+            )
+
+        n_patch = states[0].patch_pos.shape[0]
+        if any(st.patch_pos.shape[0] != n_patch for st in states):
+            raise ValueError(
+                "단계마다 패치 수가 다르다. 계획 평가는 패치가 자세와 무관한 물질점이어야 한다 "
+                "(00_common.md 4.6 'B 보장')")
+
+        f = self.f
+        f.cst.from_numpy(self._cst_plan)                 # 4.6 시간 항 (설정대로)
+        try:
+            per_phase = np.zeros((len(plan.phases), N_PARTS))
+            steps_done = []
+            energy_total = 0.0
+            removed_before = np.zeros(N_PARTS, dtype=np.int64)
+            seed_nozzle = None
+            for k, (phase, state) in enumerate(zip(plan.phases, states)):
+                pose = phase.pose
+                phase_nozzle = apply_zone_strengths(nozzle, plan.zone_strengths, pose.torso_yaw)
+                if k == 0:
+                    self._init_candidates([state], [pose], phase_nozzle, 1)
+                    seed_nozzle = phase_nozzle          # 시드는 이 노즐로 정해진다
+                else:
+                    self._advance_phase(state, pose, phase_nozzle)
+                self._upload_nozzles(phase_nozzle)
+
+                n_steps = int(round(float(phase.duration_s) / self.dt))
+                step0 = sum(steps_done)
+                for s0 in range(0, n_steps, self.steps_per_launch):
+                    f.k_run(step0 + s0, min(self.steps_per_launch, n_steps - s0), self.dt, 1)
+                steps_done.append(n_steps)
+                energy_total += scoring.energy(phase_nozzle.strengths, phase.duration_s, self.cfg)
+
+                f.k_zero_removed(1)
+                f.k_count(1)
+                removed = f.count_removed.to_numpy()[0].astype(np.int64)
+                init = self._h_count_init[0].astype(np.int64)
+                per_phase[k] = (removed - removed_before) / np.maximum(init, 1)
+                removed_before = removed
+        finally:
+            f.cst.from_numpy(self._cst_steady)
+
+        removal_by_part = (removed_before / np.maximum(init, 1)).astype(np.float32)
+        total_removal = float(removed_before.sum()) / self.N
+        score, disc = scoring.score_plan(removal_by_part, plan.phases, scenario, self.cfg,
+                                         energy_total)
+        return EvalResult(
+            score=score, removal_by_part=removal_by_part, total_removal=total_removal,
+            discomfort=disc,
+            extra={"evaluator": "particle", "infeasible": False, "energy": energy_total,
+                   "duration_s": plan.duration_s, "removal_by_part_per_phase": per_phase,
+                   "count_init": init.copy(), "count_removed": removed_before.copy(),
+                   "n_steps_per_phase": steps_done,
+                   "seed": self._candidate_seed(plan.phases[0].pose, seed_nozzle)},
+        )
+
+    def _advance_phase(self, state: BodyState, pose: PoseParams,
+                       nozzle: NozzleConfig) -> None:
+        """단계 전환: 부착 입자를 새 자세의 같은 패치로 옮기고 캡슐·가림·전방을 다시 올린다.
+
+        재부착 입자(`patch_idx < 0`)는 패치가 없으므로 자리를 그대로 둔다. 부유 입자도 그대로다.
+        """
+        f = self.f
+        n = self.N
+        # 재부착한 입자는 커널이 patch_idx를 -1로 바꾼다. 호스트 사본(self._h)에는 그 변경이
+        # 없으므로 반드시 GPU 필드를 읽는다 (읽지 않으면 재부착 입자가 원래 패치로 되돌아간다).
+        patch_idx = f.patch_idx.to_numpy()[:n]
+        attached = (f.state.to_numpy()[:n] == 0) & (patch_idx >= 0)
+        idx = patch_idx[attached]
+
+        normal = np.asarray(state.patch_normal, dtype=np.float32)[idx]
+        pos = f.pos.to_numpy()[:n]
+        nrm = f.normal.to_numpy()[:n]
+        pos[attached] = np.asarray(state.patch_pos, dtype=np.float32)[idx] + SURFACE_LIFT_M * normal
+        nrm[attached] = normal
+        self._h["pos"][:n] = pos
+        self._h["normal"][:n] = nrm
+        f.pos.from_numpy(self._h["pos"])
+        f.normal.from_numpy(self._h["normal"])
+
+        # 캡슐·전방 벡터·가림은 자세를 따라 바뀐다 (부위와 패치 번호는 그대로).
+        caps = np.asarray(state.capsules, dtype=np.float32).reshape(-1, 7)
+        k = caps.shape[0]
+        if k > f.K:
+            raise ValueError(f"캡슐 {k}개 > max_capsules {f.K}")
+        self._h_caps[0] = 0.0
+        self._h_cap_part[0] = -1
+        self._h_caps[0, :k] = caps
+        self._h_cap_part[0, :k] = (np.asarray(state.capsule_part, dtype=np.int32)
+                                   if state.capsule_part is not None else -1)
+        self._h_n_caps[0] = k
+        self._h_body_fwd[0] = body_forward(pose)
+        n_patch, m = state.patch_pos.shape[0], nozzle.count
+        if n_patch > f.P:
+            raise ValueError(f"패치 {n_patch}개 > max_patches {f.P}")
+        self._h_vis[0, :n_patch, :m] = (patch_occlusion(state, nozzle, self.cfg).T
+                                        if self.occlusion else 1.0)
+        f.capsules.from_numpy(self._h_caps)
+        f.cap_part.from_numpy(self._h_cap_part)
+        f.n_caps.from_numpy(self._h_n_caps)
+        f.body_fwd.from_numpy(self._h_body_fwd)
+        f.vis.from_numpy(self._h_vis)
+
     # ---------------------------------------------------------- 디버그 조회
     def state_counts(self, n_act: int) -> np.ndarray:
         """state 0/1/2 개수 (3,). 질량 보존 확인용."""
@@ -415,6 +570,10 @@ class ParticleEvaluator(Evaluator):
         self._h["tau_crit_respawn"][sl] = rng.lognormal(np.log(tau_med),
                                                         adh["critical_shear_sigma_log"], n)
         self._h["rand_redep"][sl] = rng.random(n)
+        # 4.6 시간 의존 이탈: 이탈까지 필요한 노출량 ~ Exp(1). 마지막에 뽑아 앞의 난수 열을
+        # 그대로 두었다 (시간 항을 끈 기존 평가 결과가 바뀌지 않는다).
+        self._h["detach_budget"][sl] = rng.exponential(1.0, n)
+        self._h["exposure"][sl] = 0.0
 
         # 4. 상태
         self._h["state"][sl] = 0

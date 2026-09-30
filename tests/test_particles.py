@@ -1340,3 +1340,212 @@ def test_stagnation_shear_factor_is_rejected_until_kernel_has_it():
     off["jet"]["impingement"]["enabled"] = False
     ev = ParticleEvaluator(off, max_candidates=1, particles_per_candidate=1, duration_s=0.0)
     ev.destroy()
+
+
+# ------------------------------------------ 계획 평가 (plan_extension.md, 4단계)
+from airis.optimize.plan_encoding import plan_physics_cfg  # noqa: E402
+from airis.sim.types import Phase, Plan  # noqa: E402
+
+ZONES_ALL_ON = np.ones(5, dtype=np.float64)
+
+
+def plan_evaluator(cfg=None, n_particles=N_DEV, **kw):
+    return ParticleEvaluator(cfg or plan_physics_cfg(), max_candidates=1,
+                             particles_per_candidate=n_particles, **kw)
+
+
+def test_plan_single_phase_matches_evaluate_when_kinetics_off(scenario):
+    """시간 항을 끄면 단일 단계 계획 = 기존 `evaluate` (전단이 임계를 넘으면 바로 이탈).
+
+    제거율·부위별 값이 완전히 같아야 한다 (같은 시드, 같은 기하, 같은 노즐).
+    """
+    cfg = copy.deepcopy(load_physics())
+    cfg["adhesion"]["kinetics"]["enabled"] = False
+    nozzle = load_nozzles()
+    pose = PoseParams(torso_yaw=30.0)
+    ev = plan_evaluator(cfg, duration_s=3.0)
+    try:
+        plan = Plan(phases=[Phase(pose=pose, duration_s=3.0)], zone_strengths=ZONES_ALL_ON)
+        by_plan = ev.evaluate_plan(plan, nozzle, MESH_DEFAULT_BODY, scenario)
+        by_pose = ev.evaluate(pose, nozzle, MESH_DEFAULT_BODY, scenario)
+    finally:
+        ev.destroy()
+    assert by_plan.total_removal > 0.0
+    assert by_plan.total_removal == by_pose.total_removal
+    np.testing.assert_array_equal(by_plan.removal_by_part, by_pose.removal_by_part)
+    assert by_plan.extra["duration_s"] == 3.0
+    assert by_plan.extra["energy"] > 0.0
+
+
+def test_plan_removal_grows_with_time_and_saturates(scenario):
+    """4.6 시간 항: 길게 불수록 제거가 는다. 충분히 길면 점근값(시간 항 끔)에 가까워진다."""
+    cfg = plan_physics_cfg()
+    t_r = cfg["adhesion"]["kinetics"]["time_constant_s"]
+    assert cfg["adhesion"]["kinetics"]["enabled"]
+    nozzle = load_nozzles()
+    pose = PoseParams()
+    ev = plan_evaluator(cfg)
+    try:
+        got = [ev.evaluate_plan(Plan([Phase(pose, d)], ZONES_ALL_ON), nozzle,
+                                MESH_DEFAULT_BODY, scenario).total_removal
+               for d in (1.0, 4.0, 20.0)]
+        off = copy.deepcopy(cfg)
+        off["adhesion"]["kinetics"]["enabled"] = False
+        ev_off = ParticleEvaluator(off, max_candidates=1, particles_per_candidate=N_DEV)
+        try:
+            asymptote = ev_off.evaluate_plan(Plan([Phase(pose, 20.0)], ZONES_ALL_ON), nozzle,
+                                             MESH_DEFAULT_BODY, scenario).total_removal
+        finally:
+            ev_off.destroy()
+    finally:
+        ev.destroy()
+    assert got[0] < got[1] < got[2], got
+    assert got[2] > 0.8 * asymptote, (got, asymptote)          # 20 s = 10·T_r 면 거의 포화
+    assert got[0] < 0.8 * asymptote, (got, asymptote, t_r)
+
+
+def test_plan_zone_strength_zero_reduces_total(scenario):
+    """4.7 구역 세기: 한 구역을 끄면 총 제거율이 떨어지고 에너지도 준다.
+
+    (D 발견: 총 제거율은 떨어져도 마주 보는 벽 제트의 상쇄가 풀려 일부 부위는 오를 수 있다.
+    그 방향은 여기서 단언하지 않고 검증 스크립트에서 패치판과 비교한다.)
+    """
+    cfg = plan_physics_cfg()
+    nozzle = load_nozzles()
+    pose = PoseParams(torso_yaw=30.0)
+    ev = plan_evaluator(cfg)
+    try:
+        full = ev.evaluate_plan(Plan([Phase(pose, 10.0)], ZONES_ALL_ON), nozzle,
+                                MESH_DEFAULT_BODY, scenario)
+        off_zone = ZONES_ALL_ON.copy()
+        off_zone[3] = 0.0                                      # 등 쪽 벽 상단 끄기
+        part = ev.evaluate_plan(Plan([Phase(pose, 10.0)], off_zone), nozzle,
+                                MESH_DEFAULT_BODY, scenario)
+    finally:
+        ev.destroy()
+    assert part.total_removal < full.total_removal, (part.total_removal, full.total_removal)
+    assert part.extra["energy"] < full.extra["energy"]
+
+
+def test_plan_phases_move_attached_particles_and_accumulate(scenario):
+    """단계 전환: 자세가 바뀌면 부착 입자가 자기 패치를 따라간다. 두 단계 제거율의 합이
+    전체와 같고, 단계를 나눈 계획이 같은 자세 한 단계보다 많이 떼어낸다 (회전으로 새 면이 열림)."""
+    cfg = plan_physics_cfg()
+    nozzle = load_nozzles()
+    ev = plan_evaluator(cfg)
+    try:
+        two = Plan([Phase(PoseParams(), 6.0), Phase(PoseParams(torso_yaw=90.0), 6.0)],
+                   ZONES_ALL_ON)
+        one = Plan([Phase(PoseParams(), 12.0)], ZONES_ALL_ON)
+        r2 = ev.evaluate_plan(two, nozzle, MESH_DEFAULT_BODY, scenario)
+        r1 = ev.evaluate_plan(one, nozzle, MESH_DEFAULT_BODY, scenario)
+    finally:
+        ev.destroy()
+    per_phase = r2.extra["removal_by_part_per_phase"]
+    assert per_phase.shape == (2, len(PART_NAMES))
+    assert (per_phase >= 0).all()
+    np.testing.assert_allclose(per_phase.sum(axis=0), r2.removal_by_part, atol=1e-6)
+    assert r2.extra["n_steps_per_phase"] == [3000, 3000]
+    assert r2.total_removal > r1.total_removal, (r2.total_removal, r1.total_removal)
+    assert r2.extra["energy"] == pytest.approx(r1.extra["energy"], rel=1e-9)   # 같은 세기·총 시간
+
+
+def test_plan_infeasible_matches_patch_evaluator(scenario):
+    """한 단계라도 부스 밖이면 계획 전체 불가. 벌점·불편도가 패치판과 같다."""
+    from airis.sim.patch_baseline import PatchEvaluator
+
+    cfg = plan_physics_cfg()
+    nozzle = load_nozzles()
+    plan = Plan([Phase(PoseParams(), 5.0),
+                 Phase(PoseParams(shoulder_abduction=90.0), 5.0)], ZONES_ALL_ON)
+    ev = plan_evaluator(cfg)
+    try:
+        got = ev.evaluate_plan(plan, nozzle, CAPSULE_BODY, scenario)
+    finally:
+        ev.destroy()
+    ref = PatchEvaluator(cfg).evaluate_plan(plan, nozzle, CAPSULE_BODY, scenario)
+    assert got.extra["infeasible"] and ref.extra["infeasible"]
+    assert got.score == pytest.approx(ref.score, abs=1e-12)
+    assert got.discomfort == pytest.approx(ref.discomfort, abs=1e-12)
+    assert got.total_removal == 0.0 and got.extra["energy"] == 0.0
+
+
+def test_plan_same_pose_split_equals_single_phase(scenario):
+    """같은 자세를 두 단계로 나눈 계획 = 한 단계 계획 (입자 하나까지).
+
+    단계 전환에서 부착 입자를 옮길 때 재부착 입자(patch_idx < 0)를 GPU 필드가 아니라 호스트
+    사본으로 가려내면, 재부착 입자가 원래 패치 자리로 되돌아가 결과가 어긋난다 (통합 검토
+    지적: 2만 입자에서 6개 차이). 이 테스트가 그 회귀를 잡는다.
+    """
+    cfg = plan_physics_cfg()
+    nozzle = load_nozzles()
+    pose = PoseParams(torso_yaw=30.0)
+    ev = plan_evaluator(cfg, n_particles=20000)
+    try:
+        split = ev.evaluate_plan(Plan([Phase(pose, 4.0), Phase(pose, 6.0)], ZONES_ALL_ON),
+                                 nozzle, MESH_DEFAULT_BODY, scenario)
+        single = ev.evaluate_plan(Plan([Phase(pose, 10.0)], ZONES_ALL_ON),
+                                  nozzle, MESH_DEFAULT_BODY, scenario)
+    finally:
+        ev.destroy()
+    assert single.total_removal > 0.0
+    np.testing.assert_array_equal(split.extra["count_removed"], single.extra["count_removed"])
+    assert split.total_removal == single.total_removal
+    assert split.score == pytest.approx(single.score, abs=1e-12)
+    # 재부착이 실제로 일어나는 설정인지 확인 (일어나지 않으면 이 테스트가 공허하다)
+    assert cfg["adhesion"]["redeposition_prob"] > 0.0
+
+
+def test_plan_does_not_change_single_pose_evaluate(scenario):
+    """계획 평가는 4.6 시간 항을 켜지만, 그 전후로 단일 자세 `evaluate`가 달라지지 않는다
+    (상수 배열을 계획 경로에서만 바꿔 올린다)."""
+    cfg = plan_physics_cfg()
+    nozzle = load_nozzles()
+    pose = PoseParams(torso_yaw=15.0)
+    ev = plan_evaluator(cfg)
+    try:
+        before = ev.evaluate(pose, nozzle, MESH_DEFAULT_BODY, scenario)
+        ev.evaluate_plan(Plan([Phase(pose, 8.0)], ZONES_ALL_ON), nozzle,
+                         MESH_DEFAULT_BODY, scenario)
+        after = ev.evaluate(pose, nozzle, MESH_DEFAULT_BODY, scenario)
+    finally:
+        ev.destroy()
+    assert before.total_removal > 0.0
+    np.testing.assert_array_equal(before.extra["count_removed"], after.extra["count_removed"])
+    assert before.score == after.score
+
+
+def test_plan_time_constant_must_be_positive():
+    """kinetics를 켜고 T_r <= 0이면 막는다 (패치판 scoring과 같은 검사)."""
+    bad = copy.deepcopy(plan_physics_cfg())
+    bad["adhesion"]["kinetics"]["time_constant_s"] = 0.0
+    with pytest.raises(ValueError, match="time_constant_s"):
+        ParticleEvaluator(bad, max_candidates=1, particles_per_candidate=1, duration_s=0.0)
+
+
+def _load_plan_compare_script():
+    """`scripts/compare_plan_evaluators.py`를 파일 경로로 불러온다 (scripts는 패키지가 아니다)."""
+    import importlib.util
+
+    path = ROOT / "scripts" / "compare_plan_evaluators.py"
+    spec = importlib.util.spec_from_file_location("compare_plan_evaluators", path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def test_plan_rank_matches_patch_evaluator(scenario):
+    """계획 순위가 패치판과 맞는지 (docs/plan_extension.md 6절 검증의 가벼운 판).
+
+    본 검증은 `scripts/compare_plan_evaluators.py --n 50`이고, 여기서는 계획 12개로 하한만 본다.
+    """
+    mod = _load_plan_compare_script()
+    compare, correlations, sample_plans = mod.compare, mod.correlations, mod.sample_plans
+
+    cfg = plan_physics_cfg()
+    plans = sample_plans(12, scenario, MESH_DEFAULT_BODY, cfg, seed=3)
+    rows = compare(plans, scenario, MESH_DEFAULT_BODY, cfg, load_nozzles(), particles=5000)
+    rho = correlations(rows)
+    assert min(r["patch_total"] for r in rows) > 0.0
+    assert rho["score"] >= 0.95, rho
+    assert rho["total"] >= 0.95, rho
