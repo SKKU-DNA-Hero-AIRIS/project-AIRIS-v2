@@ -80,8 +80,23 @@ def test_wheelchair_fixed_pose_and_yaw_range(scenarios):
     assert len(enc.free_keys) == 21 - 2 * 2          # 단계마다 hip·knee 고정
 
 
+def test_comfort_cap_uses_zone_keys_only(scenarios):
+    """구역 이름 키만 있는 시나리오에서도 쾌적 상한이 걸린다 (옛 부위 키 torso_front 없이).
+
+    B 가 scenarios.yaml 의 옛 키를 지워도 clip_plan 이 상한을 건너뛰지 않아야 한다 (F 발견 2026-09-30).
+    """
+    from dataclasses import replace
+
+    zone_only = replace(scenarios["default"], name="zone_only",
+                        nozzle_strength_cap={"chest_low": 0.6, "chest_high": 0.6})
+    enc = PlanEncoder(zone_only, LIMITS)
+    assert enc.clip_zone_strengths([1.0] * 5) == pytest.approx([0.6, 0.6, 1.0, 1.0, 1.0])
+    plan = enc.decode(np.full(enc.dim, 1.0))                  # 벡터 상한에서도 걸린다
+    assert plan.zone_strengths[:2] == pytest.approx([0.6, 0.6])
+
+
 def test_comfort_cap_and_flow_cap(scenarios):
-    # 임산부: 가슴 쪽 구역 0.6 (scenario.nozzle_strength_cap torso_front)
+    # 임산부: 가슴 쪽 구역 0.6 (scenario.nozzle_strength_cap 의 구역 키 chest_low·chest_high)
     preg = PlanEncoder(scenarios["pregnant"], LIMITS)
     s = preg.clip_zone_strengths([1.0] * 5)
     assert s[ZONE_NAMES.index("chest_low")] == pytest.approx(0.6)
@@ -109,6 +124,16 @@ def test_comfort_cap_and_flow_cap(scenarios):
     assert PlanEncoder(scenarios["default"], PlanLimits(cap_ratio=1.0),
                        zone_nozzle_counts=[1, 1, 1, 1, 8]).clip_zone_strengths(
         [1.0] * 5) == pytest.approx([1.0] * 5)                    # 합이 한도와 같으면 그대로
+
+    # 비균일 입력: 노즐이 많은 구역(top)이 세면 같은 입력이라도 더 많이 깎인다.
+    many_top = PlanEncoder(scenarios["default"], PlanLimits(cap_ratio=0.5),
+                           zone_nozzle_counts=[1, 1, 1, 1, 8])
+    few_top = PlanEncoder(scenarios["default"], PlanLimits(cap_ratio=0.5),
+                          zone_nozzle_counts=[8, 1, 1, 1, 1])
+    strengths = [0.2, 0.2, 0.2, 0.2, 1.0]                         # top 만 센 계획
+    a, b = many_top.clip_zone_strengths(strengths), few_top.clip_zone_strengths(strengths)
+    assert a[4] < b[4], "top 노즐이 많은 배치에서 더 많이 줄어든다"
+    assert a[0] / a[4] == pytest.approx(b[0] / b[4]), "구역 사이 비율은 유지된다"
 
 
 def test_normalize_mirror_front_back_and_wrap(scenarios):
@@ -284,3 +309,39 @@ def test_run_e7_rejects_unknown_condition(tmp_path):
     from scripts.run_e7 import main
 
     assert main(["--evaluator", "dummy", "--conditions", "P9", "--log-dir", str(tmp_path)]) == 2
+
+
+# ---------- 계획 경로용 설정 (kinetics) ----------
+
+def test_plan_physics_cfg_enables_kinetics_without_touching_input():
+    from airis.optimize.plan_encoding import plan_kinetics_stamp, plan_physics_cfg
+    from airis.sim.scenario import load_physics
+
+    base = load_physics()
+    before = bool(base.get("adhesion", {}).get("kinetics", {}).get("enabled", False))
+    cfg = plan_physics_cfg(base)
+    assert cfg["adhesion"]["kinetics"]["enabled"] is True
+    assert bool(base["adhesion"]["kinetics"]["enabled"]) == before, "입력 설정은 그대로"
+    assert cfg["adhesion"] is not base["adhesion"], "복사본이어야 한다"
+    stamp = plan_kinetics_stamp(cfg)
+    assert stamp["kinetics_enabled"] is True
+    assert stamp["time_constant_s"] == pytest.approx(
+        float(base["adhesion"]["kinetics"]["time_constant_s"]))
+    # 키가 아예 없는 설정에서도 만들어 넣는다.
+    assert plan_physics_cfg({})["adhesion"]["kinetics"]["enabled"] is True
+
+
+def test_dummy_plan_discomfort_uses_reference_duration(scenarios):
+    """더미의 discomfort 는 명세 4.4 대로 시간 가중 합 ÷ T_ref (÷T 아님)."""
+    from airis.optimize.dummy import DummyEvaluator
+    from airis.sim.scoring import discomfort as pose_discomfort
+
+    sc = scenarios["default"]
+    pose = PoseParams(shoulder_abduction=180.0, torso_yaw=70.0)
+    ev = DummyEvaluator(pose, sc)
+    half = Plan([Phase(pose, 5.0), Phase(pose, 5.0)], np.ones(5))
+    full = Plan([Phase(pose, 10.0), Phase(pose, 10.0)], np.ones(5))
+    d_pose = pose_discomfort(PlanEncoder(sc, LIMITS).pose_encoder.clip_pose(pose), sc)
+    nz = load_nozzles()
+    assert ev.evaluate_plan(half, nz, BodyParams(), sc).discomfort == pytest.approx(d_pose * 10.0 / 20.0)
+    assert ev.evaluate_plan(full, nz, BodyParams(), sc).discomfort == pytest.approx(d_pose)

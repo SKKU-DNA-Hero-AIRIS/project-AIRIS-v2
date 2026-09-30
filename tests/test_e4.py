@@ -158,3 +158,32 @@ def test_run_e4_patch_rescore(tmp_path):
         assert row[key] != ""
     poses = json.loads((group / "best_poses.json").read_text(encoding="utf-8"))
     assert poses["scenarios"]["default"]["runs"][0]["rescore_score"] is not None
+
+
+# ---------- 설정 해시 규약 (총괄 2026-09-30) ----------
+
+def test_file_hash_ignores_comments_and_line_endings(tmp_path):
+    """YAML 은 파싱한 내용으로 해시한다: 주석·줄바꿈·키 순서에 무관, 값이 다르면 다르다."""
+    from airis.optimize import explog
+
+    def write(name, text, newline="\n"):
+        path = tmp_path / name
+        path.write_bytes(text.replace("\n", newline).encode("utf-8"))
+        return path
+
+    body = "jet:\n  gain: 1.4\nair:\n  density: 1.2\n"
+    lf = write("a.yaml", body)
+    crlf = write("b.yaml", body, newline="\r\n")
+    commented = write("c.yaml", "# 주석\njet:\n  gain: 1.40\nair:\n  density: 1.2\n")
+    reordered = write("d.yaml", "air:\n  density: 1.2\njet:\n  gain: 1.4\n")
+    changed = write("e.yaml", "jet:\n  gain: 1.0\nair:\n  density: 1.2\n")
+
+    h = explog.file_hash(lf)
+    assert h == explog.file_hash(crlf), "CRLF/LF 는 같은 해시"
+    assert h == explog.file_hash(commented), "주석과 1.40/1.4 표기는 무시"
+    assert h == explog.file_hash(reordered), "키 순서는 무시"
+    assert h != explog.file_hash(changed), "값이 다르면 다른 해시"
+    assert explog.file_hash(tmp_path / "none.yaml") == "nofile"
+
+    # YAML 이 아닌 파일은 바이트 해시 그대로 (줄바꿈이 다르면 다른 해시).
+    assert explog.file_hash(write("a.txt", "x\n")) != explog.file_hash(write("b.txt", "x\n", "\r\n"))

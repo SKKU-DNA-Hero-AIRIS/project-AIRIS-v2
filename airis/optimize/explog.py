@@ -48,10 +48,23 @@ def git_commit() -> str:
 
 
 def file_hash(path: Path | str) -> str:
-    """파일 내용 sha256 앞 8자리. 없으면 "nofile"."""
+    """설정 파일의 내용 해시 앞 8자리. 없으면 "nofile".
+
+    YAML(.yaml/.yml)은 **파싱한 내용**을 정렬 직렬화(JSON, sort_keys, 구분자 고정)해 sha256 한다
+    (총괄 확정 2026-09-30). 그래서 주석·줄바꿈(CRLF/LF)·키 순서가 달라도 같은 해시가 나오고,
+    값이 바뀌면 달라진다. 0.50 과 0.5 처럼 표기만 다른 수도 파싱 값이 같아 같은 해시다.
+    그 밖의 파일은 예전처럼 바이트 sha256 이다.
+    """
     p = Path(path)
     if not p.is_file():
         return "nofile"
+    if p.suffix.lower() in (".yaml", ".yml"):
+        import yaml
+
+        data = yaml.safe_load(p.read_text(encoding="utf-8"))
+        blob = json.dumps(data, sort_keys=True, ensure_ascii=False,
+                          separators=(",", ":"), default=str).encode("utf-8")
+        return hashlib.sha256(blob).hexdigest()[:8]
     return hashlib.sha256(p.read_bytes()).hexdigest()[:8]
 
 

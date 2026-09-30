@@ -55,7 +55,7 @@ class DummyEvaluator(Evaluator):
         물리는 없지만 계획 탐색이 (a) 시간을 늘리면 이득, (b) 에너지가 크면 손해라는
         구조를 흉내 내 루프·인코더·로그를 검증할 수 있다 (docs/plan_extension.md 4.4·4.6·4.7 형태).
         """
-        t_ref = 20.0
+        t_ref = 20.0            # scoring.reference_duration_s (docs/plan_extension.md 4.4)
         total = plan.duration_s
         zones = np.asarray(plan.zone_strengths, dtype=np.float64)
         parts = []
@@ -66,7 +66,8 @@ class DummyEvaluator(Evaluator):
             parts.append((phase.duration_s, quality * saturation, base.discomfort))
         weight = sum(t for t, _, _ in parts) or 1.0
         score = sum(t * v for t, v, _ in parts) / weight
-        disc = sum(t * d for t, _, d in parts) / weight
+        # 불편도는 명세 4.4 대로 시간 가중 합 ÷ T_ref (D 의 evaluate_plan 과 같은 의미).
+        disc = sum(t * d for t, _, d in parts) / t_ref
         energy = float((zones ** 3).sum() / max(1, len(ZONE_NAMES)) * total / t_ref)   # 4.7 에너지
         return EvalResult(
             score=float(score - self.energy_weight * energy),
