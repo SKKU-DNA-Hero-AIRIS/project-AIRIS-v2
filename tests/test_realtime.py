@@ -2,6 +2,9 @@
 
 실제 카메라는 열지 않는다. 합성 키포인트 = 몸 모델 관절을 정면 핀홀 카메라에 투영한 것.
 
+학습 산출물(`data/models/pose_flow.pt`·`pose_knn.parquet`)이 있든 없든 통과해야 한다. 표(스텁)를 기대하는
+테스트는 `no_artifacts` 픽스처로 기본 경로를 없는 파일로 돌려 놓는다 (로컬에 산출물이 있으면 모델이 끼어든다).
+
 전역 기본값(`BodyParams()`, `configs/physics.yaml` `body.model`)과 독립이다. 캡슐 기준 테스트는
 `model="capsule"`·`profile="capsule"`과 캡슐 시절 체형(`CAPSULE_BODY`)을, 메시 기준 테스트는 `model="mesh"`와
 `MESH_DEFAULT_BODY`를 명시한다 (5단계 BodyParams 기본값 교체·body.model 전환에서 깨지지 않게).
@@ -26,6 +29,7 @@ from airis.realtime import pose_estimate as pe
 from airis.realtime.camera import detections_from_result, draw_pose, largest_person, read_image
 from airis.realtime.recommend import (STUB_TABLE, compare_with_baselines, improvement,
                                       is_inside_booth, recommend, recommend_pose)
+from airis.optimize.encoding import PoseEncoder
 from airis.sim.body import build_body
 from airis.sim.human_mesh import MESH_DEFAULT_BODY
 from airis.sim.patch_baseline import outside_booth
@@ -39,6 +43,23 @@ BOOTH = load_nozzle_layout()["booth"]
 CAPSULE_BODY = BodyParams(1.70, 0.42, 0.22, 0.62, 0.85)
 CAP = dict(model="capsule")          # synthetic_keypoints
 CAPP = dict(profile="capsule")       # estimate_body / BodyEstimator
+
+@pytest.fixture
+def no_artifacts(monkeypatch, tmp_path):
+    """학습 산출물이 없는 상태. 경로는 C의 `predict.py` 가 정하므로 그 기본값만 돌려 놓는다."""
+    predict = pytest.importorskip("airis.model.predict")
+    monkeypatch.setattr(predict, "DEFAULT_MODEL_PATH", tmp_path / "없음_pose_flow.pt")
+    monkeypatch.setattr(predict, "DEFAULT_KNN_PATH", tmp_path / "없음_pose_knn.parquet")
+    return predict
+
+
+def _artifacts_exist() -> bool:
+    try:
+        from airis.model import predict
+    except ImportError:
+        return False
+    return predict.DEFAULT_MODEL_PATH.exists() or predict.DEFAULT_KNN_PATH.exists()
+
 
 BODIES = {
     "기본": CAPSULE_BODY,
@@ -256,7 +277,7 @@ def test_ultralytics_lazy_import():
 # 추천 자세 (단계 4)
 # ---------------------------------------------------------------------------
 @pytest.mark.parametrize("scenario", ["default", "pregnant", "wheelchair"])
-def test_recommend_pose_inside_booth_and_bounds(scenario):
+def test_recommend_pose_inside_booth_and_bounds(scenario, no_artifacts):
     sc = SCENARIOS[scenario]
     pose = recommend_pose(BodyParams(), sc)
     state = build_body(BodyParams(), pose, sc, patches_per_m2=400)
@@ -305,17 +326,99 @@ def test_tall_body_falls_back_to_arms_down_peak():
     assert is_inside_booth(tall, rec.pose, sc, "capsule")
 
 
-def test_recommend_uses_model_when_available(monkeypatch):
-    """C의 predict_pose 가 생기면 그것을 쓰고, 부스 밖 예측이면 표로 대체한다."""
+def _fake_prediction(candidates, sources, scores, infeasible=None):
+    from airis.model.predict import Prediction
+    infeasible = np.zeros(len(candidates), bool) if infeasible is None else np.asarray(infeasible)
+    scores = np.asarray(scores, float)
+    pick = np.where(infeasible, -np.inf, scores) if not infeasible.all() else scores
+    i = int(np.argmax(pick))
+    return Prediction(candidates[i], candidates, scores, infeasible, list(sources), sources[i])
+
+
+def test_recommend_passes_stub_candidates_to_model(monkeypatch):
+    """혼합 추천에 표 후보를 extra_candidates 로 넘기고, E의 평가기·노즐로 재채점하게 한다."""
+    import airis.model.predict as P
     import airis.realtime.recommend as rmod
     sc = SCENARIOS["default"]
-    monkeypatch.setattr(rmod, "_model_predict", lambda b, s: PoseParams(torso_yaw=60.0))
+    seen = {}
+
+    def fake_predict(body, scenario, **kw):
+        seen.update(kw)
+        extra = list(kw["extra_candidates"])
+        return _fake_prediction([PoseParams(torso_yaw=60.0)] + extra, ["flow"] + ["extra"] * len(extra),
+                                [0.1] + [0.5] * len(extra))
+
+    monkeypatch.setattr(P, "predict", fake_predict)
     rec = recommend(CAPSULE_BODY, sc, model="capsule")
-    assert rec.source == "model" and rec.pose.torso_yaw == 60.0
-    # 팔 수평(90°)은 캡슐 체형(팔 0.62 m)에서 옆벽 밖이다
-    monkeypatch.setattr(rmod, "_model_predict", lambda b, s: PoseParams(shoulder_abduction=90.0))
+    assert [p for p in seen["extra_candidates"]] == [e.pose for e in STUB_TABLE["default"]]
+    assert seen["evaluator"] is rmod.patch_evaluator("capsule") and seen["nozzle"] is rmod._nozzles()
+    # 표 후보가 이겼으면 표의 이름을 쓰되 출처는 모델이다 (풀 전체에서 고른 것이라)
+    assert rec.source == "model: hybrid (extra)"
+    assert rec.label.startswith("모델 추천") and STUB_TABLE["default"][0].label in rec.label
+    assert rec.pose == PoseEncoder(sc).clip_pose(STUB_TABLE["default"][0].pose)
+    assert rec.elapsed_s > 0.0
+
+
+def test_recommend_reports_source_stats(monkeypatch):
+    """출처별 후보 수·부스 안 수·최고 점수를 ④ 표에 쓸 수 있게 돌려준다."""
+    import airis.model.predict as P
+    sc = SCENARIOS["default"]
+    cands = [PoseParams(torso_yaw=y) for y in (10.0, 20.0, 30.0, 40.0)]
+    monkeypatch.setattr(P, "predict", lambda b, s, **kw: _fake_prediction(
+        cands, ["flow", "flow", "knn", "extra"], [0.1, 0.4, 0.9, 0.3], [False, True, False, False]))
     rec = recommend(CAPSULE_BODY, sc, model="capsule")
-    assert rec.source.startswith("stub") and "회귀 모델" in rec.notes[0]
+    stats = {s.source: s for s in rec.stats}
+    assert stats["flow"].n == 2 and stats["flow"].n_feasible == 1
+    assert stats["flow"].best == pytest.approx(0.1)          # 부스 밖(0.4)은 빼고 잰다
+    assert stats["knn"].best == pytest.approx(0.9) and stats["extra"].n == 1
+    assert rec.source == "model: hybrid (knn)" and rec.label == "모델 추천"
+
+
+def test_recommend_falls_back_when_all_candidates_outside_booth(monkeypatch):
+    import airis.model.predict as P
+    sc = SCENARIOS["default"]
+    monkeypatch.setattr(P, "predict", lambda b, s, **kw: _fake_prediction(
+        [PoseParams(torso_yaw=60.0)], ["flow"], [0.1], [True]))
+    rec = recommend(CAPSULE_BODY, sc, model="capsule")
+    assert rec.source.startswith("stub") and "부스" in rec.notes[-1]
+
+
+@pytest.mark.parametrize("exc,word", [(FileNotFoundError("없다"), "산출물"),
+                                      (ImportError("torch 없음"), "torch"),
+                                      (KeyError("default"), "시나리오")])
+def test_recommend_falls_back_to_stub_with_note(monkeypatch, exc, word):
+    """모델을 못 쓰면 표로 돌아가고, 왜 그랬는지 화면에 쓸 메모를 남긴다."""
+    import airis.model.predict as P
+    def boom(body, scenario, **kw):
+        raise exc
+    monkeypatch.setattr(P, "predict", boom)
+    rec = recommend(CAPSULE_BODY, SCENARIOS["default"], model="capsule")
+    assert rec.source.startswith("stub") and rec.label == STUB_TABLE["default"][0].label
+    assert rec.notes and word in rec.notes[0]
+
+
+def test_recommend_without_artifacts_uses_stub(no_artifacts):
+    """산출물이 없는 환경(CI)에서도 표로 안내한다 — 진짜 predict 를 부른다."""
+    from airis.realtime.recommend import E4_SOURCE
+    rec = recommend(MESH_DEFAULT_BODY, SCENARIOS["default"], model="mesh")
+    assert rec.source == f"stub: {E4_SOURCE}"
+    assert rec.notes and "산출물" in rec.notes[0] and not rec.stats
+
+
+@pytest.mark.skipif(not _artifacts_exist(), reason="학습 산출물이 없다 (F 트랙 산출물)")
+@pytest.mark.parametrize("scenario", ["default", "pregnant", "wheelchair"])
+def test_recommend_with_real_artifacts(scenario):
+    """산출물이 있으면 모델 후보 + 표 후보를 함께 재채점하고, 표보다 나빠지지 않는다."""
+    sc = SCENARIOS[scenario]
+    rec = recommend(MESH_DEFAULT_BODY, sc, model="mesh")
+    if rec.source.startswith("stub"):
+        pytest.skip(f"모델을 쓸 수 없다: {rec.notes}")
+    assert rec.source.startswith("model: hybrid (")
+    assert is_inside_booth(MESH_DEFAULT_BODY, rec.pose, sc, "mesh")
+    stats = {s.source: s for s in rec.stats}
+    assert "extra" in stats and stats["extra"].n == len(STUB_TABLE[scenario])
+    best = max(s.best for s in rec.stats if s.best is not None)
+    assert best >= stats["extra"].best - 1e-9        # 표 후보도 같은 풀에 있으니 지지 않는다
 
 
 @pytest.mark.parametrize("scenario", ["default", "wheelchair"])
@@ -336,7 +439,7 @@ def test_compare_with_baselines_matches_run_baselines(scenario):
     spec.loader.exec_module(rb)
 
     sc = SCENARIOS[scenario]
-    rec_pose = recommend(CAPSULE_BODY, sc, model="capsule").pose
+    rec_pose = recommend(CAPSULE_BODY, sc, use_model=False, model="capsule").pose
     rows = compare_with_baselines(CAPSULE_BODY, sc, rec_pose, model="capsule")
     by = {r.name: r for r in rows}
     for mine, theirs in (("B0 기본", "B0"), ("B1 몸 회전", "B1"), ("B2 만세", "B2")):
@@ -360,7 +463,7 @@ def test_improvement_none_for_infeasible_baseline():
     assert improvement(rec, rows[1]) == pytest.approx(0.0)
 
 
-def test_stub_ranks_candidates_by_score_for_this_body(monkeypatch):
+def test_stub_ranks_candidates_by_score_for_this_body(monkeypatch, no_artifacts):
     """표 후보가 둘 다 부스 안이면 이 체형의 패치판 점수가 높은 쪽을 고른다."""
     import airis.realtime.recommend as rmod
     sc = SCENARIOS["default"]
@@ -509,7 +612,7 @@ def test_recover_mesh_body_noise_and_seated():
 
 
 @pytest.mark.parametrize("scenario", ["default", "pregnant", "wheelchair"])
-def test_recommend_and_compare_with_mesh_body(scenario):
+def test_recommend_and_compare_with_mesh_body(scenario, no_artifacts):
     """메시 몸: 추천은 부스 안이고, 같은 몸 모델로 채점한 B0·B1 보다 높다."""
     sc = SCENARIOS[scenario]
     rec = recommend(None, sc, model="mesh")

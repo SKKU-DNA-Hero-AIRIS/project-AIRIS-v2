@@ -193,7 +193,7 @@ def test_recommend_uses_flow_model(model, scenarios, tmp_path, monkeypatch):
 
     monkeypatch.setattr(pred, "DEFAULT_MODEL_PATH", model.save(tmp_path / "pose_flow.pt"))
     r = rec.recommend(BodyParams(), scenarios["wheelchair"], model="capsule")
-    assert r.source == "model"
+    assert r.source.startswith("model: hybrid (")     # 고른 후보의 출처까지 적는다
     assert r.pose.hip_flexion == 90.0 and r.pose.knee_flexion == 90.0
 
 
