@@ -295,9 +295,17 @@ class ParticleEvaluator(Evaluator):
           총 시간 T에서 빼므로, 두 평가기가 같은 시간을 본다.
         - **이탈**: `adhesion.kinetics.enabled`면 4.6대로 시간에 따라 떨어진다 (커널 참고).
         - **부위 합산**: 입자 수 가중이다. 입자는 첫 단계의 패치 면적에 비례해 뿌렸으므로,
-          패치판이 쓰는 "단계 면적의 시간 가중 평균"과는 스키닝으로 면적이 변한 만큼 다르다.
+          패치판이 쓰는 "단계 면적의 시간 가중 평균"과는 스키닝으로 면적이 변한 만큼 다르다
+          (메시 몸에서 단계 간 총 면적 차이는 0.4% 수준이라 작다).
+        - **비행 시간 지연**: 제거는 입자가 부스 밖으로 나간 시점에 센다. 떨어진 뒤 날아 나가는
+          데 걸리는 시간 때문에 짧은 계획일수록 닫힌 식(4.6)보다 낮게 나온다. 실측 R/R_inf
+          (입자 / 식): 1 s 0.23/0.39, 2 s 0.50/0.63, 4 s 0.79/0.87, 10 s 0.98/0.99, 20 s 0.99/1.00.
+          순위 비교에는 영향이 작지만 절대값 비교에는 감안해야 한다.
         - `extra`: `energy`, `duration_s`, `removal_by_part_per_phase` (K, 5), `infeasible`,
           그리고 입자판 값들 (`count_init`, `count_removed`, `n_steps_per_phase`, `seed`).
+          `removal_by_part_per_phase`는 **단계별 증분**(합 = 전체)이다. 패치판의 같은 이름은
+          "그 단계만 단독으로 돌렸을 때의 제거율"이라 뜻이 다르다. 불가일 때 벌점 거리 키는
+          입자판이 `d_out_m`, 패치판이 `d_out`이다 (기존 차이).
         """
         if not plan.phases:
             raise ValueError("plan.phases 가 비어 있다")
@@ -328,11 +336,13 @@ class ParticleEvaluator(Evaluator):
             steps_done = []
             energy_total = 0.0
             removed_before = np.zeros(N_PARTS, dtype=np.int64)
+            seed_nozzle = None
             for k, (phase, state) in enumerate(zip(plan.phases, states)):
                 pose = phase.pose
                 phase_nozzle = apply_zone_strengths(nozzle, plan.zone_strengths, pose.torso_yaw)
                 if k == 0:
                     self._init_candidates([state], [pose], phase_nozzle, 1)
+                    seed_nozzle = phase_nozzle          # 시드는 이 노즐로 정해진다
                 else:
                     self._advance_phase(state, pose, phase_nozzle)
                 self._upload_nozzles(phase_nozzle)
@@ -364,7 +374,7 @@ class ParticleEvaluator(Evaluator):
                    "duration_s": plan.duration_s, "removal_by_part_per_phase": per_phase,
                    "count_init": init.copy(), "count_removed": removed_before.copy(),
                    "n_steps_per_phase": steps_done,
-                   "seed": self._candidate_seed(plan.phases[0].pose, nozzle)},
+                   "seed": self._candidate_seed(plan.phases[0].pose, seed_nozzle)},
         )
 
     def _advance_phase(self, state: BodyState, pose: PoseParams,
@@ -375,7 +385,9 @@ class ParticleEvaluator(Evaluator):
         """
         f = self.f
         n = self.N
-        patch_idx = self._h["patch_idx"][:n]
+        # 재부착한 입자는 커널이 patch_idx를 -1로 바꾼다. 호스트 사본(self._h)에는 그 변경이
+        # 없으므로 반드시 GPU 필드를 읽는다 (읽지 않으면 재부착 입자가 원래 패치로 되돌아간다).
+        patch_idx = f.patch_idx.to_numpy()[:n]
         attached = (f.state.to_numpy()[:n] == 0) & (patch_idx >= 0)
         idx = patch_idx[attached]
 

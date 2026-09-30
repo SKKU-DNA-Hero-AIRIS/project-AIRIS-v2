@@ -426,7 +426,9 @@ class ParticleFields:
                         self.part[i] = cp
                         self.normal[i] = n_hit
                         self.tau_crit[i] = self.tau_crit_respawn[i]
-                        self.exposure[i] = 0.0         # 새 자리라 4.6 노출 시간도 새로 센다
+                        # 새 자리라 4.6 노출 시간은 새로 센다. detach_budget은 같은 값을
+                        # 다시 쓴다 (재부착 비율 5%라 영향이 작다).
+                        self.exposure[i] = 0.0
                         self.patch_idx[i] = -1          # 재부착 자리는 패치가 아니다: 가림 없음
                         v = ti.Vector([0.0, 0.0, 0.0], dt=ti.f32)
                         break
@@ -594,7 +596,13 @@ def pack_constants(cfg: dict, booth: dict) -> np.ndarray:
             "패치판과 갈라지므로 막는다. 1.0으로 두거나 impingement.enabled를 끄고 쓴다.")
     kinetics = (cfg["adhesion"].get("kinetics") or {})
     c[C_KIN_ON] = 1.0 if kinetics.get("enabled", False) else 0.0
-    c[C_KIN_TR] = kinetics.get("time_constant_s", 1.0) or 1.0
+    c[C_KIN_TR] = 1.0
+    if c[C_KIN_ON] > 0.5:
+        # 패치판 scoring.removal_fraction_plan과 같은 검사 (조용히 1.0으로 때우지 않는다).
+        t_r = float(kinetics["time_constant_s"])
+        if t_r <= 0.0:
+            raise ValueError(f"adhesion.kinetics.time_constant_s 는 양수여야 한다: {t_r}")
+        c[C_KIN_TR] = t_r
     slot = jet.get("slot")
     if slot:        # 없으면 0. 슬롯 노즐이 들어오면 호스트(_upload_nozzles)가 막는다.
         c[C_SLOT_H] = slot["height_m"]
