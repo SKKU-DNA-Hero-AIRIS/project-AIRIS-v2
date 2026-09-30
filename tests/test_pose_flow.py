@@ -459,10 +459,16 @@ def test_artifact_status_reports_stamps_without_warning(model, tmp_path, monkeyp
     assert flow_st["match"] is None and flow_st["mismatched"] == []
     assert flow_st["stamp"]["physics_hash"] is None
 
-    matching = model.save(tmp_path / "m2.pt")                   # 도장이 지금 설정과 같으면 True
-    again = flow.PoseFlow.load(matching)
-    again.meta.update({"nozzle_layout_hash": "n0", "physics_hash": "p1"})
-    assert pred.artifact_status(model_path=again.save(matching), knn_path=knn)["flow"]["match"] is True
+    def stamped(name, **stamp):
+        m = flow.PoseFlow.load(model.save(tmp_path / name))
+        m.meta.update(stamp)
+        return pred.artifact_status(model_path=m.save(tmp_path / name), knn_path=knn)["flow"]
+
+    assert stamped("m2.pt", nozzle_layout_hash="n0", physics_hash="p1")["match"] is True   # 전부 같을 때만 True
+    part = stamped("m3.pt", nozzle_layout_hash="n0")            # 일부만 찍혔고 그 키는 같다 → 확인 불가
+    assert part["match"] is None and part["mismatched"] == []
+    part_bad = stamped("m4.pt", nozzle_layout_hash="n9")        # 일부만 찍혔어도 다른 키가 있으면 False
+    assert part_bad["match"] is False and part_bad["mismatched"] == ["nozzle_layout_hash"]
 
     def broken():
         raise OSError("설정 없음")
