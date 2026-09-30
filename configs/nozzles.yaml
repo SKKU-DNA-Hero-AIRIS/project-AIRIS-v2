@@ -49,3 +49,20 @@ layout:
   yaw_deg: 25                       # 안쪽 법선에서 진행 방향(+x)으로 회전. 업계 자료의 20~30도 경사
   pitch_deg: 0                      # 상하 각도 (양수 = 아래로)
   strength: 1.0                     # jet.exit_velocity_mps 배수
+
+# --- 세기 구역 (docs/plan_extension.md 2절, 00_common.md 4.7) ----------------------------
+# 몸 기준 5개 구역 ZONE_NAMES = chest_low, chest_high, back_low, back_high, top 의 노즐 소속.
+# apply_zone_strengths (scenario.py) 가 노즐 위치·방향으로 구역을 정한다.
+#   - top: 아래를 향한 노즐 (방향 z 성분 < −0.5) = 상단 바 전부.
+#   - 측면: 위치 z 가 side_low_z / side_high_z 중 하나와 z_tolerance_m 안에서 같으면 low / high.
+#     벽은 몸 기준: sin(torso_yaw) ≥ 0 이면 +y 벽이 가슴 쪽(chest), 반대 벽이 등 쪽(back).
+#     |sin(torso_yaw)| < 1e−6 (정면·후면, ±180 포함)이면 +y 벽을 가슴 쪽으로 고정한다.
+# 어느 구역에도 들지 않는 노즐이 있으면 오류다. 배치의 z_levels 를 바꾸면 여기도 같이 바꾼다 (test_jet 이 확인).
+zones:
+  z_tolerance_m: 0.02
+  slot_bars:
+    side_low_z: [0.72, 0.95]         # 측면 4단 중 아래 2단
+    side_high_z: [1.18, 1.42]        # 측면 4단 중 위 2단
+  layout:
+    side_low_z: [0.5, 0.9]
+    side_high_z: [1.3, 1.7]

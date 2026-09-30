@@ -654,6 +654,25 @@ def _canonical_faces(mesh: SimMesh) -> np.ndarray:
     return np.minimum(np.arange(len(mesh.faces)), mesh.mirror_face)
 
 
+def _rest_face_part(shaped: SimMesh) -> np.ndarray:
+    """(F,) 면 부위. 몸통 앞뒤는 체형 맞춘 휴지 자세의 면 법선 x 성분(몸 전방 = +x)으로 한 번 정한다.
+
+    패치가 자세와 무관한 같은 물질점이어야 하므로(00_common.md 4.6 B 보장) 부위도 자세로 바뀌면 안 된다.
+    자세 적용 후 법선으로 판정하면 옆구리 면 2~12개가 자세에 따라 앞뒤를 오갔다. 기본 자세 PoseParams()
+    에서는 두 판정이 같다. 휴지 메시가 좌우 대칭이라 거울 짝 면은 같은 부위다.
+    """
+    from .types import PART_NAMES
+
+    cached = shaped.__dict__.get("_rest_face_part")
+    if cached is not None:
+        return cached
+    _, n = _face_areas(shaped.vertices, shaped.faces)
+    front, back = PART_NAMES.index("torso_front"), PART_NAMES.index("torso_back")
+    part = np.where((shaped.face_part == front) & (n[:, 0] <= _FRONT_BACK_TOL), back, shaped.face_part)
+    shaped.__dict__["_rest_face_part"] = part
+    return part
+
+
 def _face_areas(v: np.ndarray, f: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     cr = np.cross(v[f[:, 1]] - v[f[:, 0]], v[f[:, 2]] - v[f[:, 0]])
     a2 = np.linalg.norm(cr, axis=1)
@@ -783,16 +802,17 @@ def build_mesh_body(body: BodyParams | None, pose: PoseParams, scenario: Scenari
                     patches_per_m2: float = 2000.0, mesh: SimMesh | None = None) -> "BodyState":
     """MakeHuman sim 메시 몸 → `BodyState` (interfaces.md build_body 메시 계약).
 
-    - mesh_vertices/mesh_faces/mesh_face_part: 자세·체형 적용, 부스 좌표. 몸통 면은 법선으로 앞뒤.
+    - mesh_vertices/mesh_faces/mesh_face_part: 자세·체형 적용, 부스 좌표. 몸통 면은 휴지 자세 법선으로 앞뒤.
     - 패치: 면 위 점, 면적 비례(체형 휴지 면적 기준 확률 반올림), 법선 = 면 법선, 부위 = 면 부위.
-      y → −y 거울 짝이 정확하다 (#42 규칙).
+      y → −y 거울 짝이 정확하다 (#42 규칙). 같은 체형·시나리오·밀도면 패치 수·면·무게중심 좌표·부위가
+      자세와 무관하다 (물질점, 00_common.md 4.6). 위치·법선·면적은 스키닝된 값이라 자세에 따라 바뀐다.
     - capsules/capsule_part: 뼈에 맞춘 근사 캡슐 (몸통 여러 개 = torso_front) + 휠체어 프레임(−1).
     - patch_capsule: 패치가 놓인 면의 캡슐 (캡슐 폴백용).
     """
     from scipy.spatial.transform import Rotation
 
     from .body import _wheelchair_segments, _capsule_array
-    from .types import PART_NAMES, BodyState
+    from .types import BodyState
 
     if patches_per_m2 <= 0.0:
         raise ValueError("patches_per_m2 는 양수여야 한다")
@@ -820,10 +840,7 @@ def build_mesh_body(body: BodyParams | None, pose: PoseParams, scenario: Scenari
     f_area, f_normal = _face_areas(verts, faces)
     r_body = Rotation.from_euler("z", p.torso_yaw, degrees=True) * Rotation.from_euler("y", p.torso_pitch,
                                                                                       degrees=True)
-    forward = r_body.apply([1.0, 0.0, 0.0])
-    front, back = PART_NAMES.index("torso_front"), PART_NAMES.index("torso_back")
-    face_part = np.where((shaped.face_part == front) & (f_normal @ forward <= _FRONT_BACK_TOL),
-                         back, shaped.face_part)
+    face_part = _rest_face_part(shaped)
 
     counts, expect = _patch_counts(shaped, scale, patches_per_m2)
     pf, bary = _barycentric(counts, shaped)
