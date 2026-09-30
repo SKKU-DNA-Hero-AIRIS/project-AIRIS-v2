@@ -197,6 +197,67 @@ def test_recommend_uses_flow_model(model, scenarios, tmp_path, monkeypatch):
     assert r.pose.hip_flexion == 90.0 and r.pose.knee_flexion == 90.0
 
 
+def test_predict_rescore_options_default_unchanged_and_dedup(model, scenarios, tmp_path):
+    """단축 옵션 기본값은 지금 동작 그대로. 중복 제거는 후보를 줄이고 남은 후보만 채점한다."""
+    path = model.save(tmp_path / "m.pt")
+    sc = scenarios["default"]
+    ev = DummyEvaluator(PoseParams(shoulder_abduction=DOWN, torso_yaw=72.0), sc)
+    base = pred.predict(BodyParams(), sc, backend="flow", n_samples=32, path=path, evaluator=ev, nozzle=object())
+    assert base.n_dropped == 0 and base.screen_scores is None and base.n_rescored == 32
+
+    d = pred.predict(BodyParams(), sc, backend="flow", n_samples=32, path=path, evaluator=ev, nozzle=object(),
+                     dedup_deg=5.0)
+    assert d.n_dropped > 0 and len(d.candidates) == 32 - d.n_dropped == d.n_rescored
+    assert d.scores.shape == (len(d.candidates),) and d.pose is d.candidates[int(np.argmax(d.scores))]
+    assert all(c in base.candidates for c in d.candidates), "남은 후보는 원래 후보의 부분 집합 (순서 유지)"
+
+
+def test_predict_threads_pick_same_as_sequential(model, scenarios, tmp_path):
+    path = model.save(tmp_path / "m.pt")
+    sc = scenarios["default"]
+    ev = DummyEvaluator(PoseParams(shoulder_abduction=UP, torso_yaw=72.0), sc)
+    kw = dict(backend="flow", n_samples=24, path=path, evaluator=ev, nozzle=object(), dedup_deg=3.0)
+    a = pred.predict(BodyParams(), sc, **kw)
+    d = pred.predict(BodyParams(), sc, n_threads=3, **kw)
+    assert d.pose == a.pose and np.array_equal(d.scores, a.scores) and d.sources == a.sources
+
+
+def test_predict_screening_rescores_only_top(model, scenarios, tmp_path):
+    """선별: 모든 후보를 선별 평가기로 채점하고 상위 k 개만 최종 평가기로 다시 채점한다. 동률은 앞 후보부터."""
+    from airis.sim import EvalResult, Evaluator
+
+    path = model.save(tmp_path / "m.pt")
+    sc = scenarios["default"]
+    final_ev = DummyEvaluator(PoseParams(shoulder_abduction=DOWN, torso_yaw=72.0), sc)
+    calls = []
+
+    class _Screen(Evaluator):                    # 만세 쪽을 높게 매기는 (최종과 다른) 선별 평가기
+        def evaluate(self, pose, nozzle, body, scenario):
+            calls.append(pose)
+            return EvalResult(score=pose.shoulder_abduction / 180.0, removal_by_part=np.zeros(5),
+                              total_removal=0.0, discomfort=0.0, extra={})
+
+    p = pred.predict(BodyParams(), sc, backend="flow", n_samples=16, path=path, evaluator=final_ev, nozzle=object(),
+                     screen_evaluator=_Screen(), screen_top=3)
+    assert len(calls) == 16 and p.screen_scores.shape == (16,) and p.n_rescored == 3
+    top = np.argsort(-p.screen_scores, kind="stable")[:3]
+    assert np.isfinite(p.scores[top]).all() and np.isnan(np.delete(p.scores, top)).all()
+    assert p.pose is p.candidates[top[np.argmax(p.scores[top])]], "최종 점수로 상위 3개 중 최고"
+    assert min(p.candidates[i].shoulder_abduction for i in top) >= np.median(
+        [c.shoulder_abduction for c in p.candidates]), "선별 평가기 기준 상위만 남는다"
+
+    class _Flat(_Screen):                        # 선별 점수 동률 → 앞 후보부터
+        def evaluate(self, pose, nozzle, body, scenario):
+            return EvalResult(score=0.5, removal_by_part=np.zeros(5), total_removal=0.0, discomfort=0.0, extra={})
+
+    flat = pred.predict(BodyParams(), sc, backend="flow", n_samples=8, path=path, evaluator=final_ev,
+                        nozzle=object(), screen_evaluator=_Flat(), screen_top=2)
+    assert np.isfinite(flat.scores[:2]).all() and np.isnan(flat.scores[2:]).all()
+    small = pred.predict(BodyParams(), sc, backend="flow", n_samples=2, path=path, evaluator=final_ev,
+                         nozzle=object(), screen_evaluator=_Flat(), screen_top=3)
+    assert small.screen_scores is None and small.n_rescored == 2, "후보가 상위 개수 이하면 선별하지 않는다"
+
+
 def test_extra_candidates_are_rescored_with_samples(model, scenarios, tmp_path):
     """고정 후보(E 의 후보표 등)를 함께 재채점하면 결과가 그 후보보다 나빠지지 않는다."""
     path = model.save(tmp_path / "m.pt")

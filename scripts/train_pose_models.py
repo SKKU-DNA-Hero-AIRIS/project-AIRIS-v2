@@ -117,6 +117,9 @@ def method_stats(res) -> "object":
         edge = g[g["boundary"]]["ratio"].to_numpy(dtype=np.float64) if "boundary" in g else np.array([])
         rows.append({
             "method": m, "n": len(g), "n_evals": float(g["n_evals"].mean()),
+            # 혼합 계열의 중복 제거 뒤 후보 수 (다른 방법은 NaN)
+            "n_cands": (float(g["n_cands"].mean()) if "n_cands" in g and g["n_cands"].notna().any()
+                        else float("nan")),
             "median": float(np.nanmedian(r)), "p05": float(np.nanpercentile(r, 5)), "min": float(np.nanmin(r)),
             "below_095": float(np.mean(r < 0.95)), "infeasible": float(g["infeasible"].mean()),
             "mean_s": float(s.mean()), "p95_s": float(np.percentile(s, 95)),
@@ -143,7 +146,9 @@ def judge(stats, gate: Gate = Gate(), method: str = GATE_METHOD) -> dict:
 
 
 NAMES = {"hybrid": "혼합 (flow 8 + kNN 8 + 고정 2)", "knn+stub": "kNN + 고정 후보", "flow+stub": "flow + 고정 후보",
-         "stub": "고정 후보표(E 스텁)", "knn": "kNN", "flow": "flow"}
+         "stub": "고정 후보표(E 스텁)", "knn": "kNN", "flow": "flow",
+         "hybrid-a": "혼합 A (중복 제거)", "hybrid-b": "혼합 B (중복 제거 + 선별 b)",
+         "hybrid-c": "혼합 C (중복 제거 + 선별 c)", "hybrid-d": "혼합 D (중복 제거 + 스레드)"}
 
 
 def markdown_table(stats, verdict: dict, info: dict) -> str:
@@ -151,13 +156,14 @@ def markdown_table(stats, verdict: dict, info: dict) -> str:
     lines = [f"데이터 `{info['dataset']}` ({info['rows']}행, 도장 {info['stamp_text']}), 커밋 `{info['commit']}`, "
              f"{info['folds']}-fold, 결과 `{info['out_dir']}`",
              "",
-             "| 방법 | 재채점 | 중앙값 | 하위 5% | 최솟값 | 0.95 미만 | 불가 | 평균 응답 | 95% 응답 | 경계 하위 5% |",
-             "|---|---|---|---|---|---|---|---|---|---|"]
+             "| 방법 | 후보 | 재채점 | 중앙값 | 하위 5% | 최솟값 | 0.95 미만 | 불가 | 평균 응답 | 95% 응답 | 경계 하위 5% |",
+             "|---|---|---|---|---|---|---|---|---|---|---|"]
     for _, r in stats.iterrows():
         name = NAMES.get(r["method"], r["method"])
         if r["method"] == verdict.get("method"):
             name = f"**{name}**"
-        lines.append(f"| {name} | {r['n_evals']:.0f} | {r['median']:.4f} | {r['p05']:.4f} | {r['min']:.4f} | "
+        cands = "" if np.isnan(r.get("n_cands", float("nan"))) else f"{r['n_cands']:.1f}"
+        lines.append(f"| {name} | {cands} | {r['n_evals']:.1f} | {r['median']:.4f} | {r['p05']:.4f} | {r['min']:.4f} | "
                      f"{100 * r['below_095']:.2f}% | {100 * r['infeasible']:.1f}% | {r['mean_s']:.2f} s | "
                      f"{r['p95_s']:.2f} s | {r['boundary_p05']:.4f} |")
     mark = "합격" if verdict["passed"] else "불합격"
