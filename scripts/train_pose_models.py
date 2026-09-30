@@ -119,6 +119,9 @@ def method_stats(res) -> "object":
         edge = g[g["boundary"]]["ratio"].to_numpy(dtype=np.float64) if "boundary" in g else np.array([])
         rows.append({
             "method": m, "n": len(g), "n_evals": float(g["n_evals"].mean()),
+            # 혼합 계열의 중복 제거 뒤 후보 수 (다른 방법은 NaN)
+            "n_cands": (float(g["n_cands"].mean()) if "n_cands" in g and g["n_cands"].notna().any()
+                        else float("nan")),
             "median": float(np.nanmedian(r)), "p05": float(np.nanpercentile(r, 5)), "min": float(np.nanmin(r)),
             "below_095": float(np.mean(r < 0.95)), "infeasible": float(g["infeasible"].mean()),
             "mean_s": float(s.mean()), "p95_s": float(np.percentile(s, 95)),
@@ -145,7 +148,10 @@ def judge(stats, gate: Gate = Gate(), method: str = GATE_METHOD) -> dict:
 
 
 NAMES = {"hybrid": "혼합 (flow 8 + kNN 8 + 고정 2)", "knn+stub": "kNN + 고정 후보", "flow+stub": "flow + 고정 후보",
-         "stub": "고정 후보표(E 스텁)", "knn": "kNN", "flow": "flow"}
+         "stub": "고정 후보표(E 스텁)", "knn": "kNN", "flow": "flow",
+         "hybrid-a": "혼합 A (중복 제거)", "hybrid-b": "혼합 B (중복 제거 + 선별 b)",
+         "hybrid-c": "혼합 C (중복 제거 + 선별 c)", "hybrid-d": "혼합 D (중복 제거 + 스레드)",
+         "hybrid-e": "혼합 B + D (선별 b + 스레드)"}
 
 
 def markdown_table(stats, verdict: dict, info: dict) -> str:
@@ -153,13 +159,14 @@ def markdown_table(stats, verdict: dict, info: dict) -> str:
     lines = [f"데이터 `{info['dataset']}` ({info['rows']}행, 도장 {info['stamp_text']}), 커밋 `{info['commit']}`, "
              f"{info['folds']}-fold, 결과 `{info['out_dir']}`",
              "",
-             "| 방법 | 재채점 | 중앙값 | 하위 5% | 최솟값 | 0.95 미만 | 불가 | 평균 응답 | 95% 응답 | 경계 하위 5% |",
-             "|---|---|---|---|---|---|---|---|---|---|"]
+             "| 방법 | 후보 | 재채점 | 중앙값 | 하위 5% | 최솟값 | 0.95 미만 | 불가 | 평균 응답 | 95% 응답 | 경계 하위 5% |",
+             "|---|---|---|---|---|---|---|---|---|---|---|"]
     for _, r in stats.iterrows():
         name = NAMES.get(r["method"], r["method"])
         if r["method"] == verdict.get("method"):
             name = f"**{name}**"
-        lines.append(f"| {name} | {r['n_evals']:.0f} | {r['median']:.4f} | {r['p05']:.4f} | {r['min']:.4f} | "
+        cands = "" if np.isnan(r.get("n_cands", float("nan"))) else f"{r['n_cands']:.1f}"
+        lines.append(f"| {name} | {cands} | {r['n_evals']:.1f} | {r['median']:.4f} | {r['p05']:.4f} | {r['min']:.4f} | "
                      f"{100 * r['below_095']:.2f}% | {100 * r['infeasible']:.1f}% | {r['mean_s']:.2f} s | "
                      f"{r['p95_s']:.2f} s | {r['boundary_p05']:.4f} |")
     mark = "합격" if verdict["passed"] else "불합격"
@@ -171,6 +178,11 @@ def markdown_table(stats, verdict: dict, info: dict) -> str:
 
 
 # ---------- 6. 설치 ----------
+
+def leftover_backups(model_dir: Path, names=(FLOW_FILE, KNN_FILE)) -> list[Path]:
+    """앞선 설치가 이중 실패로 남긴 옛 산출물 백업(<이름>.prev.new). 있으면 설치하지 않는다."""
+    return [p for p in (Path(model_dir) / (n + ".prev.new") for n in names) if p.exists()]
+
 
 class InstallRollbackError(RuntimeError):
     """교체가 실패했고 되돌리기도 실패했다 (이중 실패). 옛 산출물 백업(<이름>.prev.new)이 남아 있다."""
@@ -200,7 +212,7 @@ def install(src_dir: Path, model_dir: Path, names=(FLOW_FILE, KNN_FILE)) -> list
     dsts = [model_dir / name for name in names]
     news = [d.with_name(d.name + ".new") for d in dsts]
     prevs = [d.with_name(d.name + ".prev") for d in dsts]
-    leftover = [d.with_name(d.name + ".prev.new") for d in dsts if d.with_name(d.name + ".prev.new").exists()]
+    leftover = leftover_backups(model_dir, names)
     if leftover:                                                     # 0. 확인
         raise RuntimeError(
             f"앞선 설치가 남긴 옛 산출물 백업이 있다: {', '.join(p.name for p in leftover)}. 덮어쓰지 않고 멈춘다. "
@@ -308,6 +320,14 @@ def main(argv: list[str] | None = None) -> int:
     out_dir = Path(args.out_dir) if args.out_dir else ROOT / "outputs" / exp
     out_dir.mkdir(parents=True, exist_ok=True)
     model_dir = Path(args.model_dir) if args.model_dir else default_model_dir()
+    if not args.no_install:
+        # 설치 시점(학습 + 5-fold 약 25분 뒤)이 아니라 시작에서 미리 멈춘다 (install 의 0단계 확인과 같은 조건)
+        left = leftover_backups(model_dir)
+        if left:
+            print(f"설치 폴더에 앞선 설치가 남긴 옛 산출물 백업이 있다: {', '.join(p.name for p in left)}. "
+                  "각 <이름>.prev.new 를 <이름> 으로 되돌려(또는 지금 파일이 맞으면 지워) 쌍을 맞춘 뒤 다시 돌린다. "
+                  "설치 없이 돌리려면 --no-install.", file=sys.stderr)
+            return 2
     t_all = time.perf_counter()
     timings: dict[str, float] = {}
 
