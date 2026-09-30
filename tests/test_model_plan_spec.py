@@ -52,9 +52,25 @@ def _random_plan(rng, scenario, n_phases, duration_bounds=(5.0, 20.0), wide=Fals
     return Plan([Phase(PoseParams(**v), t) for v, t in zip(phases, times)], zones)
 
 
+def spec_bounds(enc: PlanEncoder, key: str) -> tuple[float, float]:
+    """docs/plan_extension.md 2절·00_common 4.7 의 범위를 PlanEncoder 의 공개 값(limits, pose_encoder)으로 적는다.
+    1단계 yaw 만 대칭 정규화로 [0, min(90, max|범위|)] 에 든다."""
+    if key == "duration_s":
+        return enc.limits.duration_bounds_s
+    if key.startswith("share_"):
+        return 0.0, 1.0
+    if key.startswith("zone_"):
+        return 0.0, enc.limits.s_max
+    phase, _, pose_key = key.partition("_")
+    lo, hi = enc.pose_encoder.bounds_for(pose_key)
+    if phase == "p1" and pose_key == "torso_yaw":
+        return 0.0, min(90.0, max(abs(lo), abs(hi)))
+    return lo, hi
+
+
 @pytest.mark.parametrize("name", SCENARIOS)
 def test_bounds_match_encoder_from_same_config(scenarios, cfg, name):
-    """시나리오 하나로 만든 PlanSpace 와 PlanEncoder 는 같은 설정에서 같은 범위를 읽는다."""
+    """시나리오 하나로 만든 PlanSpace 는 같은 설정의 PlanEncoder 공개 값(limits, pose_encoder)으로 적은 규격 범위와 같다."""
     sc = scenarios[name]
     space = PlanSpace.from_config([sc], cfg)
     enc = PlanEncoder(sc, PlanLimits.from_config(cfg))
@@ -65,7 +81,7 @@ def test_bounds_match_encoder_from_same_config(scenarios, cfg, name):
         _, _, pose_key = key.partition("_")
         if key.startswith("p") and pose_key in sc.fixed_pose:
             continue                       # 고정 변수: 마스크로 빠지므로 PlanSpace 는 폭만 채운다
-        assert bounds[key] == pytest.approx(list(enc._bounds_for(key))), key
+        assert bounds[key] == pytest.approx(list(spec_bounds(enc, key))), key
 
 
 def test_union_space_covers_every_scenario_encoder(scenarios, cfg):
@@ -79,7 +95,7 @@ def test_union_space_covers_every_scenario_encoder(scenarios, cfg):
             _, _, pose_key = key.partition("_")
             if key.startswith("p") and pose_key in sc.fixed_pose:
                 continue
-            lo, hi = enc._bounds_for(key)
+            lo, hi = spec_bounds(enc, key)
             assert bounds[key][0] <= lo + 1e-9 and hi <= bounds[key][1] + 1e-9, (name, key)
 
 

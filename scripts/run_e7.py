@@ -35,7 +35,9 @@ import numpy as np                                            # noqa: E402
 
 from airis.optimize import baselines, cli, explog, sensitivity  # noqa: E402
 from airis.optimize.cmaes_runner import Start, run_cmaes, run_cmaes_plan  # noqa: E402
-from airis.optimize.plan_encoding import PlanLimits           # noqa: E402
+from airis.optimize.plan_encoding import (                    # noqa: E402
+    PlanLimits, plan_kinetics_stamp, plan_physics_cfg,
+)
 from airis.sim import PART_NAMES, BodyParams, PoseParams      # noqa: E402
 from airis.sim.scenario import load_physics, load_scenarios   # noqa: E402
 
@@ -49,8 +51,8 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--conditions", default=",".join(CONDITIONS))
     ap.add_argument("--scenarios", nargs="*", default=None)
     ap.add_argument("--seeds", nargs="*", type=int, default=[0])
-    ap.add_argument("--energy-weights", nargs="*", type=float, default=None,
-                    help="scoring.energy_weight 스윕. 생략 시 physics.yaml 값 하나")
+    ap.add_argument("--energy-weights", nargs="*", type=float, default=[0.0, 0.01, 0.03, 0.1],
+                    help="scoring.energy_weight 스윕 (통합·D 검토 2026-09-30). 0 이면 에너지 항 없음")
     ap.add_argument("--max-evals", type=int, default=6000, help="계획 최적화 예산 (21차원)")
     ap.add_argument("--pose-max-evals", type=int, default=3000, help="단일 자세 최적(P2·P4·시작점) 예산")
     ap.add_argument("--popsize", type=int, default=100)
@@ -75,7 +77,10 @@ def _write_csv(path: Path, rows: list[dict]) -> None:
 
 
 def with_energy_weight(base_cfg: dict, scenario, w: float):
-    """scoring.energy_weight 를 w 로 둔 설정 복사본. 키가 아직 없으면(B 의 확장 PR 전) 만들어 넣는다."""
+    """scoring.energy_weight 를 w 로 둔 설정 복사본. 키가 없으면 만들어 넣는다.
+
+    base_cfg 는 plan_physics_cfg 를 거친(= kinetics 를 켠) 설정이어야 한다.
+    """
     import copy
 
     try:
@@ -84,6 +89,16 @@ def with_energy_weight(base_cfg: dict, scenario, w: float):
         cfg = copy.deepcopy(base_cfg)
         cfg.setdefault("scoring", {})["energy_weight"] = w
         return cfg, scenario
+
+
+def PlanEncoder_counts():
+    """기록용 구역별 노즐 수 (B 의 zone_nozzle_counts, 풍량 한도에 쓰는 값과 같다)."""
+    from airis.sim.scenario import zone_nozzle_counts
+
+    try:
+        return zone_nozzle_counts()
+    except Exception:
+        return [1.0] * 5
 
 
 def plan_summary(plan) -> dict:
@@ -111,7 +126,9 @@ def main(argv: list[str] | None = None) -> int:
         print(f"없는 시나리오: {missing}", file=sys.stderr)
         return 2
 
-    base_cfg = load_physics()
+    # 계획 평가는 시간 의존 제거(kinetics)를 켠 설정으로 한다 (plan_extension.md 4절).
+    base_cfg = plan_physics_cfg(load_physics())
+    kinetics = plan_kinetics_stamp(base_cfg)
     weights = args.energy_weights or [float(base_cfg.get("scoring", {}).get("energy_weight", 0.1))]
     body = cli.dataclass_from_json(BodyParams, args.body)
     dummy_target = cli.dataclass_from_json(PoseParams, args.dummy_target) if args.dummy_target else None
@@ -124,11 +141,14 @@ def main(argv: list[str] | None = None) -> int:
     limits = PlanLimits.from_config(base_cfg)
     print(f"[{group_id}] evaluator={args.evaluator} scenarios={names} seeds={args.seeds} "
           f"conditions={conditions} energy_weights={weights} n_phases={limits.n_phases} "
-          f"nozzles={nozzle.count}({nozzle_source})")
+          f"nozzles={nozzle.count}({nozzle_source}) "
+          f"kinetics={kinetics['kinetics_enabled']}(T_r {kinetics['time_constant_s']:g} s)")
 
     rows: list[dict] = []
     plans_out: dict = {"group_id": group_id, "commit": commit, "physics_hash": physics_hash,
-                       "nozzle_hash": nozzle_hash, "args": vars(args), "scenarios": {}}
+                       "nozzle_hash": nozzle_hash, "args": vars(args), **kinetics,
+                       "zone_nozzle_counts": [float(v) for v in PlanEncoder_counts()],
+                       "scenarios": {}}
 
     for name in names:
         scenario = all_scenarios[name]
@@ -188,7 +208,7 @@ def main(argv: list[str] | None = None) -> int:
                     removal = row.pop("removal_by_part")
                     row.pop("plan")
                     rows.append({"scenario": name, "condition": cond, "energy_weight": float(w),
-                                 "seed": seed, **row, "n_evals": n_evals,
+                                 "seed": seed, **row, **kinetics, "n_evals": n_evals,
                                  "elapsed_s": round(elapsed, 2),
                                  **{f"removal_{p}": float(v) for p, v in zip(PART_NAMES, removal)}})
                     plans_out["scenarios"][name].setdefault(f"w{w:g}", {})[f"{cond}_s{seed}"] = plan_summary(plan)
@@ -205,10 +225,11 @@ def main(argv: list[str] | None = None) -> int:
     print(f"{'시나리오':<12}{'가중':>6}{'조건':>5}{'score':>10}{'에너지':>8}{'시간':>7}{'단계':>5}"
           f"{'P0 대비':>9}")
     base = {(r["scenario"], r["energy_weight"]): r["score"]
-            for r in rows if r["condition"] == "P0"}
+            for r in rows if r["condition"] == "P0" and not r["infeasible"]}
     for r in rows:
         b = base.get((r["scenario"], r["energy_weight"]))
-        imp = f"{(r['score'] - b) / abs(b):+8.0%}" if b not in (None, 0) else f"{'-':>8}"
+        imp = (f"{'불가':>8}" if r["infeasible"]
+               else f"{(r['score'] - b) / abs(b):+8.0%}" if b not in (None, 0) else f"{'-':>8}")
         print(f"{r['scenario']:<12}{r['energy_weight']:>6g}{r['condition']:>5}{r['score']:>10.4f}"
               f"{r['energy']:>8.3f}{r['duration_s']:>7.1f}{r['n_phases']:>5}{imp:>9}")
     print()

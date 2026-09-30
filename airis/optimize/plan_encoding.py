@@ -28,6 +28,7 @@ K = 2 면 21차원이다.
 """
 from __future__ import annotations
 
+import warnings
 from dataclasses import dataclass, fields
 from typing import Sequence
 
@@ -39,6 +40,9 @@ from airis.sim.scenario import zone_strength_caps
 
 from .e4 import fold_yaw
 from .encoding import PoseEncoder
+
+#: 계획 평가에서 켜야 하는 설정 (docs/plan_extension.md 4절: "false → 확장 실험에서 true").
+KINETICS_KEY = "kinetics"
 
 POSE_KEYS: list[str] = [f.name for f in fields(PoseParams)]
 YAW_KEY = "torso_yaw"
@@ -74,11 +78,42 @@ class PlanLimits:
 
 
 def _default_zone_counts() -> np.ndarray:
-    """기준 노즐 배치의 구역별 노즐 수. 배치를 읽을 수 없으면 구역마다 1개로 본다."""
+    """기준 노즐 배치의 구역별 노즐 수. 배치 파일이 없으면 구역마다 1개로 본다.
+
+    설정 오류(좌우 노즐 수 불일치 등)는 조용히 넘기지 않고 경고를 낸 뒤 폴백한다.
+    """
     try:
         return np.asarray(_load_zone_counts(), dtype=np.float64)
-    except Exception:                       # 노즐 설정을 못 읽는 단위 테스트 등
+    except FileNotFoundError:               # 노즐 설정이 없는 단위 테스트 등
         return np.ones(len(ZONE_NAMES), dtype=np.float64)
+    except Exception as exc:                # 구역 정의·배치가 어긋난 설정
+        warnings.warn(f"구역별 노즐 수를 읽지 못해 1 로 본다: {exc}", RuntimeWarning)
+        return np.ones(len(ZONE_NAMES), dtype=np.float64)
+
+
+def plan_physics_cfg(physics_cfg: dict | None = None) -> dict:
+    """계획 평가용 physics 설정 (복사본). `adhesion.kinetics.enabled` 를 켠다.
+
+    설정 파일 기본값은 false 라 그대로 두면 시간이 제거율에 영향을 주지 않아 총 시간이 하한으로 몰린다
+    (docs/plan_extension.md 4절, 통합·D 검토 2026-09-30). 계획을 다루는 모든 경로 — run_e7,
+    run_cmaes_plan 을 부르는 스크립트, 기준선 P0~P2, 계획 데이터셋, F 의 predict_plan 재채점,
+    E 의 계획 화면 — 가 이 함수를 거쳐 같은 설정을 쓴다. 입력 dict 는 바꾸지 않는다.
+    단일 자세 경로(evaluate)는 시간 항이 없는 점근값을 그대로 쓴다 (건드리지 않는다).
+    """
+    import copy
+
+    from airis.sim.scenario import load_physics
+
+    cfg = copy.deepcopy(physics_cfg if physics_cfg is not None else load_physics())
+    cfg.setdefault("adhesion", {}).setdefault(KINETICS_KEY, {})["enabled"] = True
+    return cfg
+
+
+def plan_kinetics_stamp(physics_cfg: dict) -> dict:
+    """stamp·결과 요약에 남길 시간 상수 정보."""
+    kin = (physics_cfg.get("adhesion", {}) or {}).get(KINETICS_KEY, {}) or {}
+    return {"kinetics_enabled": bool(kin.get("enabled", False)),
+            "time_constant_s": float(kin.get("time_constant_s", float("nan")))}
 
 
 def wrap_deg(deg: float) -> float:
