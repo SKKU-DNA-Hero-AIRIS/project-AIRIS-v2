@@ -555,6 +555,15 @@ def pack_constants(cfg: dict, booth: dict) -> np.ndarray:
     imp = jet.get("impingement") or {}
     c[C_IMP_ON] = 1.0 if imp.get("enabled", False) else 0.0
     c[C_IMP_K] = imp.get("wall_jet_gain", 1.0)
+    # 4.2b 충돌 영역 전단 배율 g(xi) (B PR #104)는 아직 커널에 없다. m != 1이면 패치판과
+    # 조용히 갈라지므로 막는다. 보정이 꺼져 있으면 g를 쓸 일이 없어 그대로 둔다.
+    # TODO(A): 커널 imp_one에 g(xi) = 1 + (sqrt(m) - 1)·T(xi)를 넣고 이 검사를 지운다.
+    m_factor = float(imp.get("stagnation_shear_factor", 1.0))
+    if c[C_IMP_ON] > 0.5 and m_factor != 1.0:
+        raise NotImplementedError(
+            "입자판 커널에 4.2b 충돌 영역 전단 배율 g(xi)가 아직 없다: "
+            f"jet.impingement.stagnation_shear_factor = {m_factor} (1.0만 지원). "
+            "패치판과 갈라지므로 막는다. 1.0으로 두거나 impingement.enabled를 끄고 쓴다.")
     slot = jet.get("slot")
     if slot:        # 없으면 0. 슬롯 노즐이 들어오면 호스트(_upload_nozzles)가 막는다.
         c[C_SLOT_H] = slot["height_m"]
