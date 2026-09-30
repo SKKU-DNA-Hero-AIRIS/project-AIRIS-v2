@@ -22,6 +22,8 @@ README 6절 E5, docs/proposals/flow_matching.md 5절, docs/interfaces.md "계획
     hybrid-d  중복 제거 + 스레드 재채점 (--threads, 기본 3). 고르는 자세는 hybrid-a 와 같다(테스트로 고정),
               품질 비교에서는 빼고 응답 시간만 잰다.
     hybrid-e  hybrid-b + 스레드 재채점 (선별·최종 채점 모두 스레드). 고르는 자세는 hybrid-b 와 같다, 시간만 잰다.
+    hybrid-a1 · hybrid-a2  중복 판정 각도 1° · 2° (hybrid-a 는 --dedup-deg, 기본 3°). 각도에 따른 품질 비교용
+    hybrid-bx hybrid-b + 고정 후보는 선별과 상관없이 최종 채점 (screen_keep_extra, 표보다 나빠지지 않는다)
 
 채택 기준: 중앙값이 아니라 **하위 5% 점수 비율과 0.95 미만 비율**이 stub·knn 보다 나을 것.
 중앙값 0.95(README H3)는 stub 이 이미 넘는다 (메시판 300행: 중앙값 0.996~0.999, 하위 5% 0.90~0.96).
@@ -47,7 +49,8 @@ import numpy as np                                           # noqa: E402
 from airis.optimize import cli, explog                       # noqa: E402
 from airis.sim.scenario import load_scenarios                # noqa: E402
 
-METHODS = ("hybrid", "hybrid-a", "hybrid-b", "hybrid-c", "hybrid-d", "hybrid-e",
+METHODS = ("hybrid", "hybrid-a", "hybrid-a1", "hybrid-a2", "hybrid-b", "hybrid-bx", "hybrid-c", "hybrid-d",
+           "hybrid-e",
            "flow", "flow+stub", "flow1", "knn", "knn+stub", "clsreg", "hgb", "mlp", "stub")
 RATIO_FLOOR = 0.95
 
@@ -82,6 +85,12 @@ def variant_kwargs(method: str, args) -> dict:
     """hybrid-a~d → predict 의 재채점 단축 옵션."""
     if method == "hybrid-a":
         return {"dedup_deg": args.dedup_deg}
+    if method in ("hybrid-a1", "hybrid-a2"):
+        return {"dedup_deg": float(method[-1])}
+    if method == "hybrid-bx":
+        density, top = _screen_spec(args.screen_b)
+        return {"dedup_deg": args.dedup_deg, "screen_density": density, "screen_top": top,
+                "screen_keep_extra": True}
     if method in ("hybrid-b", "hybrid-c"):
         density, top = _screen_spec(args.screen_b if method == "hybrid-b" else args.screen_c)
         return {"dedup_deg": args.dedup_deg, "screen_density": density, "screen_top": top}

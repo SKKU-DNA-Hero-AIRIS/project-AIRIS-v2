@@ -361,10 +361,15 @@ def score_candidates(evaluator: Evaluator, poses: Sequence[PoseParams], nozzle: 
 
     D 확인(2026-09-30): 패치판은 같은 인스턴스를 여러 스레드가 동시에 불러도 결과가 비트 단위로 같고,
     속도는 스레드 2~3개에서 1.6~1.7배로 포화한다 (GIL).
+    batch_evaluate 를 재정의한 평가기(입자판)는 스레드 채점을 확인하지 않았으므로 순차로 채점한다 (경고).
     """
     from airis.optimize.cmaes_runner import score_batch
 
     poses = list(poses)
+    if n_threads > 1 and type(evaluator).batch_evaluate is not Evaluator.batch_evaluate:
+        warnings.warn(f"{type(evaluator).__name__} 는 batch_evaluate 를 재정의한 평가기라 스레드 채점의 동일성이 "
+                      "확인되지 않았다. 순차로 채점한다.", RuntimeWarning)
+        n_threads = 1
     if n_threads <= 1 or len(poses) <= 1:
         return score_batch(evaluator, poses, nozzle, body, scenario)
     from concurrent.futures import ThreadPoolExecutor
@@ -388,7 +393,8 @@ def predict(body: BodyParams, scenario: Scenario, *, backend: str = "hybrid",
             evaluator: Evaluator | None = None, nozzle: NozzleConfig | None = None,
             extra_candidates: Sequence[PoseParams] = (),
             dedup_deg: float = 0.0, screen_density: float | None = None, screen_top: int = 3,
-            screen_evaluator: Evaluator | None = None, n_threads: int = 1) -> Prediction:
+            screen_evaluator: Evaluator | None = None, screen_keep_extra: bool = False,
+            n_threads: int = 1) -> Prediction:
     """후보까지 돌려주는 예측. evaluator·nozzle 을 주지 않으면 default_rescorer.
 
     backend "hybrid"(기본) = flow n_flow 개 + kNN n_knn 개 + extra_candidates, "flow"·"knn" 은 한 쪽만 쓴다.
@@ -398,9 +404,16 @@ def predict(body: BodyParams, scenario: Scenario, *, backend: str = "hybrid",
     재채점 단축 옵션 (기본값이면 지금까지와 같은 동작. 총괄 2026-09-30, E5 로 비교 중):
     - dedup_deg > 0: 관절 각도 차 최대값이 이 값 이하인 후보를 하나로 묶는다 (dedup_candidates, 고정 후보는 남김).
     - screen_density: 모든 후보를 이 패치 밀도로 먼저 채점하고 상위 screen_top 개만 최종 평가기로 다시 채점한다.
-      선별 평가기는 screen_evaluator 로 줄 수 있다 (없으면 산출물의 몸 모델로 만든 패치판).
+      선별 평가기는 screen_evaluator 로 줄 수 있다. 주지 않으면 **evaluator 를 줬더라도** 산출물 meta 의 몸 모델로
+      만든 패치판이다 (E 처럼 자기 평가기를 넘기는 쪽은 screen_evaluator 도 같은 몸 모델로 넘긴다).
       선별했으면 scores 는 최종 채점한 후보만 값이 있고 나머지는 NaN, infeasible 은 그 밖의 후보에서 선별 결과다.
-    - n_threads > 1: 채점을 스레드로 나눈다 (score_candidates). 결과는 순차와 같다.
+      **선별을 켜면 고정 후보(표)보다 나빠질 수 있다** (저밀도에서 표 후보가 탈락할 수 있다).
+      screen_keep_extra=True 면 고정 후보는 선별 결과와 상관없이 최종 채점에 넣어 표보다 나빠지지 않게 한다.
+      선별 상위가 최종 밀도에서 전부 불가면 나머지 후보도 최종 평가기로 채점해 가능한 후보를 찾는다.
+    - n_threads > 1: 채점을 스레드로 나눈다 (score_candidates). 패치판처럼 batch_evaluate 를 재정의하지 않은
+      평가기 전용이고, 재정의한 평가기(입자판)에서는 순차로 채점한다 (경고).
+    - 중복 제거도 고정 후보는 남기므로 표보다 나빠지지 않지만, R0(전부 채점)보다는 나빠질 수 있다
+      (3° 안에서도 점수가 크게 바뀌는 자세가 있다, docs/experiments_model.md 5절).
     """
 
     if backend not in BACKENDS:
@@ -440,16 +453,29 @@ def predict(body: BodyParams, scenario: Scenario, *, backend: str = "hybrid",
                                           n_threads=n_threads)
     # 선별 순위: 가능한 후보 먼저, 그 안에서 점수 내림차순, 동률은 앞 후보 (안정 정렬이라 결정적)
     key = np.where(screen_bad, -np.inf, screen) if not screen_bad.all() else screen
-    top = sorted(np.argsort(-key, kind="stable")[:max(1, int(screen_top))].tolist())
+    order = np.argsort(-key, kind="stable").tolist()
+    top = set(order[:max(1, int(screen_top))])
+    if screen_keep_extra:                    # 고정 후보는 선별에서 떨어뜨리지 않는다 (표보다 나빠지지 않게)
+        top |= {j for j, src in enumerate(sources) if src == "extra"}
+    top = sorted(top)
+    scores = np.full(len(candidates), np.nan)
+    infeasible = screen_bad.copy()
     final, final_bad = score_candidates(evaluator, [candidates[j] for j in top], nozzle, body, scenario,
                                         n_threads=n_threads)
-    i = top[_pick(final, final_bad)]
-    scores = np.full(len(candidates), np.nan)
-    scores[top] = final
-    infeasible = screen_bad.copy()
-    infeasible[top] = final_bad
+    scores[top], infeasible[top] = final, final_bad
+    rescored = list(top)
+    if final_bad.all():
+        # 최종 밀도에서 선별 상위가 전부 불가면 나머지 후보도 최종 평가기로 채점한다 (불가 추천은 안전 문제)
+        rest = [j for j in order if j not in set(top)]
+        if rest:
+            r_sc, r_bad = score_candidates(evaluator, [candidates[j] for j in rest], nozzle, body, scenario,
+                                           n_threads=n_threads)
+            scores[rest], infeasible[rest] = r_sc, r_bad
+            rescored += rest
+    rescored.sort()
+    i = rescored[_pick(scores[rescored], infeasible[rescored])]
     return Prediction(candidates[i], candidates, scores, infeasible, sources, sources[i],
-                      n_dropped=n_dropped, screen_scores=screen, n_rescored=len(top))
+                      n_dropped=n_dropped, screen_scores=screen, n_rescored=len(rescored))
 
 
 def predict_pose(body: BodyParams, scenario: Scenario, **kwargs) -> PoseParams:

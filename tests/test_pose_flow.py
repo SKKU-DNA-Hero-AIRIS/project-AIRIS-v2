@@ -263,6 +263,45 @@ def test_predict_screening_rescores_only_top(model, scenarios, tmp_path):
     assert small.screen_scores is None and small.n_rescored == 2, "후보가 상위 개수 이하면 선별하지 않는다"
 
 
+def test_predict_screening_keep_extra_and_infeasible_fallback(model, scenarios, tmp_path):
+    """선별 + 표 유지: 고정 후보는 선별에서 떨어져도 최종 채점에 들어간다 (표보다 나빠지지 않는다).
+    선별 상위가 최종 밀도에서 전부 불가면 나머지 후보를 채점해 가능한 후보를 고른다."""
+    from airis.sim import EvalResult, Evaluator
+
+    path = model.save(tmp_path / "m.pt")
+    sc = scenarios["default"]
+
+    class _Screen(Evaluator):                    # 만세 쪽을 높게 매긴다 (표 후보 90° 는 선별에서 떨어진다)
+        def evaluate(self, pose, nozzle, body, scenario):
+            return EvalResult(score=pose.shoulder_abduction / 180.0, removal_by_part=np.zeros(5),
+                              total_removal=0.0, discomfort=0.0, extra={})
+
+    extra = PoseParams(shoulder_abduction=90.0, torso_yaw=20.0)
+    final_ev = DummyEvaluator(extra, sc)         # 최종 평가기는 표 후보를 가장 높게 매긴다
+    common = dict(backend="flow", n_samples=12, path=path, evaluator=final_ev, nozzle=object(),
+                  extra_candidates=[extra], screen_evaluator=_Screen(), screen_top=3)
+    lost = pred.predict(BodyParams(), sc, **common)
+    kept = pred.predict(BodyParams(), sc, screen_keep_extra=True, **common)
+    j = kept.sources.index("extra")
+    assert np.isnan(lost.scores[j]) and lost.source != "extra", "표 후보가 선별에서 떨어지면 표보다 나빠질 수 있다"
+    assert np.isfinite(kept.scores[j]) and kept.source == "extra" and kept.n_rescored == 4
+
+    class _Ceiling(Evaluator):                   # 팔 120° 이상은 최종 밀도에서 불가 (천장)
+        def evaluate(self, pose, nozzle, body, scenario):
+            bad = pose.shoulder_abduction >= 120.0
+            return EvalResult(score=-2.0 if bad else 1.0 - pose.shoulder_abduction / 180.0,
+                              removal_by_part=np.zeros(5), total_removal=0.0, discomfort=0.0,
+                              extra={"infeasible": bad})
+
+    p = pred.predict(BodyParams(), sc, backend="flow", n_samples=16, path=path, evaluator=_Ceiling(),
+                     nozzle=object(), screen_evaluator=_Screen(), screen_top=3)
+    top = np.argsort(-p.screen_scores, kind="stable")[:3]
+    assert all(p.candidates[t].shoulder_abduction >= 120.0 for t in top), "선별 상위는 전부 만세(불가)"
+    assert p.pose.shoulder_abduction < 120.0 and not p.infeasible[p.candidates.index(p.pose)], \
+        "나머지 후보로 되돌아가 가능한 자세를 고른다"
+    assert p.n_rescored > 3
+
+
 def test_extra_candidates_are_rescored_with_samples(model, scenarios, tmp_path):
     """고정 후보(E 의 후보표 등)를 함께 재채점하면 결과가 그 후보보다 나빠지지 않는다."""
     path = model.save(tmp_path / "m.pt")
