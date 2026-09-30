@@ -1102,3 +1102,95 @@ def test_plan_extension_config_keys():
     lim = PlanLimits.from_config(CFG)
     assert (lim.n_phases, lim.duration_bounds_s, lim.min_phase_s, lim.transition_s, lim.s_max,
             lim.cap_ratio) == (2, (5.0, 20.0), 2.0, 1.5, 1.0, 1.0)
+
+
+# ---------------------------------------------------------------------------
+# 충돌 영역 전단 배율 (jet.impingement.stagnation_shear_factor m, stagnation_zone_xi ξ_z)
+# ---------------------------------------------------------------------------
+def _with_stagnation(m: float, xi_z: float | None = None) -> dict:
+    cfg = copy.deepcopy(CFG)
+    cfg["jet"]["impingement"]["stagnation_shear_factor"] = m
+    if xi_z is not None:
+        cfg["jet"]["impingement"]["stagnation_zone_xi"] = xi_z
+    return cfg
+
+
+def _slot_wall(xi: np.ndarray, s: float = 0.5):
+    """슬롯(+x, 축 +y) 을 마주 보는 벽 x = s 위, 슬롯 축에 수직(z) 방향으로 ξ·σ(s) 떨어진 점."""
+    z = np.asarray(xi, dtype=np.float64) * _slot_sigma(s)
+    pts = np.stack([np.full(len(z), s), np.zeros(len(z)), z], 1).astype(np.float32)
+    return pts, np.tile([-1.0, 0.0, 0.0], (len(z), 1)).astype(np.float32)
+
+
+def test_stagnation_factor_default_is_bit_identical():
+    """기본 m = 1 이면 ξ_z 와 무관하게 보정이 비트 단위로 같다 (현 결과 불변)."""
+    assert CFG["jet"]["impingement"]["stagnation_shear_factor"] == 1.0
+    pts, normals = _slot_wall(np.linspace(0.1, 8.0, 40))
+    base = velocity_field_per_nozzle(pts, _single_slot(), 0.0, CFG, surface_normals=normals)
+    for xi_z in (0.5, 3.0, 20.0):
+        other = velocity_field_per_nozzle(pts, _single_slot(), 0.0, _with_stagnation(1.0, xi_z),
+                                          surface_normals=normals)
+        np.testing.assert_array_equal(base, other)
+
+
+@pytest.mark.parametrize("m", [3.0, 6.0, 0.5])
+@pytest.mark.parametrize("nozzle", ["slot", "round"])
+def test_stagnation_factor_scales_wall_jet_inside_zone_only(m, nozzle):
+    """ξ ≤ ξ_z 에서 벽면 제트 항이 √m 배(전단 m 배), 밖에서는 σ 1개 폭으로 1 로 돌아간다."""
+    xi = np.array([0.5, 1.0, 2.16, 3.0, 4.0, 5.0, 9.0])
+    if nozzle == "slot":
+        pts, normals = _slot_wall(xi)
+        noz = _single_slot()
+    else:
+        s = S_WALL
+        sig = (0.5 * P.nozzle_diameter_m + P.halfwidth_spread_rate * s) / HALFWIDTH_TO_SIGMA
+        pts, normals = _wall_points(xi * sig, s=s)
+        noz = _single()
+    base = _correction_only(pts, normals, noz)
+    scaled = _correction_only(pts, normals, noz, _with_stagnation(m, 3.0))
+    ratio = np.linalg.norm(scaled[0], axis=1) / np.linalg.norm(base[0], axis=1)
+    over = np.maximum(xi - 3.0, 0.0)
+    expect = 1.0 + (np.sqrt(m) - 1.0) * np.exp(-0.5 * over ** 2)
+    np.testing.assert_allclose(ratio, expect, rtol=1e-5)
+    assert ratio[:4] == pytest.approx(np.sqrt(m), rel=1e-5)                   # 영역 안
+    assert ratio[-1] == pytest.approx(1.0, abs=1e-6)                         # 멀리 밖
+
+
+def test_stagnation_factor_multiplies_peak_wall_shear():
+    """슬롯 정면 벽의 벽면 제트 최대 지점(ξ 2.16)에서 4.2 전단이 약 m 배 (자유 제트 접선 성분은 거의 0)."""
+    from airis.sim.scoring import wall_shear
+    pts, normals = _slot_wall(np.array([2.16]))
+    taus = []
+    for m in (1.0, 3.0):
+        u = velocity_field(pts, _single_slot(), 0.0, _with_stagnation(m), surface_normals=normals)
+        taus.append(float(wall_shear(u, normals, CFG)[0]))
+    assert taus[1] / taus[0] == pytest.approx(3.0, rel=0.02)
+
+
+@pytest.mark.parametrize("key,value", [("stagnation_shear_factor", -0.1), ("stagnation_zone_xi", 0.0),
+                                       ("stagnation_zone_xi", -1.0)])
+def test_stagnation_keys_validated(key, value):
+    cfg = copy.deepcopy(CFG)
+    cfg["jet"]["impingement"][key] = value
+    with pytest.raises(ValueError, match=key):
+        jet_params(cfg)
+
+
+def test_stagnation_factor_keeps_mirror_symmetry_on_body():
+    """m ≠ 1 에서도 몸 yaw ±θ 패치 속도가 y 거울로 일대일 일치 (구역 세기와 함께)."""
+    import dataclasses
+    from scipy.spatial import cKDTree
+    cfg = _with_stagnation(4.0)
+    n = load_nozzles()
+    pose = PoseParams(torso_yaw=35.0, shoulder_abduction=150.0)
+    sc = load_scenarios()["default"]
+    a = build_body(None, pose, sc, patches_per_m2=400.0)
+    b = build_body(None, dataclasses.replace(pose, torso_yaw=-35.0), sc, patches_per_m2=400.0)
+    m = np.array([1.0, -1.0, 1.0])
+    d, i = cKDTree(b.patch_pos.astype(np.float64) * m).query(a.patch_pos.astype(np.float64))
+    assert d.max() < 1e-5
+    va = velocity_field(a.patch_pos, n, 0.0, cfg, surface_normals=a.patch_normal)
+    vb = velocity_field(b.patch_pos, n, 0.0, cfg, surface_normals=b.patch_normal)
+    np.testing.assert_allclose(va, vb[i] * m, atol=1e-4 * float(np.abs(va).max()))
+    base = velocity_field(a.patch_pos, n, 0.0, CFG, surface_normals=a.patch_normal)
+    assert np.abs(va - base).max() > 0.1                                      # 실제로 바뀐다

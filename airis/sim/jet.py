@@ -43,8 +43,17 @@ U0 = jet.slot.exit_velocity_mps × strength
     F    = (1 − exp(−ξ²/2)) / ξ           원형 (방사상 벽면 제트, u ∝ 1/ρ)
     F    = (1 − exp(−ξ²/2)) / sqrt(ξ)     슬롯 (평면 벽면 제트, u ∝ 1/√ρ)
     슬롯 끝 밖은 exp(−ρ_e'²/(2σ²)),  ρ_e' = max(|ρ_e| − L/2, 0)
-    w    = k · cosθ · U_H · F · gate(t),  k = jet.impingement.wall_jet_gain   (ξ < 1e-6 이면 0)
+    w    = k · cosθ · U_H · F · g(ξ) · gate(t),  k = jet.impingement.wall_jet_gain   (ξ < 1e-6 이면 0)
     u_corr = u + w · e_r,  e_r = r/|r|
+
+충돌 영역 전단 배율 (민감도용, 기본 m = 1 이면 g ≡ 1 로 위 식과 비트 단위로 같다):
+
+    g(ξ) = 1 + (√m − 1) · T(ξ),   T = 1 (ξ ≤ ξ_z),  exp(−(ξ − ξ_z)²/2) (ξ > ξ_z)
+    m   = jet.impingement.stagnation_shear_factor,  ξ_z = jet.impingement.stagnation_zone_xi
+
+4.2 전단은 |u_t|² 에 비례하고 정면 충돌 면의 접선 속도는 거의 w 이므로, 충돌 영역(ξ ≤ ξ_z) 전단이 약 m 배가 된다.
+벽면 제트 항 w 에만 곱한다 (자유 제트 u 는 그대로). 충돌 영역의 얇은 층류 경계층 때문에 전단이 벽면 제트
+구간의 Cf 로 잡은 값보다 크다는 문헌(Phares 2000 식 2.32, Tu & Wood 1996)과의 차이를 민감도로 보려는 손잡이다.
 
 법선 성분을 지우지 않고 면내 방사 성분만 더하므로 4.2 의 접선 투영이 u_t + w·e_r 를 만든다.
 """
@@ -80,6 +89,8 @@ class JetParams:
     slot_spread_rate: float
     impingement_enabled: bool
     wall_jet_gain: float
+    stagnation_shear_factor: float
+    stagnation_zone_xi: float
     pulse_enabled: bool
     pulse_period_s: float
     pulse_duty: float
@@ -104,7 +115,7 @@ def jet_params(cfg: dict) -> JetParams:
     imp = j["impingement"]
     slot = j["slot"]
     pulse = j["pulse"]
-    return JetParams(
+    params = JetParams(
         nozzle_diameter_m=float(j["nozzle_diameter_m"]),
         exit_velocity_mps=float(j["exit_velocity_mps"]),
         decay_constant=float(j["decay_constant"]),
@@ -115,10 +126,25 @@ def jet_params(cfg: dict) -> JetParams:
         slot_spread_rate=float(slot["spread_rate"]),
         impingement_enabled=bool(imp["enabled"]),
         wall_jet_gain=float(imp["wall_jet_gain"]),
+        stagnation_shear_factor=float(imp["stagnation_shear_factor"]),
+        stagnation_zone_xi=float(imp["stagnation_zone_xi"]),
         pulse_enabled=bool(pulse["enabled"]),
         pulse_period_s=float(pulse["period_s"]),
         pulse_duty=float(pulse["duty"]),
     )
+    if not params.stagnation_shear_factor >= 0.0:
+        raise ValueError(f"jet.impingement.stagnation_shear_factor 는 0 이상이어야 한다: {params.stagnation_shear_factor}")
+    if not params.stagnation_zone_xi > 0.0:
+        raise ValueError(f"jet.impingement.stagnation_zone_xi 는 양수여야 한다: {params.stagnation_zone_xi}")
+    return params
+
+
+def stagnation_weight(xi: np.ndarray, p: JetParams) -> np.ndarray | float:
+    """g(ξ): 충돌 영역 벽면 제트 배율 (모듈 docstring). m = 1 이면 스칼라 1.0 (곱해도 비트 불변)."""
+    if p.stagnation_shear_factor == 1.0:
+        return 1.0
+    over = np.maximum(np.asarray(xi, dtype=np.float64) - p.stagnation_zone_xi, 0.0)
+    return 1.0 + (np.sqrt(p.stagnation_shear_factor) - 1.0) * np.exp(-0.5 * over * over)
 
 
 def pulse_gate(t: float, nozzle: NozzleConfig, p: JetParams) -> np.ndarray:
@@ -273,7 +299,7 @@ def _impingement_per_nozzle(points: np.ndarray, normals: np.ndarray, nozzle: Noz
     core = 1.0 - np.exp(-0.5 * xi_safe * xi_safe)
     F = np.where(sl, core / np.sqrt(xi_safe), core / xi_safe)
     gate = pulse_gate(t, nozzle, p).astype(np.float64)[mi]
-    w = np.where(ok, p.wall_jet_gain * c * u_h * strengths * F * end * gate, 0.0)
+    w = np.where(ok, p.wall_jet_gain * c * u_h * strengths * F * end * gate, 0.0) * stagnation_weight(xi, p)
     out[mi, pi] = (w / np.where(ok, rho, 1.0))[:, None] * r           # w · e_r
     return out
 
