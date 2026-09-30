@@ -214,7 +214,7 @@ def main() -> None:
         body_model = BODY_MODELS[st.radio(
             "몸 모델", model_labels, index=1 if q.get("model") == "capsule" else 0,
             label_visibility="collapsed")]
-        st.caption("시뮬레이션 몸. 추천 표는 메시판 E4 결과이고, 부스 안 판정·점수는 고른 몸으로 다시 잽니다 "
+        st.caption("시뮬레이션 몸. 추천 표는 메시판 k14 E4 결과이고, 부스 안 판정·점수는 고른 몸으로 다시 잽니다 "
                    "(메시 2,000/m², 캡슐 400/m²).")
         st.divider()
         st.header("추천 모델")
@@ -339,8 +339,9 @@ def main() -> None:
         st.caption(f"자세 값: {pose_label(rec.pose)}")
         st.caption(f"출처: {rec.source}" + (" (추천 모델 산출물이 없을 때 쓰는 고정 후보표)"
                                               if rec.source.startswith("stub") else ""))
-        st.caption("메시판에서는 세 시나리오 모두 만세 + 옆으로 서기가 최적입니다(임산부 포함). 휠체어는 약 36° 회전. "
-                   "팔 자세(만세 / 팔 내림)는 불편도 설정에 민감합니다.")
+        st.caption("메시판에서는 세 시나리오 모두 **옆으로 돌아선 만세**가 최적입니다(임산부 포함, 15/15). "
+                   "휠체어는 약 36° 회전. 다만 임산부는 *정면* 만세라면 기본 자세보다 낮습니다"
+                   "(기준선 0.233 < 0.245) — 이득은 만세 자체가 아니라 몸을 옆으로 돌리는 데서 옵니다.")
         for note in rec.notes:
             st.info(note)
         over = rec.elapsed_s > RESPONSE_BUDGET_S
