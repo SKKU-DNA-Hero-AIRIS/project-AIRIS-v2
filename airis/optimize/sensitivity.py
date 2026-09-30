@@ -32,7 +32,8 @@ SCENARIO_PREFIX = "scenario."
 #: friction_coeff 와 slot.exit_velocity_mps 는 패치판에서 fabric_roughness_factor 와 같은 손잡이라 뺐다
 #: (roughness ×0.5 ≡ friction ×2 ≡ 출구 속도 ×√2, roughness ×2 ≡ friction ×0.5 ≡ 출구 속도 ×1/√2).
 CORE_PRESET: list[tuple[str, str, list]] = [
-    ("jet.impingement.wall_jet_gain", "value", [0.5, 2.0]),
+    # k 는 문헌 상한(슬롯 k ≤ 1.63, Phares 2000)과 작업값 주변을 본다 (총괄 2026-09-30).
+    ("jet.impingement.wall_jet_gain", "value", [1.0, 1.4, 1.6, 2.0]),
     ("jet.impingement.enabled", "value", [False]),
     ("adhesion.fabric_roughness_factor", "factor", [0.5, 2.0]),
     ("jet.slot.spread_rate", "factor", [0.75, 1.25]),

@@ -21,9 +21,10 @@ def scenarios():
 def test_apply_setting_physics_copies(scenarios):
     cfg = load_physics()
     scen = scenarios["default"]
+    before = cfg["jet"]["impingement"]["wall_jet_gain"]     # 설정값은 바뀔 수 있다 (k 1.0 → 1.4)
     new_cfg, new_scen = sensitivity.apply_setting(cfg, scen, "jet.impingement.wall_jet_gain", 2.0)
     assert new_cfg["jet"]["impingement"]["wall_jet_gain"] == 2.0
-    assert cfg["jet"]["impingement"]["wall_jet_gain"] == 1.0, "원본은 그대로"
+    assert cfg["jet"]["impingement"]["wall_jet_gain"] == before, "원본은 그대로"
     assert new_scen is scen
 
 
@@ -51,7 +52,8 @@ def test_unknown_key_raises(scenarios):
 def test_resolve_value():
     cfg = load_physics()
     scen = load_scenarios()["default"]
-    assert sensitivity.resolve_value(cfg, scen, "adhesion.fabric_roughness_factor", "factor", 2) == 0.5
+    rough = cfg["adhesion"]["fabric_roughness_factor"]       # 설정값은 바뀔 수 있다 (0.25 → 0.45)
+    assert sensitivity.resolve_value(cfg, scen, "adhesion.fabric_roughness_factor", "factor", 2) == 2 * rough
     assert sensitivity.resolve_value(cfg, scen, "jet.impingement.enabled", "value", False) is False
 
 
