@@ -45,7 +45,7 @@ from airis.sim.scenario import load_nozzle_layout, load_nozzles, load_scenarios 
 from airis.sim.types import Phase, Plan                              # noqa: E402
 
 
-def sample_plans(n: int, scenario, body: BodyParams, cfg: dict, seed: int = 0,
+def sample_plans(n: int, scenario, body: BodyParams, seed: int = 0,
                  max_phases: int = 2, duration_range: tuple[float, float] = (5.0, 20.0),
                  zero_zone_prob: float = 0.3) -> list[Plan]:
     """부스 안에 드는 계획 n개. 자세는 시나리오 범위 균등, 구역 세기는 0~1 균등."""
@@ -131,7 +131,7 @@ def main(argv: list[str] | None = None) -> int:
     scenario = load_scenarios()[args.scenario]
     nozzle = load_nozzles()
     body = MESH_DEFAULT_BODY
-    plans = sample_plans(args.n, scenario, body, cfg, seed=args.seed,
+    plans = sample_plans(args.n, scenario, body, seed=args.seed,
                          max_phases=args.max_phases, duration_range=tuple(args.duration))
     print(f"계획 {len(plans)}개, 시나리오 {args.scenario}, 입자 {args.particles}, "
           f"kinetics {cfg['adhesion']['kinetics']['enabled']}", flush=True)
