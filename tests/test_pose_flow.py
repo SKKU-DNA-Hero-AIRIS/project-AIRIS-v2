@@ -120,19 +120,19 @@ def test_save_load_reproducible(model, scenarios, tmp_path):
 def test_predict_contract_and_rescoring(model, scenarios, tmp_path):
     path = model.save(tmp_path / "m.pt")
     sc = scenarios["default"]
-    with pytest.raises(FileNotFoundError):
-        pred.predict_pose(BodyParams(), sc, path=tmp_path / "none.pt")
+    with pytest.raises(FileNotFoundError):     # flow 산출물이 없을 때 (backend="flow")
+        pred.predict_pose(BodyParams(), sc, backend="flow", path=tmp_path / "none.pt")
 
     # 재채점: 평가기가 팔 내림 봉우리를 선호하면 반반 분포에서 팔 내림을 고른다.
     target = PoseParams(shoulder_abduction=DOWN, torso_yaw=72.0, knee_flexion=5.0, elbow_flexion=2.0,
                         shoulder_flexion=-4.0)
     ev = DummyEvaluator(target, sc)
-    p = pred.predict(BodyParams(), sc, n_samples=32, path=path, evaluator=ev, nozzle=object())
+    p = pred.predict(BodyParams(), sc, backend="flow", n_samples=32, path=path, evaluator=ev, nozzle=object())
     assert p.pose.shoulder_abduction <= 45
     assert len(p.candidates) == 32 and p.scores.shape == (32,)
     assert p.pose == p.candidates[int(np.argmax(p.scores))]
 
-    only = pred.predict(BodyParams(), sc, n_samples=8, rescore=False, path=path)
+    only = pred.predict(BodyParams(), sc, backend="flow", n_samples=8, rescore=False, path=path)
     assert only.scores is None and only.pose == only.candidates[0]
 
     from dataclasses import replace
@@ -185,7 +185,9 @@ def test_recommend_uses_flow_model(model, scenarios, tmp_path, monkeypatch):
     """E 의 recommend 가 C 의 predict_pose 를 찾아 쓰고, 산출물이 없으면 스텁으로 폴백한다 (캡슐 몸)."""
     from airis.realtime import recommend as rec
 
+    # 두 산출물(flow·kNN)이 모두 없어야 스텁으로 폴백한다.
     monkeypatch.setattr(pred, "DEFAULT_MODEL_PATH", tmp_path / "missing.pt")
+    monkeypatch.setattr(pred, "DEFAULT_KNN_PATH", tmp_path / "missing.parquet")
     stub = rec.recommend(BodyParams(), scenarios["default"], model="capsule", rank_by_score=False)
     assert stub.source.startswith("stub")
 
@@ -201,11 +203,11 @@ def test_extra_candidates_are_rescored_with_samples(model, scenarios, tmp_path):
     sc = scenarios["default"]
     target = PoseParams(shoulder_abduction=95.0, torso_yaw=20.0)      # 모델이 거의 내지 않는 자세
     ev = DummyEvaluator(target, sc)
-    p = pred.predict(BodyParams(), sc, n_samples=8, path=path, evaluator=ev, nozzle=object(),
+    p = pred.predict(BodyParams(), sc, backend="flow", n_samples=8, path=path, evaluator=ev, nozzle=object(),
                      extra_candidates=[target])
     assert len(p.candidates) == 9 and p.scores.shape == (9,)
     assert p.pose == p.candidates[-1], "평가기가 가장 높게 매기는 고정 후보가 뽑혀야 한다"
-    alone = pred.predict(BodyParams(), sc, n_samples=8, path=path, evaluator=ev, nozzle=object())
+    alone = pred.predict(BodyParams(), sc, backend="flow", n_samples=8, path=path, evaluator=ev, nozzle=object())
     assert p.scores.max() >= alone.scores.max()
 
 
@@ -363,3 +365,128 @@ def test_predict_plan_contract_and_rescoring(plan_model, model, scenarios, tmp_p
     with pytest.raises(KeyError):
         pred.predict_plan(BodyParams(), replace(sc, name="stroller"), path=path,
                           evaluator=_PlanEvaluator(), nozzle=object())
+
+
+# ---------- 혼합 추천 (flow + kNN + 고정 후보), 총괄 2026-09-30 ----------
+
+def _knn_table(tmp_path, df=None, exclude=()):
+    """합성 데이터로 kNN 표 산출물을 만든다."""
+    from airis.model.knn import PoseKNN
+
+    d = synthetic_df() if df is None else df
+    if exclude:
+        d = d[~d["body_idx"].isin(exclude)]
+    d = d.assign(nozzle_layout_hash="n0", physics_hash="p0", body_model="capsule",
+                 patches_per_m2=400.0, commit="c0")
+    return PoseKNN.from_dataset(d).save(tmp_path / "pose_knn.parquet")
+
+
+def test_knn_candidates_are_nearest_and_deterministic(tmp_path, scenarios):
+    from airis.model.knn import PoseKNN
+
+    table = PoseKNN.load(_knn_table(tmp_path))
+    sc = scenarios["wheelchair"]
+    bodies = dataset.sample_bodies(300, seed=0)
+    me = bodies[7]
+    cands = table.candidates(me, sc, 3)
+    assert len(cands) == 3
+    # 학습 체형 자신을 물으면 그 체형의 자세가 첫 후보다.
+    assert cands[0].shoulder_abduction == pytest.approx(UP, abs=1e-6)
+    assert cands[0].hip_flexion == 90 and cands[0].knee_flexion == 90, "fixed_pose 적용"
+    assert [p.torso_yaw for p in cands] == [p.torso_yaw for p in table.candidates(me, sc, 3)]
+    with pytest.raises(KeyError):
+        table.candidates(me, __import__("dataclasses").replace(sc, name="stroller"), 2)
+
+
+def test_hybrid_uses_all_three_sources(tmp_path, model, scenarios):
+    path = model.save(tmp_path / "m.pt")
+    knn_path = _knn_table(tmp_path)
+    sc = scenarios["default"]
+    stub = [PoseParams(shoulder_abduction=DOWN, torso_yaw=72.0, knee_flexion=5.0, elbow_flexion=2.0,
+                       shoulder_flexion=-4.0)]
+    ev = DummyEvaluator(stub[0], sc)
+    p = pred.predict(BodyParams(), sc, n_flow=3, n_knn=4, path=path, knn_path=knn_path,
+                     evaluator=ev, nozzle=object(), extra_candidates=stub)
+    assert p.sources == ["flow"] * 3 + ["knn"] * 4 + ["extra"]
+    assert len(p.candidates) == 8 and p.scores.shape == (8,)
+    assert p.pose == p.candidates[int(np.argmax(p.scores))]
+    assert p.source == p.sources[int(np.argmax(p.scores))]
+    # 평가기가 고정 후보 자세를 목표로 삼으므로 그 후보가 뽑힌다 (extra 가 결과를 나쁘게 하지 않는다).
+    assert p.source == "extra"
+
+    same = pred.predict(BodyParams(), sc, n_flow=3, n_knn=4, path=path, knn_path=knn_path,
+                        evaluator=ev, nozzle=object(), extra_candidates=stub)
+    assert [c.shoulder_abduction for c in same.candidates] == [c.shoulder_abduction for c in p.candidates]
+
+
+def test_hybrid_falls_back_to_one_source(tmp_path, model, scenarios):
+    path = model.save(tmp_path / "m.pt")
+    knn_path = _knn_table(tmp_path)
+    sc = scenarios["default"]
+    ev = DummyEvaluator(PoseParams(shoulder_abduction=UP, torso_yaw=72.0), sc)
+
+    # flow 산출물만 없으면 kNN + extra 로 돈다 (경고 1회).
+    with pytest.warns(RuntimeWarning, match="일부만"):
+        only_knn = pred.predict(BodyParams(), sc, n_flow=3, n_knn=2, path=tmp_path / "none.pt",
+                                knn_path=knn_path, evaluator=ev, nozzle=object())
+    assert set(only_knn.sources) == {"knn"} and len(only_knn.candidates) == 2
+
+    # kNN 표만 없으면 flow + extra 로 돈다.
+    with pytest.warns(RuntimeWarning, match="일부만"):
+        only_flow = pred.predict(BodyParams(), sc, n_flow=3, n_knn=2, path=path,
+                                 knn_path=tmp_path / "none.parquet", evaluator=ev, nozzle=object())
+    assert set(only_flow.sources) == {"flow"} and len(only_flow.candidates) == 3
+
+    # 둘 다 없으면 FileNotFoundError (E 가 스텁으로 폴백한다).
+    with pytest.raises(FileNotFoundError):
+        pred.predict(BodyParams(), sc, path=tmp_path / "none.pt", knn_path=tmp_path / "none.parquet",
+                     evaluator=ev, nozzle=object())
+
+
+def test_hybrid_avoids_infeasible_with_extra_candidate(tmp_path, model, scenarios):
+    """이웃(만세)이 전부 불가인 큰 체형에서도 고정 후보 덕분에 가능한 자세를 고른다."""
+    sc = scenarios["default"]
+    knn_path = _knn_table(tmp_path)          # 합성 데이터의 wheelchair·default 최적은 만세 포함
+    safe = PoseParams(shoulder_abduction=DOWN, torso_yaw=72.0, knee_flexion=5.0, elbow_flexion=2.0,
+                      shoulder_flexion=-4.0)
+
+    class CeilingEvaluator(DummyEvaluator):
+        """벌림 90° 이상은 천장에 걸려 불가."""
+
+        def evaluate(self, pose, nozzle, body, scenario):
+            r = super().evaluate(pose, nozzle, body, scenario)
+            if pose.shoulder_abduction >= 90:
+                r.score = -1.0 - 0.1 * (pose.shoulder_abduction - 90) / 90
+                r.extra["infeasible"] = True
+            return r
+
+    ev = CeilingEvaluator(safe, sc)
+    p = pred.predict(BodyParams(height_m=1.93), sc, backend="knn", n_samples=8, knn_path=knn_path,
+                     evaluator=ev, nozzle=object(), extra_candidates=[safe])
+    assert p.source == "extra"
+    assert not p.infeasible[int(np.argmax(np.where(p.infeasible, -np.inf, p.scores)))]
+    assert p.pose.shoulder_abduction < 90
+
+
+def test_hybrid_rejects_bad_backend(tmp_path, model, scenarios):
+    path = model.save(tmp_path / "m.pt")
+    with pytest.raises(ValueError, match="backend"):
+        pred.predict(BodyParams(), scenarios["default"], backend="magic", path=path)
+    with pytest.raises(ValueError, match="n_samples"):
+        pred.predict(BodyParams(), scenarios["default"], backend="hybrid", n_samples=4, path=path)
+
+
+def test_build_pose_knn_script(tmp_path):
+    from airis.model.knn import PoseKNN
+    from scripts.build_pose_knn import main
+
+    df = synthetic_df(n=20).assign(nozzle_layout_hash="n0", physics_hash="p0", body_model="capsule",
+                                   patches_per_m2=400.0, commit="c0")
+    src = tmp_path / "ds.parquet"
+    df.to_parquet(src, index=False)
+    out = tmp_path / "knn.parquet"
+    assert main(["--dataset", str(src), "--out", str(out), "--exclude-bodies", "0", "1"]) == 0
+    table = PoseKNN.load(out)
+    assert set(table.table["body_idx"]) == set(range(2, 20))
+    assert table.meta["physics_hash"] == "p0"
+    assert sorted(table.scenario_names) == ["default", "pregnant", "wheelchair"]
