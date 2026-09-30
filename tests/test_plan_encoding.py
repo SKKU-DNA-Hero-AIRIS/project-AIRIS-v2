@@ -89,18 +89,26 @@ def test_comfort_cap_and_flow_cap(scenarios):
     assert s[ZONE_NAMES.index("back_low")] == pytest.approx(1.0)
 
     # 풍량 한도: Σ 노즐 세기가 한도를 넘으면 전 구역을 같은 비율로 줄인다.
+    # 구역별 노즐 수는 B 의 zone_nozzle_counts() (기준 배치 [2, 2, 2, 2, 4]).
+    from airis.sim.scenario import zone_nozzle_counts
+
+    counts = np.asarray(zone_nozzle_counts(), dtype=float)
     tight = PlanEncoder(scenarios["default"], PlanLimits(cap_ratio=0.5))
+    assert np.allclose(tight.zone_counts, counts)
     s = tight.clip_zone_strengths([1.0, 1.0, 1.0, 1.0, 1.0])
     assert s == pytest.approx([0.5] * 5)
     ratios = tight.clip_zone_strengths([1.0, 0.5, 0.5, 0.5, 0.5])
     assert ratios[0] / ratios[1] == pytest.approx(2.0)           # 비율 유지
-    assert ratios.mean() <= 0.5 + 1e-9
+    assert float(counts @ ratios) <= 0.5 * counts.sum() + 1e-9   # 노즐 수로 가중한 한도
 
-    # 구역별 노즐 수가 다르면 그 수로 가중한다.
-    weighted = PlanEncoder(scenarios["default"], PlanLimits(cap_ratio=1.0),
-                           zone_nozzle_counts=[4, 4, 2, 2, 0.0001])
+    # 구역별 노즐 수를 직접 주면 그 수로 가중한다 (top 이 많으면 top 을 줄이는 효과가 크다).
+    weighted = PlanEncoder(scenarios["default"], PlanLimits(cap_ratio=0.5),
+                           zone_nozzle_counts=[1, 1, 1, 1, 8])
     s = weighted.clip_zone_strengths([1.0, 1.0, 1.0, 1.0, 1.0])
-    assert s == pytest.approx([1.0] * 5)                          # 합이 한도와 같으면 그대로
+    assert s == pytest.approx([0.5] * 5)
+    assert PlanEncoder(scenarios["default"], PlanLimits(cap_ratio=1.0),
+                       zone_nozzle_counts=[1, 1, 1, 1, 8]).clip_zone_strengths(
+        [1.0] * 5) == pytest.approx([1.0] * 5)                    # 합이 한도와 같으면 그대로
 
 
 def test_normalize_mirror_front_back_and_wrap(scenarios):
