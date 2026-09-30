@@ -3,6 +3,8 @@ import csv
 import json
 import math
 
+import numpy as np
+
 import pytest
 
 from airis.optimize import e4
@@ -264,3 +266,46 @@ def test_pose_bound_scores_on_original_scale(tmp_path):
     assert data["baselines_patches_per_m2"] is None, "더미 실행에 패치 밀도를 적으면 안 된다"
     rows = list(csv.DictReader((group / "e4_summary.csv").open(encoding="utf-8")))
     assert rows[0]["pose_bound"] == "shoulder_abduction=0,90"
+
+
+def test_pose_bound_patch_discomfort_path_unchanged():
+    """패치판에서도 좁힌 시나리오는 점수를 바꾸지 않는다 (통합 2026-10-01 지적 4).
+
+    더미 평가기는 정규화 거리로만 차이를 드러낸다. 실제 실험이 쓰는 경로는 patch 평가기의
+    scoring.score(..., discomfort) 이므로 저밀도(100/m²)로 한 번 직접 확인한다.
+    같은 자세·같은 제거율인데 좁힌 시나리오로 채점하면 불편도 항이 커져 점수가 낮아진다.
+    """
+    from airis.optimize import cli
+    from airis.sim import BodyParams, PoseParams
+    from airis.sim.scenario import load_physics, load_scenarios
+
+    scenario = load_scenarios()["default"]
+    narrowed = cli.narrow_scenario(scenario, ["shoulder_abduction=0,90"])
+    body, (nozzle, _) = BodyParams(), cli.resolve_nozzles()
+    try:
+        ev = cli.make_evaluator("patch", scenario, body=body, nozzle=nozzle, patches_per_m2=100)
+    except cli.TrackNotMerged:                       # D 미병합 환경
+        pytest.skip("patch 평가기 미구현")
+
+    pose = PoseParams(shoulder_abduction=45.0, torso_yaw=70.0)
+    full = ev.evaluate(pose, nozzle, body, scenario)
+    narrow = ev.evaluate(pose, nozzle, body, narrowed)
+
+    assert full.total_removal == pytest.approx(narrow.total_removal), "제거율은 범위와 무관"
+    # 불편도 가중 0.3, 폭이 180 → 90 으로 절반이라 벌림 불편도는 2배가 된다.
+    assert narrow.discomfort > full.discomfort
+    assert full.score > narrow.score, "좁힌 시나리오로 채점하면 점수가 달라진다 (그래서 쓰면 안 된다)"
+    gap = full.score - narrow.score
+    w = float(load_physics()["scoring"]["discomfort_weight"])
+    assert gap == pytest.approx(w * (narrow.discomfort - full.discomfort), rel=1e-9)
+
+
+def test_jsonable_maps_non_finite_to_null():
+    """nan·inf 는 null 로 쓴다 — NaN 은 표준 JSON 이 아니다 (통합 2026-10-01 지적 3)."""
+    from airis.optimize import explog
+
+    out = explog._jsonable({"peak_gap": float("nan"), "hi": float("inf"),
+                            "lo": float("-inf"), "ok": 0.5, "n": 3})
+    assert out == {"peak_gap": None, "hi": None, "lo": None, "ok": 0.5, "n": 3}
+    json.dumps(out, allow_nan=False)                 # 표준 JSON 으로 직렬화된다
+    assert explog._jsonable(np.array([float("nan"), 1.0])) == [None, 1.0]

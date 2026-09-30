@@ -101,12 +101,15 @@ def main(argv: list[str] | None = None) -> int:
         print("--seeds 가 비어 있다", file=sys.stderr)
         return 2
 
-    # 좁힌 범위는 루프 전에 전부 검증한다 (뒤쪽 시나리오에서 죽으면 앞선 실행이 요약 없이 버려진다).
+    # 좁힌 범위와 시작점은 루프 전에 전부 검증한다 (뒤쪽 시나리오에서 죽으면 앞선 실행이
+    # 요약 없이 버려진다). 시작점이 범위 밖이면 여기서 경고하고 건너뛴다.
     narrowed = {n: cli.narrow_scenario(all_scenarios[n], args.pose_bound) for n in names}
 
     body = cli.dataclass_from_json(BodyParams, args.body)
     dummy_target = cli.dataclass_from_json(PoseParams, args.dummy_target) if args.dummy_target else None
     starts = cli.parse_starts(args.starts)
+    kept_starts = {n: (cli.starts_in_bounds(starts, narrowed[n]) if args.pose_bound else (starts, []))
+                   for n in names}
     nozzle, nozzle_source = cli.resolve_nozzles()
     nozzle_hash = cli.nozzle_hash(nozzle)
     physics_hash = explog.file_hash(ROOT / "configs" / "physics.yaml")
@@ -138,9 +141,8 @@ def main(argv: list[str] | None = None) -> int:
         scenario = all_scenarios[name]           # 점수 척도의 기준 (불편도 정규화 포함)
         search_scenario = narrowed[name]         # 탐색 상자
         encoder = PoseEncoder(search_scenario) if args.pose_bound else None
-        scenario_starts = starts
+        scenario_starts, dropped = kept_starts[name]
         if args.pose_bound:
-            scenario_starts, dropped = cli.starts_in_bounds(starts, search_scenario)
             print(f"  [{name}] 좁힌 탐색 상자: {cli.format_bounds_note(search_scenario, scenario)}"
                   f"  (점수·기준선은 원래 범위)")
             if dropped:
@@ -229,6 +231,8 @@ def main(argv: list[str] | None = None) -> int:
             "baselines": {c: {"score": a["score"], "infeasible": a["infeasible"]} for c, a in base.items()},
             "pose_bounds_effective": {k: list(v) for k, v in search_scenario.pose_bounds.items()
                                       if v != scenario.pose_bounds[k]},
+            "starts_used": [s.name for s in scenario_starts],
+            "starts_skipped": list(dropped),
             "baselines_patches_per_m2": args.patches_per_m2 if args.evaluator == "patch" else None,
             "baselines_rescored": ({c: {"score": a["score"], "infeasible": a["infeasible"]}
                                     for c, a in base_fine.items()} if base_fine else None),
