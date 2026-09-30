@@ -73,7 +73,7 @@
   - `nozzle_zone_index(nozzle, torso_yaw, zones=None) -> (M,)`: 노즐별 구역 번호(`ZONE_NAMES` 인덱스).
   - `zone_nozzle_counts(nozzle=None, zones=None) -> (5,)`: 구역별 노즐 수. 기준 배치 `slot_bars`는 `[2, 2, 2, 2, 4]`. `nozzle`이 `None`이면 `load_nozzles()`. C의 풍량 한도 보수(`Σ_m s_m ≤ cap_ratio · M`)에 쓴다.
   - `chest_wall_sign(torso_yaw) -> int`: 가슴 쪽 벽의 y 부호(+1 = +y 벽, −1 = −y 벽). `sin(yaw) ≥ 0`이면 +1, 정면·후면(`|sin| < 1e−6`, ±180 포함)은 +1로 고정.
-  - `zone_strength_caps(scenario) -> (5,)`: 구역별 쾌적 상한(`scenario.nozzle_strength_cap`의 구역 이름 키). 상한이 없는 구역은 `inf`. 옛 부위 키(`torso_front` → `chest_*`, `torso_back` → `back_*`)도 읽고, 겹치면 작은 값을 쓴다.
+  - `zone_strength_caps(scenario) -> (5,)`: 구역별 쾌적 상한(`scenario.nozzle_strength_cap`의 구역 이름 키). 상한이 없는 구역은 `inf`. 키는 구역 이름(`ZONE_NAMES`)이어야 하고, 다른 키(옛 부위 키 `torso_front` 등)는 `ValueError` (`load_scenarios`도 같은 검사를 한다).
 
 ### `Evaluator.batch_evaluate(candidates, body, scenario) -> (B,)` (A 오버라이드)
 
