@@ -1072,19 +1072,28 @@ def test_zone_strength_caps_pregnant_chest():
     assert np.isinf(zone_strength_caps(sc["wheelchair"])).all()
 
 
-def test_zone_strength_caps_legacy_part_keys_and_validation(tmp_path):
-    """옛 부위 키(torso_front·torso_back)는 구역으로 옮기고, 겹치면 작은 값. 모르는 키는 로드 오류."""
+@pytest.mark.parametrize("bad_key", ["torso_front", "torso_back", "head", "chest"])
+def test_zone_strength_caps_reject_non_zone_keys(tmp_path, bad_key):
+    """구역 키만 읽는다. 옛 부위 키(torso_front 등)나 모르는 키는 조용히 무시되지 않고 로드 오류다."""
+    import dataclasses
     import yaml
     raw = {"default": {"pose_bounds": {"torso_yaw": [-180, 180]},
-                       "nozzle_strength_cap": {"torso_back": 0.5, "back_high": 0.3, "top": 0.8}}}
+                       "nozzle_strength_cap": {"back_high": 0.3, "top": 0.8}}}
     p = tmp_path / "s.yaml"
     p.write_text(yaml.safe_dump(raw), encoding="utf-8")
-    np.testing.assert_array_equal(zone_strength_caps(load_scenarios(p)["default"]),
-                                  [np.inf, np.inf, 0.5, 0.3, 0.8])
-    raw["default"]["nozzle_strength_cap"] = {"head": 0.5}
+    sc = load_scenarios(p)["default"]
+    np.testing.assert_array_equal(zone_strength_caps(sc), [np.inf, np.inf, np.inf, 0.3, 0.8])
+    raw["default"]["nozzle_strength_cap"][bad_key] = 0.5
     p.write_text(yaml.safe_dump(raw), encoding="utf-8")
     with pytest.raises(ValueError, match="nozzle_strength_cap"):
         load_scenarios(p)
+    with pytest.raises(ValueError, match="nozzle_strength_cap"):                # 코드에서 직접 만든 Scenario 도
+        zone_strength_caps(dataclasses.replace(sc, nozzle_strength_cap={bad_key: 0.5}))
+
+
+def test_pregnant_cap_uses_zone_keys_only():
+    """임산부 설정에 옛 부위 키가 남아 있지 않다 (구역 키 chest_low·chest_high 0.6 만)."""
+    assert load_scenarios()["pregnant"].nozzle_strength_cap == {"chest_low": 0.6, "chest_high": 0.6}
 
 
 # ---------------------------------------------------------------------------

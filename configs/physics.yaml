@@ -117,7 +117,9 @@ scoring:
     head: 0.5
   discomfort_weight: 0.1
   # --- 계획 점수 (00_common.md 4.4 score_plan). 단일 자세 점수에는 쓰지 않는다. 전부 미보정 작업값, E3 스윕 대상.
-  energy_weight: 0.1              # w_E. 에너지 e (4.7) 가중. 스윕 0·0.05·0.1·0.2·0.4
+  # w_E. 에너지 e (4.7) 가중. 스윕 0·0.01·0.03·0.1 (C run_e7 기본). 0.1 이면 에너지 항이 제거율 차이를 압도해
+  # 작은 값 쪽으로 옮겼다. 작업값 확정은 E7 결과 뒤 총괄 결정.
+  energy_weight: 0.1
   time_weight: 0.0                # w_T. 대기 시간 T/T_ref 가중. 처리량을 반영할 때만 켠다
   reference_duration_s: 20.0      # T_ref. 제품 기본 동작 시간 (현행 운전 e = 1 의 기준)
 
