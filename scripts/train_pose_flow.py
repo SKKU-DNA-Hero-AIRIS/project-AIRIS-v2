@@ -1,4 +1,4 @@
-"""조건부 flow matching 자세 모델을 학습한다. 소유자: C. docs/proposals/flow_matching.md.
+"""조건부 flow matching 자세 모델을 학습한다. 소유자: F. docs/proposals/flow_matching.md.
 
 사용 예:
     python scripts/train_pose_flow.py --dataset data/datasets/pose_dataset_mesh.parquet

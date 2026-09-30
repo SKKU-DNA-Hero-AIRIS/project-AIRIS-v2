@@ -1,4 +1,4 @@
-"""데이터셋 → kNN 후보 표(`data/models/pose_knn.parquet`)를 만든다. 소유자: C.
+"""데이터셋 → kNN 후보 표(`data/models/pose_knn.parquet`)를 만든다. 소유자: F.
 
 혼합 추천(총괄 2026-09-30)의 kNN 쪽 산출물이다. `airis/model/predict.py` 가 읽는다.
 

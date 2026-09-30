@@ -1,4 +1,4 @@
-"""조건부 flow matching 모델. 소유자: C. 제안: docs/proposals/flow_matching.md, 확장: docs/plan_extension.md.
+"""조건부 flow matching 모델. 소유자: F. 제안: docs/proposals/flow_matching.md, 확장: docs/plan_extension.md.
 
 체형 5개 + 시나리오를 조건으로 p(출력 | 체형, 시나리오)를 학습한다. 출력은 두 가지다.
 
@@ -28,7 +28,7 @@
 계획 공간 (PlanSpace): 키 순서는 p1_<자세 7개>, …, pK_<자세 7개>, duration_s, share_1 … share_{K−1},
 zone_<ZONE_NAMES>. 대칭(좌우 거울, 앞뒤 등가)은 계획 전체에 함께 적용되므로 1단계 yaw 만 0~90° 로 접고
 나머지 단계의 yaw 는 시나리오 범위 그대로 둔다. 풍량 한도 보수·쾌적 상한은 C 의 PlanEncoder.clip_plan 몫이고,
-여기 to_plan 은 범위 자르기와 단계 시간 분할만 한다.
+여기 to_plan 은 범위 자르기와 단계 시간 분할만 한다 (predict_plan 이 채점 전에 clip_plan 을 거친다).
 
 torch 는 이 모듈의 함수 안에서 import 한다 (패키지 전체가 torch 에 묶이지 않게).
 """
