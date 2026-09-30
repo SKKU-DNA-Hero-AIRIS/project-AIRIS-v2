@@ -253,6 +253,11 @@ def test_predict_screening_rescores_only_top(model, scenarios, tmp_path):
     flat = pred.predict(BodyParams(), sc, backend="flow", n_samples=8, path=path, evaluator=final_ev,
                         nozzle=object(), screen_evaluator=_Flat(), screen_top=2)
     assert np.isfinite(flat.scores[:2]).all() and np.isnan(flat.scores[2:]).all()
+    threaded = pred.predict(BodyParams(), sc, backend="flow", n_samples=16, path=path, evaluator=final_ev,
+                            nozzle=object(), screen_evaluator=_Screen(), screen_top=3, n_threads=3)
+    assert threaded.pose == p.pose and np.array_equal(threaded.screen_scores, p.screen_scores), \
+        "선별 + 스레드(hybrid-e)는 선별(hybrid-b)과 같은 자세를 고른다"
+    assert np.array_equal(np.isnan(threaded.scores), np.isnan(p.scores))
     small = pred.predict(BodyParams(), sc, backend="flow", n_samples=2, path=path, evaluator=final_ev,
                          nozzle=object(), screen_evaluator=_Flat(), screen_top=3)
     assert small.screen_scores is None and small.n_rescored == 2, "후보가 상위 개수 이하면 선별하지 않는다"

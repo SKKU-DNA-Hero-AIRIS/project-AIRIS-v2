@@ -29,7 +29,7 @@ import numpy as np                                           # noqa: E402
 
 from airis.optimize import cli, explog                       # noqa: E402
 
-VARIANTS = ("hybrid", "hybrid-a", "hybrid-b", "hybrid-c", "hybrid-d")
+VARIANTS = ("hybrid", "hybrid-a", "hybrid-b", "hybrid-c", "hybrid-d", "hybrid-e")
 
 
 def build_parser() -> argparse.ArgumentParser:

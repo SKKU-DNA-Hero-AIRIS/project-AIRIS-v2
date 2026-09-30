@@ -84,4 +84,6 @@ def test_run_e5_variant_kwargs():
                                                             "screen_top": 5}
     assert run_e5_flow.variant_kwargs("hybrid-c", args)["screen_density"] == 800.0
     assert run_e5_flow.variant_kwargs("hybrid-d", args) == {"dedup_deg": 2.0, "n_threads": 2}
-    assert {"hybrid-a", "hybrid-b", "hybrid-c", "hybrid-d"} <= set(run_e5_flow.METHODS)
+    assert run_e5_flow.variant_kwargs("hybrid-e", args) == {"dedup_deg": 2.0, "screen_density": 500.0,
+                                                            "screen_top": 5, "n_threads": 2}
+    assert {"hybrid-a", "hybrid-b", "hybrid-c", "hybrid-d", "hybrid-e"} <= set(run_e5_flow.METHODS)

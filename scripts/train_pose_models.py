@@ -150,7 +150,8 @@ def judge(stats, gate: Gate = Gate(), method: str = GATE_METHOD) -> dict:
 NAMES = {"hybrid": "혼합 (flow 8 + kNN 8 + 고정 2)", "knn+stub": "kNN + 고정 후보", "flow+stub": "flow + 고정 후보",
          "stub": "고정 후보표(E 스텁)", "knn": "kNN", "flow": "flow",
          "hybrid-a": "혼합 A (중복 제거)", "hybrid-b": "혼합 B (중복 제거 + 선별 b)",
-         "hybrid-c": "혼합 C (중복 제거 + 선별 c)", "hybrid-d": "혼합 D (중복 제거 + 스레드)"}
+         "hybrid-c": "혼합 C (중복 제거 + 선별 c)", "hybrid-d": "혼합 D (중복 제거 + 스레드)",
+         "hybrid-e": "혼합 B + D (선별 b + 스레드)"}
 
 
 def markdown_table(stats, verdict: dict, info: dict) -> str:

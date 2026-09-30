@@ -21,6 +21,7 @@ README 6절 E5, docs/proposals/flow_matching.md 5절, docs/interfaces.md "계획
     hybrid-c  중복 제거 + 저밀도 선별 (--screen-c, 기본 800:3)
     hybrid-d  중복 제거 + 스레드 재채점 (--threads, 기본 3). 고르는 자세는 hybrid-a 와 같다(테스트로 고정),
               품질 비교에서는 빼고 응답 시간만 잰다.
+    hybrid-e  hybrid-b + 스레드 재채점 (선별·최종 채점 모두 스레드). 고르는 자세는 hybrid-b 와 같다, 시간만 잰다.
 
 채택 기준: 중앙값이 아니라 **하위 5% 점수 비율과 0.95 미만 비율**이 stub·knn 보다 나을 것.
 중앙값 0.95(README H3)는 stub 이 이미 넘는다 (메시판 300행: 중앙값 0.996~0.999, 하위 5% 0.90~0.96).
@@ -46,7 +47,7 @@ import numpy as np                                           # noqa: E402
 from airis.optimize import cli, explog                       # noqa: E402
 from airis.sim.scenario import load_scenarios                # noqa: E402
 
-METHODS = ("hybrid", "hybrid-a", "hybrid-b", "hybrid-c", "hybrid-d",
+METHODS = ("hybrid", "hybrid-a", "hybrid-b", "hybrid-c", "hybrid-d", "hybrid-e",
            "flow", "flow+stub", "flow1", "knn", "knn+stub", "clsreg", "hgb", "mlp", "stub")
 RATIO_FLOOR = 0.95
 
@@ -86,6 +87,10 @@ def variant_kwargs(method: str, args) -> dict:
         return {"dedup_deg": args.dedup_deg, "screen_density": density, "screen_top": top}
     if method == "hybrid-d":
         return {"dedup_deg": args.dedup_deg, "n_threads": args.threads}
+    if method == "hybrid-e":
+        density, top = _screen_spec(args.screen_b)
+        return {"dedup_deg": args.dedup_deg, "screen_density": density, "screen_top": top,
+                "n_threads": args.threads}
     return {}
 
 
