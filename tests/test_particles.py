@@ -898,6 +898,11 @@ def test_head_on_jet_detaches_only_with_impingement(scenario):
 
     이탈한 입자는 자유 제트(몸 쪽을 향함)에 밀려 부스 밖까지 못 나가므로 제거율이 아니라
     한 번이라도 이탈한 입자 수(state != 0)로 본다.
+
+    정면 제트가 닿는 자리가 좁아 이탈 수가 적다. 개발용 N=1000이면 한 자릿수(k 1.0에서 5개,
+    k 1.4에서 4개)라 상수 한 번만 바뀌어도 문턱에 걸린다. 그래서 이 테스트만 입자 2만 개로
+    돌리고(측정: k 1.0 → 61개, k 1.4 → 59개, 보정 끄면 둘 다 0), 절대 수가 아니라 "보정을 켜면
+    확실히 많다"는 형태로 본다.
     """
     cfg = load_physics()
     off = copy.deepcopy(cfg)
@@ -906,17 +911,18 @@ def test_head_on_jet_detaches_only_with_impingement(scenario):
                            np.array([[0.0, 1.0, 0.0]], np.float32),
                            np.array([1.0], np.float32))
     body = cylinder_body(POSE_A)
+    n_particles = 20000                      # 이 테스트만 잡음을 줄이려고 늘린다
     detached = {}
     for name, c in (("on", cfg), ("off", off)):
-        ev = ParticleEvaluator(c, max_candidates=1, particles_per_candidate=N_DEV,
+        ev = ParticleEvaluator(c, max_candidates=1, particles_per_candidate=n_particles,
                                duration_s=DURATION_DEV)
         try:
             ev.batch_evaluate_states([body], [POSE_A], head_on, scenario)
             detached[name] = int((ev.snapshot(0)["state"] != 0).sum())
         finally:
             ev.destroy()
-    assert detached["on"] > detached["off"], detached
-    assert detached["on"] >= 5, detached
+    assert detached["on"] >= 5 * max(detached["off"], 1), detached
+    assert detached["on"] >= 0.001 * n_particles, detached       # 공허 방지 (측정값의 1/3)
 
 
 # ------------------------------------------------------------ 단계 12. 프레임 덤프
