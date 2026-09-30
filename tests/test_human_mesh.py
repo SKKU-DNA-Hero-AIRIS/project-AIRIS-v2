@@ -298,3 +298,57 @@ def test_mesh_build_body_under_20ms():
         best = min(best, time.perf_counter() - t0)
     if best >= 0.020:
         assert best / best_ref < 14.0, f"메시 build_body {best * 1e3:.1f} ms, 기준 대비 {best / best_ref:.1f}배"
+
+
+# ---------------------------------------------------------------------------
+# 패치 = 물질점 (00_common.md 4.6 B 보장: 자세가 바뀌어도 패치 i 는 같은 옷 위치)
+# ---------------------------------------------------------------------------
+_MATERIAL_POSES = [PoseParams(), PoseParams(shoulder_abduction=180.0), PoseParams(shoulder_abduction=0.0),
+                   PoseParams(torso_yaw=90.0, torso_pitch=30.0, shoulder_flexion=90.0, elbow_flexion=120.0),
+                   PoseParams(torso_yaw=-135.0, hip_flexion=30.0, knee_flexion=30.0, torso_pitch=-15.0)]
+
+
+def _patch_barycentric(st) -> np.ndarray:
+    """(N,3) 자세 적용된 삼각형 안에서 패치 위치의 무게중심 좌표."""
+    tri = st.mesh_vertices[st.mesh_faces[st.patch_face]].astype(np.float64)
+    p = st.patch_pos.astype(np.float64)
+    e1, e2, q = tri[:, 1] - tri[:, 0], tri[:, 2] - tri[:, 0], p - tri[:, 0]
+    d11, d12, d22 = (e1 * e1).sum(1), (e1 * e2).sum(1), (e2 * e2).sum(1)
+    q1, q2 = (q * e1).sum(1), (q * e2).sum(1)
+    den = d11 * d22 - d12 * d12
+    b1, b2 = (d22 * q1 - d12 * q2) / den, (d11 * q2 - d12 * q1) / den
+    return np.stack([1.0 - b1 - b2, b1, b2], axis=1)
+
+
+@pytest.mark.parametrize("scenario", ["default", "pregnant", "wheelchair"])
+@pytest.mark.parametrize("ppm", [400.0, 1500.0])
+def test_mesh_patches_are_material_points(scenario, ppm):
+    """같은 체형·시나리오·밀도면 자세와 무관하게 패치 수·면·면 안 위치(무게중심 좌표)·부위가 같다.
+
+    계획 평가(4.6)가 단계마다 build_body 를 다시 불러도 패치 i 의 제거율을 단계끼리 이어 붙일 수 있다.
+    위치·법선·면적은 스키닝된 값이라 자세에 따라 바뀐다 (패치 면적 합은 ±5% 안, 400/m² 에서 최대 2.5%).
+    """
+    ref = None
+    for pose in _MATERIAL_POSES:
+        st = build_body(MH, pose, SC[scenario], ppm, model="mesh")
+        bary = _patch_barycentric(st)
+        assert np.abs(bary.sum(axis=1) - 1.0).max() < 1e-6 and bary.min() > -1e-4
+        if ref is None:
+            ref, ref_bary = st, bary
+            continue
+        assert st.patch_pos.shape == ref.patch_pos.shape
+        np.testing.assert_array_equal(st.patch_face, ref.patch_face)
+        np.testing.assert_array_equal(st.patch_part, ref.patch_part)
+        np.testing.assert_array_equal(st.mesh_face_part, ref.mesh_face_part)
+        np.testing.assert_array_equal(st.patch_capsule, ref.patch_capsule)
+        np.testing.assert_allclose(bary, ref_bary, atol=2e-4)
+        assert st.patch_area.sum() == pytest.approx(ref.patch_area.sum(), rel=0.05)
+
+
+def test_mesh_torso_front_back_fixed_at_rest_matches_default_pose():
+    """몸통 앞뒤는 휴지 자세 법선으로 정한다. 기본 자세 PoseParams() 에서는 자세 적용 후 법선 판정과 같다."""
+    st = build_body(MH, PoseParams(), SC["default"], 2000.0, model="mesh")
+    d = st.patch_normal[:, 0]
+    torso = np.isin(st.patch_part, [FRONT, BACK])
+    posed = np.where(d[torso] <= 1e-9, BACK, FRONT)
+    np.testing.assert_array_equal(st.patch_part[torso], posed)

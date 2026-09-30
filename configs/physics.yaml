@@ -13,7 +13,7 @@ jet:
     # 슬롯(평면) 제트, 00_common.md 4.1b. 기준 장비 퓨리움 PURIUM-10000-P 의 크로스팬 토출구.
     # NozzleConfig.slot_axis 가 있는 노즐만 이 키를 쓴다. 위 원형 노즐 키는 원형 배치 비교용으로 남긴다.
     height_m: 0.022                 # 슬롯 높이 h. 이미지 추정, 퓨리움 확인 대기
-    # 출구 속도 = 크로스팬 1개 풍량 ÷ 슬롯 면적: 9.2/60 ÷ (0.60 m × 0.022 m) = 11.6 m/s. 바 1개 = 팬 1개 (상단 바는 strength 2).
+    # 출구 속도 = 크로스팬 1개 풍량 ÷ 슬롯 면적: 9.2/60 ÷ (0.60 m × 0.022 m) = 11.6 m/s. 바 1개 = 팬 1개 (측면·상단 모두 strength 1).
     # 9.2 m^3/min 은 팬 1개 값이다: 사양 "크로스팬 단품 9.2 m^3/min × 12개" = 110.4 ≈ "전체 송풍량 110 m^3/min".
     # 슬롯 치수(0.60 × 0.022)만 이미지 추정이다. 퓨리움 확인 대기.
     exit_velocity_mps: 11.6
@@ -61,6 +61,11 @@ adhesion:                         # rock'n'roll 모델 근사
   # 보정 없이(법선을 넘기지 않는 평가기) 이 값을 쓰면 기준 자세 R ≈ 1.6% 다.
   fabric_roughness_factor: 0.25
   redeposition_prob: 0.05
+  kinetics:
+    # 시간 의존 제거 R(t) = R∞·(1 − exp(−t/T_r)) (00_common.md 4.6). 계획 평가 evaluate_plan 에만 적용하고
+    # 단일 자세 evaluate 는 시간 항이 없는 점근값(4.3)을 유지한다. 확장 실험(E7)에서 true 로 켠다.
+    enabled: false
+    time_constant_s: 2.0          # T_r. 미보정 작업값 (docs/plan_extension.md 4절 추정), E3 스윕 1·2·5
 
 simulation:
   duration_s: 3.0
@@ -76,3 +81,23 @@ scoring:
     legs: 0.8
     head: 0.5
   discomfort_weight: 0.1
+  # --- 계획 점수 (00_common.md 4.4 score_plan). 단일 자세 점수에는 쓰지 않는다. 전부 미보정 작업값, E3 스윕 대상.
+  energy_weight: 0.1              # w_E. 에너지 e (4.7) 가중. 스윕 0·0.05·0.1·0.2·0.4
+  time_weight: 0.0                # w_T. 대기 시간 T/T_ref 가중. 처리량을 반영할 때만 켠다
+  reference_duration_s: 20.0      # T_ref. 제품 기본 동작 시간 (현행 운전 e = 1 의 기준)
+
+fan:
+  # 구역 세기·풍량·에너지 (00_common.md 4.7). 세기 s 는 jet.slot.exit_velocity_mps 배수 (노즐 m 의 s_m =
+  # 구역 세기 × nozzles.yaml strength). 전부 미보정 작업값, E3 스윕 대상. 팬별 속도 제어·정격 초과 운전 가능
+  # 여부는 퓨리움 확인 대기 (개별 제어가 안 되면 구역을 전체 1개로 줄인다, docs/plan_extension.md 9절).
+  rated_flow_m3_min: 9.2          # 팬 1개 정격 풍량 (퓨리움 사양 "크로스팬 단품 9.2 m^3/min × 12개"). Q_m = s_m × 이 값
+  s_max: 1.0                      # 구역 세기 상한. 현 장비 1.0, 재배분 실험 1.5
+  cap_ratio: 1.0                  # 총 풍량 한도 Σ_m s_m ≤ cap_ratio × M. 추가 실험 0.7
+  power_exponent: 3               # 에너지 e ∝ Σ s_m^p (팬 상사 법칙 p = 3). 스윕 2·3
+
+plan:
+  # 계획(자세 순서 + 시간 + 구역 세기) 범위 (docs/plan_extension.md 2·4절, C 의 PlanLimits 가 읽는다). 미보정 작업값.
+  n_phases: 2                     # 단계 수 K. 21차원. 3단계는 후속
+  duration_bounds_s: [5.0, 20.0]  # 총 시간 T 범위 (제품 설명서의 체류 시간)
+  min_phase_s: 2.0                # 단계 최소 시간 (추정)
+  transition_s: 1.5               # 단계 사이 자세 전환 시간. 이 동안 제거 0 (추정)

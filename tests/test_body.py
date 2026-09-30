@@ -345,3 +345,38 @@ def test_zero_yaw_body_is_its_own_mirror(patches_per_m2):
     dist, idx = _mirror_pairs(a, a)
     assert dist.max() < 1e-6
     assert len(np.unique(idx)) == len(idx)
+
+
+_MATERIAL_POSES = [PoseParams(), PoseParams(shoulder_abduction=180.0), PoseParams(shoulder_abduction=0.0),
+                   PoseParams(torso_yaw=90.0, torso_pitch=30.0, shoulder_flexion=90.0, elbow_flexion=120.0),
+                   PoseParams(torso_yaw=-135.0, hip_flexion=30.0, knee_flexion=30.0, torso_pitch=-15.0)]
+
+
+def _capsule_coords(st: BodyState) -> tuple[np.ndarray, np.ndarray]:
+    """(N,) 패치의 캡슐 축 방향 매개변수 (0 = p0, 1 = p1, 반구는 범위 밖)와 (N,) 축까지 거리."""
+    cap = st.capsules[st.patch_capsule].astype(np.float64)
+    p0, p1 = cap[:, 0:3], cap[:, 3:6]
+    ax = p1 - p0
+    L2 = np.maximum((ax * ax).sum(1), 1e-30)
+    q = st.patch_pos.astype(np.float64) - p0
+    t = (q * ax).sum(1) / L2
+    foot = p0 + np.clip(t, 0.0, 1.0)[:, None] * ax
+    return np.where(L2 > 1e-20, t, 0.0), np.linalg.norm(st.patch_pos - foot, axis=1)
+
+
+@pytest.mark.parametrize("scenario", ["default", "pregnant", "wheelchair"])
+def test_capsule_patches_are_material_points(scenario):
+    """캡슐 마네킹도 자세와 무관하게 패치 수·캡슐·부위·면적·캡슐 위 위치가 같다 (00_common.md 4.6 B 보장)."""
+    ref = None
+    for pose in _MATERIAL_POSES:
+        st = build_body(BodyParams(), pose, SCENARIOS[scenario], patches_per_m2=400.0)
+        t, rad = _capsule_coords(st)
+        if ref is None:
+            ref, ref_t, ref_rad = st, t, rad
+            continue
+        assert st.patch_pos.shape == ref.patch_pos.shape
+        np.testing.assert_array_equal(st.patch_capsule, ref.patch_capsule)
+        np.testing.assert_array_equal(st.patch_part, ref.patch_part)
+        np.testing.assert_allclose(st.patch_area, ref.patch_area, rtol=1e-6)
+        np.testing.assert_allclose(t, ref_t, atol=1e-5)
+        np.testing.assert_allclose(rad, ref_rad, atol=1e-5)          # 몸통 타원 단면 포함, 축까지 거리 불변

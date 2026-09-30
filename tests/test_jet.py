@@ -897,3 +897,208 @@ def test_velocity_field_under_5ms(layout):
     pts = _booth_points(np.random.default_rng(1), 3600)
     _assert_time_budget(lambda: velocity_field(pts, nz, 0.0, CFG),
                         budget_s=0.005, max_ratio=10.0, label="velocity_field")
+
+
+# ---------------------------------------------------------------------------
+# 세기 구역 (docs/plan_extension.md 2절, 00_common.md 4.7, interfaces.md apply_zone_strengths)
+# ---------------------------------------------------------------------------
+from airis.sim.scenario import (  # noqa: E402
+    CHEST_SIN_EPS, apply_zone_strengths, chest_wall_sign, nozzle_zone_index, zone_config,
+    zone_nozzle_counts, zone_strength_caps,
+)
+from airis.sim.types import PART_NAMES, ZONE_NAMES  # noqa: E402
+
+ZI = {z: i for i, z in enumerate(ZONE_NAMES)}
+_ZONE_S = np.array([0.9, 0.7, 0.4, 0.2, 0.55])           # 구역마다 다른 값이라 매핑이 틀리면 보인다
+_YAWS = [0.0, 20.0, 45.0, 89.0, 90.0, 135.0, 179.0, 180.0, -180.0, -30.0, -90.0, -150.0]
+
+
+def _y_mirror_index(nozzle: NozzleConfig) -> np.ndarray:
+    """노즐 m 의 y 거울 노즐 번호 (x, −y, z)."""
+    pos = nozzle.positions.astype(np.float64)
+    d = np.linalg.norm(pos[:, None, :] - (pos * [1.0, -1.0, 1.0])[None, :, :], axis=2)
+    idx = d.argmin(axis=1)
+    assert d[np.arange(len(pos)), idx].max() < 1e-6 and len(np.unique(idx)) == len(idx)
+    return idx
+
+
+@pytest.mark.parametrize("layout", ["slot_bars", "layout"])
+def test_zone_definition_partitions_side_levels(layout):
+    """구역 z 정의가 배치의 측면 z_levels 를 정확히 둘로 나눈다 (배치를 바꾸고 구역을 안 바꾸면 실패)."""
+    zones = zone_config(layout)
+    levels = RAW[layout]["side"]["z_levels"] if layout == "slot_bars" else RAW[layout]["z_levels"]
+    assert sorted(zones["side_low_z"] + zones["side_high_z"]) == sorted(levels)
+    assert max(zones["side_low_z"]) < min(zones["side_high_z"])
+
+
+def test_zone_nozzle_counts_slot_bars():
+    """기준 배치: 가슴 쪽·등 쪽 벽 low·high 각 2개, 천장 바 4개. 원형 비교 배치는 top 없음."""
+    np.testing.assert_array_equal(zone_nozzle_counts(), [2, 2, 2, 2, 4])
+    np.testing.assert_array_equal(zone_nozzle_counts(load_nozzles(layout="layout"), zone_config("layout")),
+                                  [4, 4, 4, 4, 0])
+
+
+def test_zone_membership_matches_heights_and_walls():
+    """slot_bars: low = z 0.72·0.95, high = 1.18·1.42, top = 아래를 향한 상단 바. yaw 90 이면 +y 벽이 가슴 쪽."""
+    n = load_nozzles()
+    idx = nozzle_zone_index(n, 90.0)
+    z, y, dz = n.positions[:, 2], n.positions[:, 1], n.directions[:, 2]
+    top = dz < -0.5
+    assert top.sum() == 4 and (idx[top] == ZI["top"]).all()
+    side = ~top
+    low = side & (z < 1.05)
+    assert np.allclose(np.sort(np.unique(z[low])), [0.72, 0.95], atol=1e-6)
+    assert np.allclose(np.sort(np.unique(z[side & ~low])), [1.18, 1.42], atol=1e-6)
+    assert (idx[low & (y > 0)] == ZI["chest_low"]).all() and (idx[low & (y < 0)] == ZI["back_low"]).all()
+    assert (idx[side & ~low & (y > 0)] == ZI["chest_high"]).all()
+    assert (idx[side & ~low & (y < 0)] == ZI["back_high"]).all()
+
+
+def test_chest_wall_sign_rule():
+    """sin(yaw) ≥ 0 → +y, 정면·후면(±180 포함)은 +y 고정."""
+    for yaw in (0.0, 1.0, 90.0, 179.0, 180.0, -180.0, 360.0, -360.0, 1e-9, -1e-9, 180.0 + 1e-9):
+        assert chest_wall_sign(yaw) == 1, yaw
+    for yaw in (-1.0, -90.0, -179.0, 181.0, 270.0):
+        assert chest_wall_sign(yaw) == -1, yaw
+    assert abs(np.sin(np.deg2rad(-180.0))) < CHEST_SIN_EPS          # 부동소수 잡음이 한계 안
+
+
+@pytest.mark.parametrize("yaw", [0.0, 60.0, 180.0, -180.0, -45.0])
+def test_all_ones_is_identity_and_input_untouched(yaw):
+    n = load_nozzles()
+    before = copy.deepcopy(n)
+    out = apply_zone_strengths(n, np.ones(len(ZONE_NAMES)), yaw)
+    np.testing.assert_array_equal(out.strengths, n.strengths)
+    for f in ("positions", "directions", "slot_axis", "slot_length", "strengths"):
+        np.testing.assert_array_equal(getattr(n, f), getattr(before, f))
+        assert getattr(out, f) is not getattr(n, f)                   # 새 배열
+    assert out.strengths.dtype == np.float32
+
+
+def test_zone_strength_multiplies_base_strength():
+    """s_m = 구역 세기 × 배치 strength (배치 strength 가 1 이 아니어도)."""
+    n = load_nozzles()
+    base = copy.deepcopy(n)
+    base.strengths = np.linspace(0.5, 1.6, n.count).astype(np.float32)
+    out = apply_zone_strengths(base, _ZONE_S, 30.0)
+    np.testing.assert_allclose(out.strengths, base.strengths * _ZONE_S[nozzle_zone_index(n, 30.0)], rtol=1e-6)
+
+
+@pytest.mark.parametrize("yaw", _YAWS)
+def test_zone_strengths_left_right_mirror(yaw):
+    """좌우 거울: yaw → −yaw 이면 노즐 세기가 y 거울 노즐로 옮겨간다 (구역은 몸 기준이라 세기 값은 그대로).
+
+    |sin yaw| < ε (0·±180) 은 가슴 쪽 벽을 +y 로 고정하므로 거울이 아니라 같은 매핑이다 (정규화 동률 규칙은 C).
+    """
+    n = load_nozzles()
+    a = apply_zone_strengths(n, _ZONE_S, yaw).strengths
+    b = apply_zone_strengths(n, _ZONE_S, -yaw).strengths
+    if abs(np.sin(np.deg2rad(yaw))) < CHEST_SIN_EPS:
+        np.testing.assert_array_equal(a, b)
+    else:
+        np.testing.assert_array_equal(a, b[_y_mirror_index(n)])
+
+
+@pytest.mark.parametrize("yaw", _YAWS)
+def test_zone_strengths_front_back_equivalent(yaw):
+    """앞뒤 등가: yaw θ 와 180° − θ 는 가슴 쪽 벽이 같아 노즐 세기가 같다 (360° 감기도 같음)."""
+    n = load_nozzles()
+    a = apply_zone_strengths(n, _ZONE_S, yaw).strengths
+    for other in (180.0 - yaw, yaw + 360.0, yaw - 360.0):
+        np.testing.assert_array_equal(a, apply_zone_strengths(n, _ZONE_S, other).strengths)
+
+
+@pytest.mark.parametrize("scenario", ["default", "pregnant"])
+@pytest.mark.parametrize("yaw", [35.0, 90.0])
+def test_zone_mirror_gives_mirrored_velocity_on_body(scenario, yaw):
+    """물리 대칭: 몸 yaw ±θ 에 같은 구역 세기를 입히면 패치 속도(4.2b 보정 포함)가 y 거울로 일대일 일치."""
+    import dataclasses
+    from scipy.spatial import cKDTree
+    n = load_nozzles()
+    pose = PoseParams(torso_yaw=yaw, shoulder_abduction=150.0)
+    sc = load_scenarios()[scenario]
+    a = build_body(None, pose, sc, patches_per_m2=400.0)
+    b = build_body(None, dataclasses.replace(pose, torso_yaw=-yaw), sc, patches_per_m2=400.0)
+    m = np.array([1.0, -1.0, 1.0])
+    d, i = cKDTree(b.patch_pos.astype(np.float64) * m).query(a.patch_pos.astype(np.float64))
+    assert d.max() < 1e-5
+    va = velocity_field(a.patch_pos, apply_zone_strengths(n, _ZONE_S, yaw), 0.0, CFG,
+                        surface_normals=a.patch_normal)
+    vb = velocity_field(b.patch_pos, apply_zone_strengths(n, _ZONE_S, -yaw), 0.0, CFG,
+                        surface_normals=b.patch_normal)
+    np.testing.assert_allclose(va, vb[i] * m, atol=1e-4 * float(np.abs(va).max()))
+
+
+def test_chest_zone_faces_torso_front():
+    """가슴 쪽 벽 = 몸통 앞면이 향하는 벽: torso_front 패치 법선의 y 평균 부호가 chest 벽 부호와 같다."""
+    front = PART_NAMES.index("torso_front")
+    for yaw in (30.0, 90.0, 150.0, -30.0, -90.0, -150.0):
+        st = build_body(None, PoseParams(torso_yaw=yaw), load_scenarios()["default"], patches_per_m2=400.0)
+        ny = st.patch_normal[st.patch_part == front, 1].mean()
+        assert np.sign(ny) == chest_wall_sign(yaw), yaw
+
+
+def test_zero_zone_silences_only_that_zone():
+    """구역 하나를 0 으로 두면 그 구역 노즐만 세기 0."""
+    n = load_nozzles()
+    idx = nozzle_zone_index(n, 60.0)
+    for k, name in enumerate(ZONE_NAMES):
+        s = np.ones(len(ZONE_NAMES))
+        s[k] = 0.0
+        out = apply_zone_strengths(n, s, 60.0)
+        assert (out.strengths[idx == k] == 0).all() and (out.strengths[idx != k] > 0).all(), name
+
+
+@pytest.mark.parametrize("bad", [np.ones(4), np.ones(6), [1, 1, -0.1, 1, 1], [1, np.nan, 1, 1, 1],
+                                 [1, 1, 1, np.inf, 1]])
+def test_apply_zone_strengths_rejects_bad_input(bad):
+    with pytest.raises(ValueError):
+        apply_zone_strengths(load_nozzles(), bad, 0.0)
+
+
+def test_unzoned_nozzle_is_an_error():
+    """구역 정의에 없는 높이의 측면 노즐은 조용히 넘기지 않는다 (배치와 구역 정의 불일치)."""
+    n = copy.deepcopy(load_nozzles())
+    n.positions[0, 2] = 1.05
+    with pytest.raises(ValueError, match="구역"):
+        apply_zone_strengths(n, np.ones(len(ZONE_NAMES)), 0.0)
+
+
+def test_zone_strength_caps_pregnant_chest():
+    """임산부 쾌적 상한은 가슴 쪽 벽 구역(chest_low·chest_high) ≤ 0.6, 나머지는 상한 없음."""
+    sc = load_scenarios()
+    np.testing.assert_array_equal(zone_strength_caps(sc["pregnant"]), [0.6, 0.6, np.inf, np.inf, np.inf])
+    assert np.isinf(zone_strength_caps(sc["default"])).all()
+    assert np.isinf(zone_strength_caps(sc["wheelchair"])).all()
+
+
+def test_zone_strength_caps_legacy_part_keys_and_validation(tmp_path):
+    """옛 부위 키(torso_front·torso_back)는 구역으로 옮기고, 겹치면 작은 값. 모르는 키는 로드 오류."""
+    import yaml
+    raw = {"default": {"pose_bounds": {"torso_yaw": [-180, 180]},
+                       "nozzle_strength_cap": {"torso_back": 0.5, "back_high": 0.3, "top": 0.8}}}
+    p = tmp_path / "s.yaml"
+    p.write_text(yaml.safe_dump(raw), encoding="utf-8")
+    np.testing.assert_array_equal(zone_strength_caps(load_scenarios(p)["default"]),
+                                  [np.inf, np.inf, 0.5, 0.3, 0.8])
+    raw["default"]["nozzle_strength_cap"] = {"head": 0.5}
+    p.write_text(yaml.safe_dump(raw), encoding="utf-8")
+    with pytest.raises(ValueError, match="nozzle_strength_cap"):
+        load_scenarios(p)
+
+
+# ---------------------------------------------------------------------------
+# 계획 확장 설정 키 (docs/plan_extension.md 4절)
+# ---------------------------------------------------------------------------
+def test_plan_extension_config_keys():
+    """physics.yaml 새 키가 계획서 4절 작업값 그대로이고, C 의 PlanLimits 가 같은 값을 읽는다."""
+    from airis.optimize.plan_encoding import PlanLimits
+    assert CFG["adhesion"]["kinetics"] == {"enabled": False, "time_constant_s": 2.0}
+    assert CFG["fan"] == {"rated_flow_m3_min": 9.2, "s_max": 1.0, "cap_ratio": 1.0, "power_exponent": 3}
+    sc = CFG["scoring"]
+    assert (sc["energy_weight"], sc["time_weight"], sc["reference_duration_s"]) == (0.1, 0.0, 20.0)
+    assert CFG["plan"] == {"n_phases": 2, "duration_bounds_s": [5.0, 20.0], "min_phase_s": 2.0,
+                           "transition_s": 1.5}
+    lim = PlanLimits.from_config(CFG)
+    assert (lim.n_phases, lim.duration_bounds_s, lim.min_phase_s, lim.transition_s, lim.s_max,
+            lim.cap_ratio) == (2, (5.0, 20.0), 2.0, 1.5, 1.0, 1.0)
