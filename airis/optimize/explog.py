@@ -11,6 +11,7 @@ from __future__ import annotations
 import csv
 import hashlib
 import json
+import math
 import subprocess
 import uuid
 from dataclasses import asdict, is_dataclass
@@ -73,15 +74,20 @@ def file_hash(path: Path | str) -> str:
 
 
 def _jsonable(obj: Any) -> Any:
-    """dataclass / numpy / Path 를 json 이 먹을 수 있는 형태로."""
+    """dataclass / numpy / Path 를 json 이 먹을 수 있는 형태로.
+
+    nan·inf 는 **null** 로 바꾼다. 파이썬 json 은 이것들을 NaN·Infinity 로 쓰는데 표준 JSON 이
+    아니라 다른 도구가 읽다 깨진다 (시작점이 하나면 peak_gap 이 nan 이다, 통합 2026-10-01 지적).
+    """
     if is_dataclass(obj) and not isinstance(obj, type):
         return {k: _jsonable(v) for k, v in asdict(obj).items()}
     if isinstance(obj, np.ndarray):
         return [_jsonable(v) for v in obj.tolist()]
     if isinstance(obj, (np.integer,)):
         return int(obj)
-    if isinstance(obj, (np.floating,)):
-        return float(obj)
+    if isinstance(obj, (np.floating, float)):
+        value = float(obj)
+        return value if math.isfinite(value) else None
     if isinstance(obj, dict):
         return {str(k): _jsonable(v) for k, v in obj.items()}
     if isinstance(obj, (list, tuple)):
