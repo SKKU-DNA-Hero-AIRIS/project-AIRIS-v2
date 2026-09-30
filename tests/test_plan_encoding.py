@@ -1,0 +1,278 @@
+"""계획 인코딩·계획 최적화·E7 러너 테스트. 소유자: C. docs/plan_extension.md, 00_common.md 4.7."""
+import csv
+import json
+
+import numpy as np
+import pytest
+
+from airis.optimize.plan_encoding import PlanEncoder, PlanLimits, plan_keys, wrap_deg
+from airis.sim import ZONE_NAMES, BodyParams, Phase, Plan, PoseParams
+from airis.sim.scenario import load_nozzles, load_scenarios
+
+pytest.importorskip("cma", reason="cma 패키지 필요 (pip install cma)")
+
+LIMITS = PlanLimits()          # 2단계, 5~20 s, 최소 2 s, s_max 1.0, cap_ratio 1.0
+
+
+@pytest.fixture(scope="module")
+def scenarios():
+    return load_scenarios()
+
+
+def _plan(yaws, *, abd=175.0, durations=(10.0, 10.0), zones=(1.0, 1.0, 1.0, 1.0, 1.0)) -> Plan:
+    return Plan([Phase(PoseParams(shoulder_abduction=abd, torso_yaw=y), t) for y, t in zip(yaws, durations)],
+                np.array(zones, dtype=np.float64))
+
+
+def test_keys_match_interfaces_order(scenarios):
+    enc = PlanEncoder(scenarios["default"], LIMITS)
+    assert enc.dim == 21
+    assert enc.keys[:7] == [f"p1_{k}" for k in
+                            ("shoulder_abduction", "shoulder_flexion", "elbow_flexion", "torso_pitch",
+                             "torso_yaw", "hip_flexion", "knee_flexion")]
+    assert enc.keys[14:] == ["duration_s", "share_1"] + [f"zone_{z}" for z in ZONE_NAMES]
+    assert enc.keys == plan_keys(2)
+
+
+def test_keys_and_durations_match_flow_planspace(scenarios):
+    """모델(F)의 PlanSpace 와 키 순서·단계 시간 식이 같아야 한다 (interfaces.md)."""
+    ps = pytest.importorskip("airis.model.flow").PlanSpace.from_scenarios(
+        [scenarios[n] for n in ("default", "pregnant", "wheelchair")], n_phases=2)
+    enc = PlanEncoder(scenarios["default"], LIMITS)
+    assert ps.keys == enc.keys
+    assert ps.durations(17.0, [0.25]) == pytest.approx(enc.durations(17.0, [0.25]))
+
+
+def test_durations_keep_minimum_phase(scenarios):
+    enc = PlanEncoder(scenarios["default"], LIMITS)
+    for total, share in ((5.0, 0.0), (20.0, 1.0), (12.0, 0.3), (20.0, 0.5)):
+        t = enc.durations(total, [share])
+        assert sum(t) == pytest.approx(total)
+        assert min(t) >= LIMITS.min_phase_s - 1e-9
+
+
+def test_decode_clips_and_round_trip(scenarios):
+    enc = PlanEncoder(scenarios["default"], LIMITS)
+    rng = np.random.default_rng(0)
+    for _ in range(20):
+        plan = enc.decode(rng.uniform(-3.0, 3.0, enc.dim))        # 범위 밖 제안도 안전
+        assert LIMITS.duration_bounds_s[0] - 1e-9 <= plan.duration_s <= LIMITS.duration_bounds_s[1] + 1e-9
+        assert min(p.duration_s for p in plan.phases) >= LIMITS.min_phase_s - 1e-9
+        assert (plan.zone_strengths >= 0).all() and (plan.zone_strengths <= LIMITS.s_max + 1e-9).all()
+        # encode 는 대칭 정규화를 거치므로 정규화한 계획과 비교한다 (정면 동률이면 좌우 세기가 바뀐다).
+        norm = enc.clip_plan(enc.normalize(plan))
+        back = enc.decode(enc.encode(plan))
+        assert back.duration_s == pytest.approx(norm.duration_s, abs=1e-6)
+        assert np.allclose(back.zone_strengths, norm.zone_strengths, atol=1e-6)
+        for a, b in zip(back.phases, norm.phases):
+            assert a.duration_s == pytest.approx(b.duration_s, abs=1e-6)
+            assert a.pose.shoulder_abduction == pytest.approx(b.pose.shoulder_abduction, abs=1e-6)
+            # yaw 는 −180° 와 180° 가 같은 각도라 감아서 비교한다.
+            assert wrap_deg(a.pose.torso_yaw) == pytest.approx(wrap_deg(b.pose.torso_yaw), abs=1e-6)
+
+
+def test_wheelchair_fixed_pose_and_yaw_range(scenarios):
+    enc = PlanEncoder(scenarios["wheelchair"], LIMITS)
+    plan = enc.decode(np.full(enc.dim, 1.0))
+    for ph in plan.phases:
+        assert ph.pose.hip_flexion == 90 and ph.pose.knee_flexion == 90
+        assert -45 - 1e-9 <= ph.pose.torso_yaw <= 45 + 1e-9
+    assert len(enc.free_keys) == 21 - 2 * 2          # 단계마다 hip·knee 고정
+
+
+def test_comfort_cap_and_flow_cap(scenarios):
+    # 임산부: 가슴 쪽 구역 0.6 (scenario.nozzle_strength_cap torso_front)
+    preg = PlanEncoder(scenarios["pregnant"], LIMITS)
+    s = preg.clip_zone_strengths([1.0] * 5)
+    assert s[ZONE_NAMES.index("chest_low")] == pytest.approx(0.6)
+    assert s[ZONE_NAMES.index("chest_high")] == pytest.approx(0.6)
+    assert s[ZONE_NAMES.index("back_low")] == pytest.approx(1.0)
+
+    # 풍량 한도: Σ 노즐 세기가 한도를 넘으면 전 구역을 같은 비율로 줄인다.
+    tight = PlanEncoder(scenarios["default"], PlanLimits(cap_ratio=0.5))
+    s = tight.clip_zone_strengths([1.0, 1.0, 1.0, 1.0, 1.0])
+    assert s == pytest.approx([0.5] * 5)
+    ratios = tight.clip_zone_strengths([1.0, 0.5, 0.5, 0.5, 0.5])
+    assert ratios[0] / ratios[1] == pytest.approx(2.0)           # 비율 유지
+    assert ratios.mean() <= 0.5 + 1e-9
+
+    # 구역별 노즐 수가 다르면 그 수로 가중한다.
+    weighted = PlanEncoder(scenarios["default"], PlanLimits(cap_ratio=1.0),
+                           zone_nozzle_counts=[4, 4, 2, 2, 0.0001])
+    s = weighted.clip_zone_strengths([1.0, 1.0, 1.0, 1.0, 1.0])
+    assert s == pytest.approx([1.0] * 5)                          # 합이 한도와 같으면 그대로
+
+
+def test_normalize_mirror_front_back_and_wrap(scenarios):
+    enc = PlanEncoder(scenarios["default"], LIMITS)
+    ref = enc.normalize(_plan([72.0, -20.0]))
+    assert [round(p.pose.torso_yaw, 6) for p in ref.phases] == [72.0, -20.0]
+
+    # 좌우 거울: 두 단계가 함께 뒤집힌다.
+    mirrored = enc.normalize(_plan([-72.0, 20.0]))
+    assert [round(p.pose.torso_yaw, 6) for p in mirrored.phases] == [72.0, -20.0]
+
+    # 앞뒤 등가 + 각도 감기: 1단계 108° → 72°, 2단계 −170° → 350° → −10°
+    flipped = enc.normalize(_plan([108.0, -170.0]))
+    assert flipped.phases[0].pose.torso_yaw == pytest.approx(72.0)
+    assert flipped.phases[1].pose.torso_yaw == pytest.approx(-10.0)
+
+    # 단계 관계가 유지된다 (단계마다 따로 접지 않는다).
+    two_sided = enc.normalize(_plan([-80.0, 100.0]))
+    assert two_sided.phases[0].pose.torso_yaw == pytest.approx(80.0)
+    assert two_sided.phases[1].pose.torso_yaw == pytest.approx(-100.0)
+
+    assert wrap_deg(350.0) == pytest.approx(-10.0)
+    assert wrap_deg(-180.0) == 180.0 and wrap_deg(180.0) == 180.0
+
+
+def test_normalize_skips_transform_outside_scenario_bounds(scenarios):
+    """휠체어(±45°)는 앞뒤 등가를 쓰면 범위를 벗어나므로 거울만 적용한다."""
+    enc = PlanEncoder(scenarios["wheelchair"], LIMITS)
+    out = enc.normalize(_plan([-30.0, 40.0]))
+    assert [round(p.pose.torso_yaw, 6) for p in out.phases] == [30.0, -40.0]
+    keep = enc.normalize(_plan([30.0, -40.0]))
+    assert [round(p.pose.torso_yaw, 6) for p in keep.phases] == [30.0, -40.0]
+
+
+def test_normalize_front_tie_swaps_chest_back(scenarios):
+    enc = PlanEncoder(scenarios["default"], LIMITS)
+    front = enc.normalize(_plan([0.0, 30.0], zones=(0.2, 0.3, 0.9, 0.8, 0.5)))
+    z = front.zone_strengths
+    assert z[ZONE_NAMES.index("chest_low")] == pytest.approx(0.9)
+    assert z[ZONE_NAMES.index("chest_high")] == pytest.approx(0.8)
+    assert z[ZONE_NAMES.index("back_low")] == pytest.approx(0.2)
+    assert z[ZONE_NAMES.index("top")] == pytest.approx(0.5)
+    # 이미 chest 가 크면 그대로 둔다. 옆으로 선 계획도 건드리지 않는다.
+    assert enc.normalize(_plan([0.0, 30.0], zones=(0.9, 0.8, 0.2, 0.3, 0.5))).zone_strengths[0] == pytest.approx(0.9)
+    assert enc.normalize(_plan([72.0, 30.0], zones=(0.2, 0.3, 0.9, 0.8, 0.5))).zone_strengths[0] == pytest.approx(0.2)
+
+
+def test_fixed_poses_only_search_time_and_strength(scenarios):
+    pose = PoseParams(shoulder_abduction=179.0, torso_yaw=71.0)
+    enc = PlanEncoder(scenarios["default"], LIMITS, fixed_poses=[pose, pose])
+    plan = enc.decode(np.random.default_rng(1).uniform(-1, 1, enc.dim))
+    for ph in plan.phases:
+        assert ph.pose.shoulder_abduction == pytest.approx(179.0)
+        assert ph.pose.torso_yaw == pytest.approx(71.0)
+    assert enc.free_keys == ["duration_s", "share_1"] + [f"zone_{z}" for z in ZONE_NAMES]
+
+
+# ---------- 계획 최적화 ----------
+
+def test_run_cmaes_plan_optimizes_and_is_deterministic(scenarios):
+    from airis.optimize.cmaes_runner import run_cmaes_plan
+    from airis.optimize.dummy import DummyEvaluator
+
+    sc = scenarios["default"]
+    ev = DummyEvaluator(PoseParams(shoulder_abduction=175.0, torso_yaw=72.0), sc)
+    kw = dict(max_evals=400, popsize=20, seed=0, limits=LIMITS)
+    a = run_cmaes_plan(ev, BodyParams(), sc, load_nozzles(), **kw)
+    b = run_cmaes_plan(ev, BodyParams(), sc, load_nozzles(), **kw)
+    assert a.history == b.history and a.best_score == b.best_score
+    assert a.best_plan is not None and len(a.best_plan.phases) == 2
+    assert a.best_pose == a.best_plan.phases[0].pose
+    assert a.best_plan.duration_s <= LIMITS.duration_bounds_s[1] + 1e-9
+    # 목표 자세 쪽으로 간다 (더미는 자세 거리 점수).
+    assert a.best_plan.phases[0].pose.shoulder_abduction > 120
+    assert a.per_start[0]["best_pose"]["duration_s"] > 0
+
+
+def test_run_cmaes_plan_with_pose_start_and_fixed_poses(scenarios):
+    from airis.optimize.cmaes_runner import Start, run_cmaes_plan
+    from airis.optimize.dummy import DummyEvaluator
+
+    sc = scenarios["wheelchair"]
+    target = PoseParams(shoulder_abduction=175.0, torso_yaw=36.0)
+    ev = DummyEvaluator(target, sc)
+    # 자세 시작점을 주면 그 자세를 모든 단계에 쓰는 계획에서 시작한다.
+    res = run_cmaes_plan(ev, BodyParams(), sc, load_nozzles(), max_evals=200, popsize=20, seed=0,
+                         limits=LIMITS, starts=[Start("hands_up", target)])
+    assert res.best_plan is not None
+    for ph in res.best_plan.phases:
+        assert ph.pose.hip_flexion == 90 and ph.pose.knee_flexion == 90
+
+    fixed = run_cmaes_plan(ev, BodyParams(), sc, load_nozzles(), max_evals=200, popsize=20, seed=0,
+                           limits=LIMITS, fixed_poses=[target, target])
+    for ph in fixed.best_plan.phases:
+        assert ph.pose.shoulder_abduction == pytest.approx(
+            PlanEncoder(sc, LIMITS).pose_encoder.clip_pose(target).shoulder_abduction)
+
+
+def test_dummy_evaluate_plan_rewards_time_and_penalizes_energy(scenarios):
+    from airis.optimize.dummy import DummyEvaluator
+
+    sc = scenarios["default"]
+    target = PoseParams(shoulder_abduction=175.0, torso_yaw=72.0)
+    ev = DummyEvaluator(target, sc, energy_weight=0.0)
+    nz = load_nozzles()
+    # 목표에서 떨어진 자세여야 시간 포화 효과가 보인다 (더미 점수는 −거리²).
+    away = PoseParams(shoulder_abduction=120.0, torso_yaw=40.0)
+    short = Plan([Phase(away, 2.0), Phase(away, 2.0)], np.ones(5))
+    long = Plan([Phase(away, 10.0), Phase(away, 10.0)], np.ones(5))
+    assert ev.evaluate_plan(long, nz, BodyParams(), sc).score > ev.evaluate_plan(short, nz, BodyParams(), sc).score
+
+    costly = DummyEvaluator(target, sc, energy_weight=1.0)
+    quiet = Plan([Phase(away, 10.0), Phase(away, 10.0)], np.full(5, 0.2))
+    assert costly.evaluate_plan(quiet, nz, BodyParams(), sc).score > \
+        costly.evaluate_plan(long, nz, BodyParams(), sc).score
+    extra = ev.evaluate_plan(long, nz, BodyParams(), sc).extra
+    assert extra["duration_s"] == pytest.approx(20.0) and "energy" in extra
+
+
+# ---------- 기준선과 E7 러너 ----------
+
+def test_plan_baselines(scenarios):
+    from airis.optimize.baselines import P1_PHASES, plan_baseline
+
+    sc = scenarios["default"]
+    best = PoseParams(shoulder_abduction=179.9, torso_yaw=71.0)
+    p0 = plan_baseline("P0", sc, LIMITS)
+    assert len(p0.phases) == 1 and p0.duration_s == pytest.approx(LIMITS.duration_bounds_s[1])
+    assert p0.phases[0].pose.shoulder_abduction == PoseParams().shoulder_abduction
+
+    p1 = plan_baseline("P1", sc, LIMITS)
+    assert len(p1.phases) == P1_PHASES and p1.duration_s == pytest.approx(20.0)
+    assert sorted({round(p.pose.torso_yaw) for p in p1.phases}) == [-150, -120, -90, -60, -30, 0,
+                                                                    30, 60, 90, 120, 150, 180]
+
+    p2 = plan_baseline("P2", sc, LIMITS, best_pose=best)
+    assert len(p2.phases) == LIMITS.n_phases
+    assert all(p.pose.shoulder_abduction == pytest.approx(179.9) for p in p2.phases)
+    with pytest.raises(ValueError):
+        plan_baseline("P2", sc, LIMITS)
+    with pytest.raises(ValueError):
+        plan_baseline("P9", sc, LIMITS)
+
+    # 휠체어는 회전 범위(±45°) 안으로 투영된다.
+    assert all(-45 <= p.pose.torso_yaw <= 45 for p in plan_baseline("P1", scenarios["wheelchair"], LIMITS).phases)
+
+
+def test_run_e7_dummy_end_to_end(tmp_path):
+    from scripts.run_e7 import main
+
+    code = main(["--evaluator", "dummy", "--scenarios", "default", "--conditions", "P0,P2,P3,P5",
+                 "--max-evals", "200", "--pose-max-evals", "200", "--popsize", "10",
+                 "--energy-weights", "0", "0.4", "--log-dir", str(tmp_path)])
+    assert code == 0
+    (group,) = [p for p in tmp_path.iterdir() if p.is_dir() and (p / "e7_summary.csv").exists()]
+    with (group / "e7_summary.csv").open(encoding="utf-8") as fh:
+        rows = list(csv.DictReader(fh))
+    assert {(r["condition"], r["energy_weight"]) for r in rows} == {
+        (c, w) for c in ("P0", "P2", "P3", "P5") for w in ("0.0", "0.4")}
+    for r in rows:
+        assert float(r["duration_s"]) > 0 and int(r["n_phases"]) >= 1
+        assert r["infeasible"] == "False"
+    # 에너지 가중이 커지면 P5 가 에너지를 줄인다.
+    e = {r["energy_weight"]: float(r["energy"]) for r in rows if r["condition"] == "P5"}
+    assert e["0.4"] < e["0.0"]
+
+    plans = json.loads((group / "e7_plans.json").read_text(encoding="utf-8"))
+    p5 = plans["scenarios"]["default"]["w0.4"]["P5_s0"]
+    assert len(p5["phases"]) == 2 and len(p5["zone_strengths"]) == len(ZONE_NAMES)
+
+
+def test_run_e7_rejects_unknown_condition(tmp_path):
+    from scripts.run_e7 import main
+
+    assert main(["--evaluator", "dummy", "--conditions", "P9", "--log-dir", str(tmp_path)]) == 2

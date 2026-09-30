@@ -358,10 +358,17 @@ def test_predict_plan_contract_and_rescoring(plan_model, model, scenarios, tmp_p
     assert q.plan is ideal
 
     # evaluate_plan 을 구현하지 않은 평가기는 NotImplementedError 를 그대로 올린다
+    # (DummyEvaluator 는 계획용 더미를 갖고 있으므로 자세만 구현한 평가기로 확인한다)
     from dataclasses import replace
+
+    from airis.sim import Evaluator
+
+    class _PoseOnly(Evaluator):
+        def evaluate(self, pose, nozzle, body, scenario):
+            return DummyEvaluator(PoseParams(), sc).evaluate(pose, nozzle, body, scenario)
+
     with pytest.raises(NotImplementedError):
-        pred.predict_plan(BodyParams(), sc, path=path, evaluator=DummyEvaluator(PoseParams(), sc),
-                          nozzle=object())
+        pred.predict_plan(BodyParams(), sc, path=path, evaluator=_PoseOnly(), nozzle=object())
     with pytest.raises(KeyError):
         pred.predict_plan(BodyParams(), replace(sc, name="stroller"), path=path,
                           evaluator=_PlanEvaluator(), nozzle=object())

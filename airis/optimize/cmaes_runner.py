@@ -11,12 +11,12 @@ from __future__ import annotations
 
 import time
 from collections.abc import Sequence
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 
 import numpy as np
 
-from airis.sim import BodyParams, EvalResult, Evaluator, NozzleConfig, PoseParams, Scenario
+from airis.sim import BodyParams, EvalResult, Evaluator, NozzleConfig, Plan, PoseParams, Scenario
 
 from . import explog
 from .encoding import PoseEncoder
@@ -45,16 +45,26 @@ class OptResult:
     free_keys: list[str] = field(default_factory=list)
     n_infeasible: int = 0         # 불가 판정을 받은 후보 수 (전 세대 합)
     per_start: list[dict] = field(default_factory=list)  # 시작점별 요약 (start, best_score, ...)
+    #: 계획 모드(run_cmaes_plan)에서만 채운다. best_pose 는 그 계획 1단계 자세다.
+    best_plan: Plan | None = None
     # record_candidates=True 일 때만 채운다: 평가한 후보 전부 {"x": 정규화 벡터, "score", "infeasible", "start"}
     candidates: list[dict] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
 class Start:
-    """CMA-ES 시작점. sigma0 가 None 이면 run_cmaes 의 sigma0 를 쓴다."""
+    """CMA-ES 시작점. sigma0 가 None 이면 run_cmaes 의 sigma0 를 쓴다.
+
+    계획 모드(run_cmaes_plan)에서는 plan 을 채운다 (pose 는 그 계획을 만들 때 쓴 자세, 기록용).
+    """
     name: str
     pose: PoseParams
     sigma0: float | None = None
+    plan: Plan | None = None
+
+    @property
+    def start_object(self):
+        return self.pose if self.plan is None else self.plan
 
 
 def cma_seed(seed: int) -> int:
@@ -99,6 +109,28 @@ def score_batch(
     return scores, infeasible
 
 
+def _summary_object(obj):
+    """per_start 요약에 넣을 dict. 계획이면 1단계 자세 + 총 시간 + 구역 세기."""
+    if isinstance(obj, Plan):
+        return {"pose": asdict(obj.phases[0].pose), "duration_s": obj.duration_s,
+                "phase_durations_s": [p.duration_s for p in obj.phases],
+                "zone_strengths": [float(v) for v in obj.zone_strengths]}
+    return asdict(obj)
+
+
+def score_plan_batch(
+    evaluator: Evaluator,
+    plans: Sequence[Plan],
+    nozzle: NozzleConfig,
+    body: BodyParams,
+    scenario: Scenario,
+) -> tuple[np.ndarray, np.ndarray]:
+    """계획 목록을 evaluate_plan 으로 채점 → (점수 (n,), 불가 (n,) bool). score_batch 의 계획 버전."""
+    results = [evaluator.evaluate_plan(p, nozzle, body, scenario) for p in plans]
+    return (np.array([r.score for r in results], dtype=np.float64),
+            np.array([is_infeasible(r) for r in results], dtype=bool))
+
+
 def run_cmaes(
     evaluator: Evaluator,
     body: BodyParams,
@@ -115,8 +147,13 @@ def run_cmaes(
     log_dir: Path | str | None = None,
     exp_id: str | None = None,
     tag: str = "opt",
+    encoder=None,
+    scorer=None,
 ) -> OptResult:
     """시나리오 제약 안에서 자세를 탐색한다.
+
+    encoder·scorer 를 주면 계획 등 다른 출력도 같은 루프로 탐색한다 (run_cmaes_plan 이 쓴다).
+    encoder 는 dim · encode · decode · default_x 를, scorer 는 score_batch 와 같은 시그니처를 가진다.
 
     같은 seed 와 결정론적 평가기면 history 가 완전히 같아야 한다.
 
@@ -132,7 +169,8 @@ def run_cmaes(
     """
     import cma  # 무거운 import 라 함수 안에서 한다.
 
-    enc = PoseEncoder(scenario)
+    enc = encoder if encoder is not None else PoseEncoder(scenario)
+    score = scorer if scorer is not None else score_batch
     if enc.dim < 2:
         raise ValueError(
             f"자유 자세 변수가 {enc.dim}개라 CMA-ES 를 돌릴 수 없다 (시나리오 {scenario.name})"
@@ -162,7 +200,7 @@ def run_cmaes(
     for i, (start, budget) in enumerate(zip(starts, budgets)):
         s0 = sigma0 if start.sigma0 is None else start.sigma0
         es = cma.CMAEvolutionStrategy(
-            enc.encode(start.pose).tolist(),
+            enc.encode(start.start_object).tolist(),
             s0,
             {
                 "bounds": [-1, 1],
@@ -182,7 +220,7 @@ def run_cmaes(
         while budget > 0 and not es.stop():
             X = es.ask()
             poses = [enc.decode(x) for x in X]
-            scores, infeasible = score_batch(evaluator, poses, nozzle, body, scenario)
+            scores, infeasible = score(evaluator, poses, nozzle, body, scenario)
             if record_candidates:
                 candidates.extend(
                     {"x": np.asarray(x, dtype=np.float64).copy(), "score": float(sc),
@@ -234,13 +272,13 @@ def run_cmaes(
         n_infeasible += s_infeasible
         per_start.append({
             "start": start.name,
-            "start_pose": asdict(enc.clip_pose(start.pose)),
+            "start_pose": asdict(enc.clip_pose(start.pose)) if hasattr(enc, "clip_pose") else None,
             "sigma0": float(s0),
             "seed": int(seed + i),
             "n_evals": s_evals,
             "n_infeasible": s_infeasible,
             "best_score": float(s_best) if s_best_x is not None else float("nan"),
-            "best_pose": asdict(enc.decode(s_best_x)) if s_best_x is not None else None,
+            "best_pose": _summary_object(enc.decode(s_best_x)) if s_best_x is not None else None,
             "stop_reason": stop_reason,
         })
 
@@ -253,9 +291,12 @@ def run_cmaes(
         best_x = enc.default_x()
         best_score = float("nan")
 
-    best_pose = enc.decode(best_x)
-    # 부위별 값을 채우기 위해 best 자세를 한 번 더 평가한다.
-    best_result = evaluator.evaluate(best_pose, nozzle, body, scenario)
+    best_obj = enc.decode(best_x)
+    best_plan = best_obj if isinstance(best_obj, Plan) else None
+    best_pose = best_obj.phases[0].pose if best_plan is not None else best_obj
+    # 부위별 값을 채우기 위해 best 를 한 번 더 평가한다.
+    best_result = (evaluator.evaluate_plan(best_plan, nozzle, body, scenario) if best_plan is not None
+                   else evaluator.evaluate(best_pose, nozzle, body, scenario))
 
     return OptResult(
         best_pose=best_pose,
@@ -269,5 +310,38 @@ def run_cmaes(
         free_keys=list(enc.free_keys),
         n_infeasible=n_infeasible,
         per_start=per_start,
+        best_plan=best_plan,
         candidates=candidates,
     )
+
+
+def run_cmaes_plan(
+    evaluator: Evaluator,
+    body: BodyParams,
+    scenario: Scenario,
+    nozzle: NozzleConfig,
+    *,
+    limits=None,
+    zone_nozzle_counts=None,
+    fixed_poses=None,
+    starts: Sequence[Start] | None = None,
+    **kwargs,
+) -> OptResult:
+    """계획(자세 순서 + 시간 + 구역 세기)을 탐색한다. docs/plan_extension.md 2절, 3단계.
+
+    자세 최적화와 같은 루프·로그를 쓰고 인코더(PlanEncoder)와 채점(evaluate_plan)만 갈아 끼운다.
+    starts 를 주지 않으면 기본 계획(기본 자세 K 단계, 전 구역 최대 세기) 하나에서 시작한다.
+    자세 시작점(Start.pose 만 있는 항목)은 그 자세를 모든 단계에 쓰는 계획으로 바꿔 쓴다
+    (단일 자세 최적 결과를 계획 탐색의 시작점으로 그대로 넣을 수 있다).
+    fixed_poses 를 주면 단계 자세를 고정하고 시간·구역 세기만 탐색한다 (E7 의 P3·P4).
+    """
+    from .plan_encoding import PlanEncoder
+
+    enc = PlanEncoder(scenario, limits, zone_nozzle_counts, fixed_poses)
+    if starts is None:                      # 기본 계획 하나에서 시작
+        starts = [Start("default", PoseParams(), plan=enc.default_plan())]
+    plan_starts = [s if s.plan is not None
+                   else replace(s, plan=enc.plan_from_pose(enc.pose_encoder.clip_pose(s.pose)))
+                   for s in starts]
+    return run_cmaes(evaluator, body, scenario, nozzle, starts=plan_starts,
+                     encoder=enc, scorer=score_plan_batch, **kwargs)
