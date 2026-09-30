@@ -386,3 +386,62 @@ def test_dummy_reference_duration_comes_from_config():
     assert _config_reference_duration() == expected
     assert DummyEvaluator(PoseParams(), scenario).reference_duration_s == expected
     assert DummyEvaluator(PoseParams(), scenario, reference_duration_s=7.5).reference_duration_s == 7.5
+
+
+# ---------- e7_reference.json 내보내기 ----------
+
+def test_export_e7_reference(tmp_path):
+    """E7 묶음 → 기준 수치 한 장. 조건마다 지표와 21차원 계획이 함께 들어간다."""
+    import csv
+    import importlib.util
+    import json
+    from pathlib import Path
+
+    from airis.sim import ZONE_NAMES
+
+    root = Path(__file__).resolve().parents[1]
+    bundle = tmp_path / "e7x"
+    bundle.mkdir()
+    pose = {"shoulder_abduction": 179.0, "shoulder_flexion": 0.0, "elbow_flexion": 1.0,
+            "torso_pitch": 0.0, "torso_yaw": -100.0, "hip_flexion": 0.0, "knee_flexion": 5.0}
+    plan = {"duration_s": 12.0,
+            "phases": [{"duration_s": 7.0, **pose}, {"duration_s": 5.0, **pose}],
+            "zone_strengths": [1.0, 0.6, 0.9, 0.9, 0.5]}
+    (bundle / "e7_plans.json").write_text(json.dumps({
+        "group_id": "e7x", "commit": "c", "physics_hash": "p", "nozzle_hash": "n",
+        "kinetics_enabled": True, "time_constant_s": 2.0, "zone_nozzle_counts": [2, 2, 2, 2, 4],
+        "args": {"max_evals": 10},
+        "scenarios": {"default": {"w0.1": {"P5_s0": plan}}},
+    }, ensure_ascii=False), encoding="utf-8")
+    with (bundle / "e7_summary.csv").open("w", newline="", encoding="utf-8") as fh:
+        w = csv.DictWriter(fh, fieldnames=["scenario", "condition", "energy_weight", "seed",
+                                           "infeasible", "score", "total_removal", "discomfort",
+                                           "energy", "duration_s", "n_phases",
+                                           "phase_durations_s", "zone_strengths"])
+        w.writeheader()
+        w.writerow({"scenario": "default", "condition": "P5", "energy_weight": "0.1", "seed": "0",
+                    "infeasible": "False", "score": "0.85", "total_removal": "0.27",
+                    "discomfort": "0.19", "energy": "0.59", "duration_s": "12.0", "n_phases": "2",
+                    "phase_durations_s": "7.0;5.0", "zone_strengths": "1.0;0.6;0.9;0.9;0.5"})
+
+    spec = importlib.util.spec_from_file_location(
+        "export_e7_reference", root / "scripts" / "export_e7_reference.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    out = tmp_path / "e7_reference.json"
+    assert mod.main(["--bundle", str(bundle), "--out", str(out), "--note", "설명"]) == 0
+
+    data = json.loads(out.read_text(encoding="utf-8"))
+    assert data["bundle"]["kinetics_enabled"] is True and data["bundle"]["note"] == "설명"
+    assert data["bundle"]["zone_nozzle_counts"]["top"] == 4
+    assert not Path(data["bundle"]["path"]).is_absolute()
+    row = data["rows"][0]
+    assert (row["scenario"], row["condition"], row["energy_weight"]) == ("default", "P5", 0.1)
+    assert row["total_removal"] == 0.27 and row["energy"] == 0.59 and row["n_phases"] == 2
+    assert row["phase_durations_s"] == [7.0, 5.0] and row["infeasible"] is False
+    # 계획이 21차원 그대로 들어간다: 단계별 자세 7개 + 시간, 구역 세기 5개.
+    assert len(row["plan"]["phases"]) == 2
+    assert set(row["plan"]["phases"][0]["pose"]) == set(data["pose_keys"])
+    assert row["plan"]["phases"][0]["torso_yaw_folded"] == pytest.approx(80.0)
+    assert row["plan"]["zone_strengths"] == dict(zip(ZONE_NAMES, plan["zone_strengths"]))
+    json.dumps(data, allow_nan=False)
