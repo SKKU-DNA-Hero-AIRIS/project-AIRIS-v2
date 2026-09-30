@@ -100,6 +100,12 @@ def detect_cached(digest: str, _image: np.ndarray):
     return camera.detect_pose(get_pose_model(), _image)
 
 
+@st.cache_data(show_spinner=False, ttl=60)
+def artifacts_cached():
+    """산출물 상태. 호출마다 파일을 다시 읽으므로 rerun 마다 부르지 않게 캐시한다 (새 산출물은 60초 안에 반영)."""
+    return model_artifacts()
+
+
 @st.cache_data(show_spinner="추천 자세를 고르는 중 (모델 후보 재채점)…", max_entries=64)
 def recommend_cached(body_t: tuple, scenario: str, body_model: str):
     return recommend(BodyParams(*body_t), get_scenarios()[scenario], model=body_model)
@@ -210,7 +216,7 @@ def main() -> None:
                    "(메시 2,000/m², 캡슐 400/m²).")
         st.divider()
         st.header("추천 모델")
-        for a in model_artifacts():
+        for a in artifacts_cached():
             if not a.exists:
                 st.caption(f"❌ {a.name}: 없음 → 고정 후보표(E4)로 안내")
             elif a.message:

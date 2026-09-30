@@ -405,6 +405,34 @@ def test_recommend_without_artifacts_uses_stub(no_artifacts):
     assert rec.notes and "산출물" in rec.notes[0] and not rec.stats
 
 
+def test_model_artifacts_uses_predict_status(monkeypatch):
+    """산출물 상태는 C의 artifact_status() 를 그대로 옮긴다. 도장이 없으면 '확인 불가'로 본다."""
+    import airis.model.predict as P
+    from airis.realtime.recommend import model_artifacts
+
+    monkeypatch.setattr(P, "artifact_status", lambda *a, **k: {
+        "current": {"nozzle_layout_hash": "n", "physics_hash": "p"}, "current_error": None,
+        # 도장 없는 산출물: artifact_status 는 match=True 로 주지만 비교한 것이 없다
+        "flow": {"path": "a.pt", "exists": True, "match": True, "mismatched": [], "error": None,
+                 "stamp": {"nozzle_layout_hash": None, "physics_hash": None, "commit": "abc1234"}},
+        "knn": {"path": "b.parquet", "exists": False, "match": None, "mismatched": [], "error": None,
+                "stamp": {}}})
+    flow, knn = model_artifacts()
+    assert flow.name == "flow" and flow.exists and flow.commit == "abc1234"
+    assert flow.config_ok is None                      # True 로 보이면 "설정 일치"로 오해한다
+    assert not knn.exists and knn.message == "없음" and knn.config_ok is None
+
+
+def test_model_artifacts_real_call():
+    """진짜 호출도 두 줄(flow·knn)을 돌려준다. 산출물이 없어도 예외가 나지 않는다."""
+    from airis.realtime.recommend import model_artifacts
+    pytest.importorskip("airis.model.predict")
+    rows = model_artifacts()
+    assert [r.name for r in rows] == ["flow", "knn"]
+    for r in rows:
+        assert r.path and isinstance(r.exists, bool)
+
+
 @pytest.mark.skipif(not _artifacts_exist(), reason="학습 산출물이 없다 (F 트랙 산출물)")
 @pytest.mark.parametrize("scenario", ["default", "pregnant", "wheelchair"])
 def test_recommend_with_real_artifacts(scenario):
@@ -507,7 +535,8 @@ def test_dashboard_runs_to_recommendation(mode, scenario):
     from streamlit.testing.v1 import AppTest
 
     path = Path(__file__).resolve().parents[1] / "scripts" / "run_dashboard.py"
-    at = AppTest.from_file(str(path), default_timeout=120)
+    # 여러 프로세스가 CPU 를 쓰는 중에 메시 채점이 겹치면 120 초로 모자란 적이 있다 (k14 전체 실행 1회 실패).
+    at = AppTest.from_file(str(path), default_timeout=240)
     at.query_params["scenario"] = scenario
     at.run()
     at.sidebar.radio[0].set_value(mode).run()
@@ -527,7 +556,7 @@ def test_dashboard_capsule_model_query():
     from streamlit.testing.v1 import AppTest
 
     path = Path(__file__).resolve().parents[1] / "scripts" / "run_dashboard.py"
-    at = AppTest.from_file(str(path), default_timeout=120)
+    at = AppTest.from_file(str(path), default_timeout=240)
     at.query_params["model"] = "capsule"
     at.run()
     at.sidebar.radio[0].set_value("체형 직접 입력").run()

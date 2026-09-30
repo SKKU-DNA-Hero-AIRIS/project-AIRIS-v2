@@ -13,7 +13,7 @@
 
 `Recommendation.source` 는 `"model: hybrid (flow|knn|extra)"`(고른 후보의 출처) 또는 `"stub: …"`,
 `"fallback: B0"` 이다. `stats` 에 출처별 후보 수·가능 수·최고 점수, `elapsed_s` 에 응답 시간(목표 1.5 s)이
-들어간다. 산출물 경로·학습 커밋·설정 해시 일치는 `model_artifacts()` 로 읽기만 한다 (경로 결정은 C 몫).
+들어간다. 산출물 경로·학습 커밋·설정 해시 일치는 `model_artifacts()`(= C의 `predict.artifact_status()`)로 읽기만 한다.
 
 출력은 항상 `PoseEncoder(scenario).clip_pose()`로 시나리오 제약 안에 넣는다 (interfaces.md 규약).
 
@@ -265,53 +265,36 @@ def recommend(body: BodyParams | None, scenario: Scenario, *, use_model: bool = 
 
 @dataclass(frozen=True)
 class ArtifactInfo:
-    """학습 산출물 상태 (사이드바 읽기 전용). 경로는 C의 `predict.py` 가 정한 값을 그대로 읽는다."""
+    """학습 산출물 상태 (사이드바 읽기 전용). 경로·판정 모두 C의 `predict.artifact_status()` 값이다."""
     name: str                        # "flow" | "knn"
     path: str
     exists: bool
     commit: str | None = None        # 학습 커밋
-    config_ok: bool | None = None    # 노즐·물리 해시가 지금 설정과 같은가 (None = 확인 불가)
+    config_ok: bool | None = None    # 노즐·물리 해시가 지금 설정과 같은가 (None = 확인 불가·도장 없음)
     message: str = ""                # 못 읽은 이유
 
 
-def _config_hashes() -> dict[str, str] | None:
-    """지금 설정의 노즐·물리 해시 (C의 `predict._check_stamp` 와 같은 값)."""
-    try:
-        from ..optimize import cli, explog
-        return {"nozzle_layout_hash": str(cli.nozzle_hash(cli.resolve_nozzles()[0])),
-                "physics_hash": str(explog.file_hash(explog.ROOT / "configs" / "physics.yaml"))}
-    except Exception:
-        return None
-
-
 def model_artifacts() -> list[ArtifactInfo]:
-    """산출물 경로·학습 커밋·설정 해시 일치. 화면에 보여 주기만 하고 아무것도 바꾸지 않는다."""
-    import warnings
+    """산출물 상태. 판정은 C의 `predict.artifact_status()` 하나만 쓴다 (해시 규약이 바뀌어도 E는 그대로).
 
+    화면에 보여 주기만 하고 아무것도 바꾸지 않는다. 호출마다 산출물 파일을 다시 읽으므로
+    화면 쪽에서 캐시한다.
+    """
     try:
-        from ..model import predict as P
+        from ..model.predict import STAMP_KEYS, artifact_status
     except ImportError as exc:
         return [ArtifactInfo("model", "-", False, message=str(exc))]
 
-    now = _config_hashes()
+    status = artifact_status()
     out: list[ArtifactInfo] = []
-    for name, path, load in (("flow", P.DEFAULT_MODEL_PATH, partial(P.load_model, kind="pose")),
-                             ("knn", P.DEFAULT_KNN_PATH, P.load_knn)):
-        if not path.exists():
-            out.append(ArtifactInfo(name, str(path), False, message="없음"))
-            continue
-        try:
-            with warnings.catch_warnings():
-                warnings.simplefilter("ignore")       # 해시 경고는 아래에서 직접 판정한다
-                meta = load(path).meta
-        except Exception as exc:                      # torch 없음·손상 등
-            out.append(ArtifactInfo(name, str(path), True, message=str(exc)))
-            continue
-        ok = None
-        if now is not None:
-            keys = [k for k in now if meta.get(k) is not None]
-            ok = all(str(meta[k]) == now[k] for k in keys) if keys else None
-        out.append(ArtifactInfo(name, str(path), True, meta.get("commit"), ok))
+    for name in ("flow", "knn"):
+        e = status[name]
+        stamp = e.get("stamp") or {}
+        # 도장이 없는 산출물은 artifact_status 가 match=True 로 주지만, 비교한 것이 없으니 "확인 불가"로 본다.
+        stamped = any(stamp.get(k) is not None for k in STAMP_KEYS)
+        out.append(ArtifactInfo(name, e["path"], bool(e["exists"]), stamp.get("commit"),
+                                e["match"] if stamped else None,
+                                e["error"] or ("" if e["exists"] else "없음")))
     return out
 
 
