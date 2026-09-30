@@ -143,7 +143,7 @@ def artifact_status(model_path: Path | str | None = None, knn_path: Path | str |
 
     반환::
 
-        {"current": {nozzle_layout_hash, physics_hash} | None,   # 설정을 못 읽으면 None
+        {"current": {nozzle_layout_hash, physics_hash, kinetics_enabled, time_constant_s} | None,  # 설정을 못 읽으면 None
          "current_error": str | None,
          "flow": 항목, "knn": 항목}
 
@@ -152,7 +152,7 @@ def artifact_status(model_path: Path | str | None = None, knn_path: Path | str |
                           body_model, patches_per_m2, commit},  # 없는 키는 None (kinetics 는 계획 산출물만)
                 "match": bool | None,         # 도장 키가 전부 있고 전부 같으면 True, 다른 키가 있으면 False,
                                               # 도장이 없거나 일부만 있거나 산출물·설정을 못 읽으면 None
-                "mismatched": [키 ...],       # 다른 키 (STAMP_KEYS 중)
+                "mismatched": [키 ...],       # 다른 키 (STAMP_KEYS 와, 산출물에 있으면 KINETICS_KEYS 중)
                 "error": str | None}          # 읽기 실패 (torch 없음 등)
     """
     try:

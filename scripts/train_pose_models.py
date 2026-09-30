@@ -95,12 +95,14 @@ def check_dataset(df) -> tuple[dict, list[str]]:
             if len(vals) != 1:
                 raise ValueError(f"데이터셋의 {col} 가 여러 값이다 {vals}. 한 물리 기준의 행만 쓴다.")
             stamp[col] = vals[0]
-    warns = []
+    from airis.model import predict
+
     now = current_stamp()
-    for k, v in now.items():
-        if k in stamp and stamp[k] != v:
-            warns.append(f"{k}: 데이터셋 {stamp[k]} ≠ 지금 설정 {v}. 해시는 파일 바이트 전체라 물리 값이 같아도 "
-                         "키 추가·줄바꿈으로 바뀐다. 물리 값이 바뀐 것이면 데이터셋부터 다시 만든다(C).")
+    # 자세 산출물이므로 설정 해시(STAMP_KEYS)만 본다. kinetics 는 계획 평가에만 쓰여 자세 데이터셋과 무관하다.
+    diff = [k for k in predict.stamp_mismatch(stamp, now) if k in predict.STAMP_KEYS]
+    warns = [f"{k}: 데이터셋 {stamp[k]} ≠ 지금 설정 {now[k]}. 해시는 설정 YAML 내용(정렬 직렬화) 기준이라 "
+             "물리·노즐 설정 값이 바뀐 것이다. 데이터셋부터 다시 만든다(C). "
+             "(#98 이전 옛 규약 도장이면 값이 같아도 다르게 나온다.)" for k in diff]
     return stamp, warns
 
 
@@ -176,42 +178,63 @@ def markdown_table(stats, verdict: dict, info: dict) -> str:
 
 # ---------- 6. 설치 ----------
 
+class InstallRollbackError(RuntimeError):
+    """교체가 실패했고 되돌리기도 실패했다 (이중 실패). 옛 산출물 백업(<이름>.prev.new)이 남아 있다."""
+
+
 def install(src_dir: Path, model_dir: Path, names=(FLOW_FILE, KNN_FILE)) -> list[Path]:
     """src_dir 의 산출물을 model_dir 로 설치. 기존 산출물은 <이름>.prev 로 남긴다 (1세대, 쌍으로).
 
     flow 와 kNN 표가 섞인 상태(새 flow + 옛 kNN)가 남지 않게 세 단계로 한다.
 
+    0. 확인: <이름>.prev.new 가 이미 있으면 앞선 설치가 이중 실패로 남긴 옛 산출물 백업이므로, 덮어쓰지 않고
+       RuntimeError 로 멈춘다 (손으로 복구한 뒤 다시 돌린다).
     1. 준비: 새 파일을 <이름>.new, 기존 파일을 <이름>.prev.new 로 복사한다. 여기서 실패하면 아무것도 바뀌지 않는다.
     2. 교체: os.replace 로 하나씩 바꾼다. 도중에 실패하면(Windows 에서 대시보드가 파일을 열고 있을 때, Ctrl+C 등)
-       바꾼 파일을 백업(.prev.new)에서 os.replace 로 되돌리고 예외를 올린다. 되돌리기마저 실패하면 백업을
-       지우지 않고 남긴 채 경고한다 (손으로 복구할 수 있게).
+       바꾼 파일을 백업에서 os.replace 로 되돌리고 원래 예외를 올린다. 되돌리기마저 실패하면(되돌리는 중 Ctrl+C 포함)
+       백업을 지우지 않고 남긴 채 InstallRollbackError 를 올린다 (Ctrl+C 였으면 KeyboardInterrupt).
     3. 확정: <이름>.prev.new → <이름>.prev. 옛 파일이 없던 쪽의 묵은 .prev 는 지운다 (.prev 는 늘 같은 세대의 쌍).
        모델 교체는 끝났으므로 여기서 실패하면(잠김, Ctrl+C) .prev 를 모두 지우려 하고 경고한다.
        지우지 못한 .prev 는 경고에 적는다. Ctrl+C 는 정리 뒤 다시 올리고, 그 밖의 실패로는 예외를 내지 않는다.
 
-    끝나면 임시 파일(.new, .prev.new)은 남지 않는다 (2의 되돌리기가 실패해 남긴 백업은 예외).
+    단계는 한 try 안에서 phase 로 구분하므로 단계 사이에 온 Ctrl+C 도 어느 한 단계의 처리를 받는다.
+    끝나면 임시 파일(.new, .prev.new)은 남지 않는다 (2의 이중 실패가 남긴 백업은 예외).
+    보장 범위: 한 번의 실패로는 쌍이 섞이지 않고 옛 산출물을 잃지 않는다. 이중 실패에서는 백업을 남기고 알린다.
     설치 중에는 산출물을 여는 프로세스(E 대시보드)를 내린다.
     """
     model_dir.mkdir(parents=True, exist_ok=True)
     dsts = [model_dir / name for name in names]
     news = [d.with_name(d.name + ".new") for d in dsts]
-    olds = [d.with_name(d.name + ".prev.new") if d.exists() else None for d in dsts]
     prevs = [d.with_name(d.name + ".prev") for d in dsts]
+    leftover = [d.with_name(d.name + ".prev.new") for d in dsts if d.with_name(d.name + ".prev.new").exists()]
+    if leftover:                                                     # 0. 확인
+        raise RuntimeError(
+            f"앞선 설치가 남긴 옛 산출물 백업이 있다: {', '.join(p.name for p in leftover)}. 덮어쓰지 않고 멈춘다. "
+            "각 <이름>.prev.new 를 <이름> 으로 되돌려(또는 지금 파일이 맞으면 지워) 쌍을 맞춘 뒤 다시 돌린다.")
+    olds = [d.with_name(d.name + ".prev.new") if d.exists() else None for d in dsts]
     keep: set[Path] = set()
+    touched: list[int] = []
+    phase = "prepare"
     try:
         for name, new in zip(names, news):                           # 1. 준비
             shutil.copy2(src_dir / name, new)
         for dst, old in zip(dsts, olds):
             if old is not None:
                 shutil.copy2(dst, old)
-
-        touched: list[int] = []                                      # 2. 교체
-        try:
-            for i, (new, dst) in enumerate(zip(news, dsts)):
-                touched.append(i)                # replace 전에 적는다 (직후 Ctrl+C 에도 되돌린다)
-                os.replace(new, dst)
-        except BaseException:
-            failed = []
+        phase = "swap"
+        for i, (new, dst) in enumerate(zip(news, dsts)):             # 2. 교체
+            touched.append(i)                    # replace 전에 적는다 (직후 Ctrl+C 에도 되돌린다)
+            os.replace(new, dst)
+        phase = "commit"
+        for old, prev in zip(olds, prevs):                           # 3. 확정
+            if old is not None:
+                os.replace(old, prev)
+            else:
+                prev.unlink(missing_ok=True)
+    except BaseException as exc:
+        if phase == "swap":
+            failed: list[str] = []
+            interrupted = None
             for i in reversed(touched):
                 try:
                     if olds[i] is not None:
@@ -220,21 +243,21 @@ def install(src_dir: Path, model_dir: Path, names=(FLOW_FILE, KNN_FILE)) -> list
                             os.replace(olds[i], dsts[i])
                     else:
                         dsts[i].unlink(missing_ok=True)
-                except OSError as exc:
-                    failed.append(f"{dsts[i].name}: {exc}")
+                except BaseException as rb:                  # 되돌리는 중 Ctrl+C 도 백업을 남긴다
+                    failed.append(f"{dsts[i].name}: {type(rb).__name__}: {rb}")
+                    if not isinstance(rb, Exception):
+                        interrupted = rb
             if failed:
                 keep.update(o for o in olds if o is not None and o.exists())
-                print(f"[경고] 교체 실패 뒤 되돌리기도 실패했다 ({'; '.join(failed)}). 옛 산출물 백업을 남긴다: "
-                      f"{', '.join(str(k) for k in sorted(keep))}", file=sys.stderr)
+                msg = (f"교체 실패({type(exc).__name__}: {exc}) 뒤 되돌리기도 실패했다 ({'; '.join(failed)}). "
+                       f"옛 산출물 백업을 남긴다: {', '.join(str(k) for k in sorted(keep))}. "
+                       "백업을 <이름> 으로 되돌려 쌍을 맞춘 뒤 다시 설치한다.")
+                print(f"[경고] {msg}", file=sys.stderr)
+                if interrupted is not None:
+                    raise interrupted from exc
+                raise InstallRollbackError(msg) from exc
             raise
-
-        try:                                                         # 3. 확정
-            for old, prev in zip(olds, prevs):
-                if old is not None:
-                    os.replace(old, prev)
-                else:
-                    prev.unlink(missing_ok=True)
-        except BaseException as exc:
+        if phase == "commit":
             stuck = []
             for prev in prevs:                   # 세대가 어긋난 .prev 쌍을 남기지 않는다
                 try:
@@ -246,6 +269,8 @@ def install(src_dir: Path, model_dir: Path, names=(FLOW_FILE, KNN_FILE)) -> list
                   + note, file=sys.stderr)
             if not isinstance(exc, Exception):
                 raise
+            return dsts
+        raise                                                        # 준비 단계: 바뀐 것 없음
     finally:
         for tmp in news + [o for o in olds if o is not None]:
             if tmp not in keep:
@@ -332,26 +357,38 @@ def main(argv: list[str] | None = None) -> int:
     print("[refresh] 4/4 설치" + ("" if do_install else " 안 함"))
     installed: list[str] = []
     install_error = None
+    interrupted: BaseException | None = None
     if do_install:
         try:
             installed = [str(p) for p in install(out_dir, model_dir)]
-        except Exception as exc:            # 설치 실패도 gate.json 에 남긴다 (모델은 install 이 되돌린다)
+        except BaseException as exc:        # 설치 실패·Ctrl+C 도 gate.json 에 남긴다
             install_error = f"{type(exc).__name__}: {exc}"
+            if not isinstance(exc, Exception):
+                interrupted = exc
+    # 실패했을 때 설치 폴더의 실제 상태 (파일마다 이번 산출물과 같은가). 섞였는지 바로 보이게.
+    install_state = ({name: ("new" if (model_dir / name).exists()
+                                       and filecmp.cmp(out_dir / name, model_dir / name, shallow=False)
+                             else "old" if (model_dir / name).exists() else "missing")
+                      for name in (FLOW_FILE, KNN_FILE)}
+                     if install_error else None)
 
     timings["total_s"] = time.perf_counter() - t_all
     report = {"dataset": str(dataset), "dataset_stamp": stamp, "current_stamp": current_stamp(),
               "warnings": warns, "gate": asdict(Gate()), "verdict": verdict,
-              "installed": installed, "install_error": install_error,
+              "installed": installed, "install_error": install_error, "install_state": install_state,
               "model_dir": str(model_dir), "timings": {k: round(v, 1) for k, v in timings.items()},
               "args": vars(args)}
     (out_dir / "gate.json").write_text(json.dumps(report, ensure_ascii=False, indent=2, default=str),
                                        encoding="utf-8")
+    if interrupted is not None:
+        raise interrupted
 
     print()
     if (out_dir / "gate.md").exists():
         print((out_dir / "gate.md").read_text(encoding="utf-8"))
+    state = (", ".join(f"{k}={v}" for k, v in install_state.items()) if install_state else "")
     print(f"설치: {', '.join(installed) if installed else '안 함'}"
-          + (f"  — 설치 실패 {install_error} (기존 산출물 유지)" if install_error else ""))
+          + (f"  — 설치 실패 {install_error}. 설치 폴더 상태: {state}" if install_error else ""))
     print(f"결과 {out_dir}  (총 {timings['total_s'] / 60:.1f}분)")
     # 판정을 돌렸는데 불합격이거나 설치가 실패하면 1 (자동화에서 알아채게). 건너뛰었거나 빠른 점검이면 0.
     if install_error:

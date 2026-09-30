@@ -259,7 +259,7 @@ def test_install_double_failure_keeps_backup(tmp_path, monkeypatch, capsys):
         return real(a, b)
 
     monkeypatch.setattr(tpm.os, "replace", locked)
-    with pytest.raises(PermissionError):
+    with pytest.raises(tpm.InstallRollbackError):
         tpm.install(src, dst)
     state = _state(dst)
     assert state[tpm.FLOW_FILE + ".prev.new"] == "old", "되돌리지 못한 옛 flow 는 백업으로 남는다"
@@ -346,3 +346,76 @@ def test_refresh_records_install_failure(fake_steps, tmp_path, monkeypatch):
     report = json.loads((out / "gate.json").read_text(encoding="utf-8"))
     assert report["verdict"]["passed"] and report["installed"] == []
     assert "PermissionError" in report["install_error"]
+
+
+def test_install_refuses_when_backup_left_over(tmp_path, monkeypatch):
+    """이중 실패가 남긴 백업(.prev.new)이 있으면 덮어쓰지 않고 멈춘다 (그대로 재실행하면 옛 flow 를 잃는다)."""
+    src, dst = _dirs(tmp_path, prev=True)
+    real = tpm.os.replace
+
+    def locked(a, b):
+        if str(b).endswith(tpm.KNN_FILE) or (str(a).endswith(".prev.new") and str(b).endswith(tpm.FLOW_FILE)):
+            raise PermissionError("잠김")
+        return real(a, b)
+
+    monkeypatch.setattr(tpm.os, "replace", locked)
+    with pytest.raises(tpm.InstallRollbackError):
+        tpm.install(src, dst)
+    monkeypatch.setattr(tpm.os, "replace", real)          # 잠김이 풀린 뒤 복구 없이 다시 돌린 경우
+    after_failure = _state(dst)
+    with pytest.raises(RuntimeError, match="prev.new"):
+        tpm.install(src, dst)
+    assert _state(dst) == after_failure, "멈출 때 아무것도 바꾸지 않는다"
+    assert after_failure[tpm.FLOW_FILE + ".prev.new"] == "old"
+
+
+def test_install_ctrl_c_during_rollback_keeps_backup(tmp_path, monkeypatch):
+    """되돌리는 도중 Ctrl+C 가 와도 백업을 지우지 않고, Ctrl+C 를 올린다."""
+    src, dst = _dirs(tmp_path, prev=True)
+    real = tpm.os.replace
+
+    def flaky(a, b):
+        if str(b).endswith(tpm.KNN_FILE):
+            raise PermissionError("잠김")
+        if str(a).endswith(".prev.new") and str(b).endswith(tpm.FLOW_FILE):
+            raise KeyboardInterrupt
+        return real(a, b)
+
+    monkeypatch.setattr(tpm.os, "replace", flaky)
+    with pytest.raises(KeyboardInterrupt):
+        tpm.install(src, dst)
+    state = _state(dst)
+    assert state[tpm.FLOW_FILE + ".prev.new"] == "old" and state[tpm.KNN_FILE] == "old"
+
+
+def test_refresh_records_ctrl_c_during_install(fake_steps, tmp_path, monkeypatch):
+    """설치 중 Ctrl+C 도 gate.json 에 남기고(설치 폴더 실제 상태 포함) Ctrl+C 를 올린다."""
+    _, _, ds = fake_steps
+    models = tmp_path / "m"
+    real = tpm.install
+
+    def half_then_interrupt(src, dst, *a, **kw):
+        real(src, dst, *a, **kw)                          # 설치는 끝났는데
+        raise KeyboardInterrupt                           # 그 뒤 Ctrl+C
+
+    monkeypatch.setattr(tpm, "install", half_then_interrupt)
+    out = tmp_path / "o"
+    with pytest.raises(KeyboardInterrupt):
+        tpm.main(["--dataset", str(ds), "--out-dir", str(out), "--model-dir", str(models)])
+    report = json.loads((out / "gate.json").read_text(encoding="utf-8"))
+    assert report["install_error"].startswith("KeyboardInterrupt")
+    assert report["install_state"] == {tpm.FLOW_FILE: "new", tpm.KNN_FILE: "new"}
+
+
+def test_check_dataset_ignores_kinetics_for_pose(monkeypatch):
+    """자세 데이터셋의 kinetics 열(False)은 계획 설정(True)과 달라도 경고하지 않는다."""
+    monkeypatch.setattr(tpm, "current_stamp", lambda: {"nozzle_layout_hash": "n0", "physics_hash": "p0",
+                                                       "kinetics_enabled": True, "time_constant_s": 2.0})
+    from airis.model import knn
+
+    monkeypatch.setattr(knn, "STAMP_COLS", knn.STAMP_COLS + ("kinetics_enabled",))   # 도장 열이 늘어난 경우
+    df = pd.DataFrame({"physics_hash": ["p0"], "nozzle_layout_hash": ["n0"], "kinetics_enabled": [False]})
+    stamp, warns = tpm.check_dataset(df)
+    assert stamp["kinetics_enabled"] == "False" and warns == []
+    _, warns = tpm.check_dataset(df.assign(physics_hash=["p9"]))
+    assert len(warns) == 1 and warns[0].startswith("physics_hash")
