@@ -372,3 +372,73 @@ def test_pose_bound_warns_and_records_skipped_starts(tmp_path, recwarn):
     entry = data["scenarios"]["default"]
     assert entry["starts_used"] == ["default"] and entry["starts_skipped"] == ["hands_up"]
     assert entry["runs"][0]["peak_gap"] is None, "시작점이 하나면 peak_gap 은 null"
+
+
+# ---------- e4_reference.json 내보내기 ----------
+
+def _fake_bundle(path, *, group, pose_bound=(), rescore_score=0.5):
+    """작은 E4 묶음 하나 (best_poses.json + e4_summary.csv)."""
+    path.mkdir(parents=True, exist_ok=True)
+    pose = {"shoulder_abduction": 179.0, "shoulder_flexion": 0.0, "elbow_flexion": 1.0,
+            "torso_pitch": 0.0, "torso_yaw": -100.0, "hip_flexion": 0.0, "knee_flexion": 30.0}
+    folded = dict(pose, torso_yaw=80.0)
+    (path / "best_poses.json").write_text(json.dumps({
+        "group_id": group, "commit": "abc1234", "physics_hash": "ph", "nozzle_hash": "nh",
+        "args": {"patches_per_m2": 1500.0, "rescore_patches_per_m2": 2000.0,
+                 "starts": "default", "pose_bound": list(pose_bound)},
+        "scenarios": {"default": {
+            "runs": [{"exp_id": f"{group}_r0", "seed": 0, "best_score": 0.49,
+                      "rescore_score": rescore_score, "best_start": "default",
+                      "pose": pose, "pose_folded": folded}],
+            "baselines": {c: {"score": v, "infeasible": False}
+                          for c, v in (("B0", 0.23), ("B1", 0.38), ("B2", 0.25))},
+        }},
+    }, ensure_ascii=False), encoding="utf-8")
+    with (path / "e4_summary.csv").open("w", newline="", encoding="utf-8") as fh:
+        w = csv.DictWriter(fh, fieldnames=["scenario", "rescore_B0_score", "rescore_B1_score",
+                                           "rescore_B2_score"])
+        w.writeheader()
+        w.writerow({"scenario": "default", "rescore_B0_score": "0.234",
+                    "rescore_B1_score": "0.381", "rescore_B2_score": "0.249"})
+    return path
+
+
+def test_export_e4_reference(tmp_path):
+    """묶음 두 개 → 기준 수치 한 장. 사람이 수치를 옮겨 적지 않게 하는 것이 목적이다."""
+    import importlib.util
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[1]
+    spec = importlib.util.spec_from_file_location(
+        "export_e4_reference", root / "scripts" / "export_e4_reference.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+
+    a = _fake_bundle(tmp_path / "a", group="base", rescore_score=0.62)
+    b = _fake_bundle(tmp_path / "b", group="down",
+                     pose_bound=("shoulder_abduction=0,90",), rescore_score=0.49)
+    out = tmp_path / "e4_reference.json"
+    assert mod.main(["--bundle", str(a), "--bundle", str(b), "--out", str(out),
+                     "--note", "down=상한 탐색"]) == 0
+
+    data = json.loads(out.read_text(encoding="utf-8"))
+    assert [x["group_id"] for x in data["bundles"]] == ["base", "down"]
+    assert data["bundles"][1]["pose_bound"] == ["shoulder_abduction=0,90"]
+    assert data["bundles"][1]["note"] == "상한 탐색"
+
+    block = data["scenarios"]["default"]
+    # 기준선은 묶음별로, 탐색 밀도와 재채점 밀도를 따로 (라벨 혼동 방지).
+    assert block["baselines"]["base"]["search"]["scores"]["B0"] == 0.23
+    assert block["baselines"]["base"]["search"]["patches_per_m2"] == 1500.0
+    assert block["baselines"]["base"]["rescored"]["scores"]["B0"] == 0.234
+    assert block["baselines"]["base"]["rescored"]["patches_per_m2"] == 2000.0
+
+    # 봉우리는 점수 내림차순, 재채점 점수를 score 로.
+    assert [p["score"] for p in block["peaks"]] == [0.62, 0.49]
+    top = block["peaks"][0]
+    assert top["score_search"] == 0.49 and top["score_folded"] is None   # --rescore 없음
+    assert top["arm_class"] == "hands_up"
+    assert top["pose_raw"]["torso_yaw"] == -100.0 and top["pose_folded"]["torso_yaw"] == 80.0
+    assert "knee_flexion" in top["at_bound"], "범위 끝(30°)에 닿은 변수를 표시한다"
+    assert block["peaks"][1]["constraint"] == "shoulder_abduction=0,90"
+    json.dumps(data, allow_nan=False)
