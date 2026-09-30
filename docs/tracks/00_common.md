@@ -184,11 +184,12 @@ T_r         = adhesion.kinetics.time_constant_s
 풍량        Q_m  = s_m · fan.rated_flow_m3_min
 제약        0 ≤ s_z ≤ fan.s_max,   Σ_m s_m ≤ fan.cap_ratio · M
 보수        합이 한도를 넘으면 전 구역 세기를 같은 비율로 줄인다 (C 의 인코더에서, 평가 전)
-쾌적 상한    scenario.nozzle_strength_cap (임산부: chest_low, chest_high ≤ 0.6)
+쾌적 상한    s_z ≤ scenario.nozzle_strength_cap[구역 이름]  (키 = ZONE_NAMES. 임산부: chest_low · chest_high ≤ 0.6)
 에너지      e = (Σ_m s_m^p · T) / (M · T_ref),  p = fan.power_exponent (3, 팬 상사 법칙)
             전 팬 s = 1, T = T_ref 이면 e = 1 (현행 운전)
 ```
 
+- 쾌적 상한의 키는 부위 이름이 아니라 구역 이름이다. `airis.sim.scenario.zone_strength_caps(scenario)`가 구역별 상한 (5,)를 돌려준다(상한 없는 구역은 inf, 몸 기준이라 `torso_yaw`와 무관). 옛 부위 키 `torso_front`는 C가 `zone_strength_caps()`로 옮길 때까지만 `configs/scenarios.yaml`에 남긴다.
 - 구역 세기는 계획 전체에서 하나다. 단계마다 가슴 쪽 벽이 바뀌면 구역 → 노즐 매핑만 단계별로 다시 계산한다.
 - 몸 기준 구역이라 기존 대칭 접기(`yaw ±θ`, `θ ≡ 180° − θ`)가 계획에서도 성립한다.
 - **계획의 대칭 정규화 (C의 `PlanEncoder`, 데이터셋·모델 공통)**: 좌우 거울(전 단계 `yaw → −yaw`)과 앞뒤 등가(전 단계 `θ → 180° − θ`)는 **계획 전체에 함께** 적용한다. 1단계 yaw만 0~90°가 되게 두 변환을 고르고, 나머지 단계의 yaw는 그 변환을 따라 바뀐 값을 시나리오 범위 그대로 둔다. 단계마다 따로 접으면 "1단계 왼쪽 벽, 2단계 오른쪽 벽" 같은 계획이 사라진다. 구역 세기는 몸 기준이라 두 변환에서 바뀌지 않는다.
