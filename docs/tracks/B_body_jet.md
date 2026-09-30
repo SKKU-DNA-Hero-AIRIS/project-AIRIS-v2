@@ -177,3 +177,13 @@ E의 `airis/viz/human_mesh.py`(MakeHuman 로드·스키닝)를 `airis/sim/human_
 | D `PatchEvaluator` 1회 (메시, 400/m²) | 22.8 ms (기준 100 ms) |
 | 근사 캡슐 | 몸 19개 (몸통 띠 5개 = torso_front), 휠체어 +4 (−1) |
 | 임산부 배 | `stomach-pregnant-incr.target` (CC0), 몸 앞쪽 끝 +4.2 cm, 체형 측정값 불변 |
+
+## 단계 11. 세기·시간 확장 1단계 (`docs/plan_extension.md` 7절 순서 1) — **완료** (PR #88, T_r·k 문헌 조사는 별도 PR)
+
+- 구역 정의 (`configs/nozzles.yaml` `zones`, `z_tolerance_m` 0.02): `slot_bars` 측면 low = z 0.72·0.95, high = 1.18·1.42, top = 아래를 향한 상단 바 4개(방향 z 성분 < −0.5). 원형 비교 배치 `layout`은 low 0.5·0.9 / high 1.3·1.7. 어느 구역에도 들지 않는 노즐은 오류.
+- 가슴 쪽 벽 규칙: `sin(torso_yaw) ≥ 0`이면 +y 벽이 chest, 반대 벽이 back. `|sin| < 1e−6`(정면·후면, ±180 포함)이면 +y로 고정 (`CHEST_SIN_EPS`, C `PlanEncoder`의 `FRONT_EPS`와 같은 한계).
+- 함수 (`airis/sim/scenario.py`, 계약은 `docs/interfaces.md`): `apply_zone_strengths(nozzle, zone_strengths, torso_yaw, zones=None)`, `nozzle_zone_index`, `zone_nozzle_counts()`(기준 배치 `[2, 2, 2, 2, 4]`), `chest_wall_sign`, `zone_strength_caps(scenario)`, `zone_config()`.
+- `configs/physics.yaml` 새 키 (미보정 작업값): `adhesion.kinetics.{enabled, time_constant_s}`, `fan.{rated_flow_m3_min, s_max, cap_ratio, power_exponent}`, `scoring.{energy_weight, time_weight, reference_duration_s}`, `plan.{n_phases, duration_bounds_s, min_phase_s, transition_s}`.
+- 쾌적 상한 (`configs/scenarios.yaml`): 임산부 `nozzle_strength_cap`을 구역 키 `chest_low`·`chest_high` 0.6으로. 옛 부위 키 `torso_front: 0.6`은 C가 `zone_strength_caps()`로 옮길 때까지만 남긴다. 로더가 키를 검사한다(구역 이름 또는 옛 부위 키만 허용).
+- 패치 물질점 보장 (`00_common.md` 4.6): 메시 몸통 앞뒤(`torso_front`/`torso_back`)를 체형 맞춘 휴지 자세의 면 법선으로 한 번만 판정한다(`human_mesh._rest_face_part`). 이전에는 자세 적용 후 법선으로 판정해 옆구리 면이 자세에 따라 앞뒤를 오갔다. 패치 수·면·무게중심 좌표·부위는 자세와 무관하고, 위치·법선·면적은 스키닝 값이라 자세마다 다르다. 캡슐 마네킹은 수·캡슐·부위·면적·캡슐 위 위치가 모두 같다.
+- 테스트: `tests/test_jet.py`(구역 소속, 좌우 거울·앞뒤 등가, 물리 대칭, 쾌적 상한, 설정 키), `tests/test_human_mesh.py`·`tests/test_body.py`(패치 물질점).

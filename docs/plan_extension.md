@@ -53,7 +53,7 @@ K=1이면 단일 단계 식과 같다. 단계 전환 시간 `plan.transition_s` 
 보수      Σ s_m 이 한도를 넘으면 전 구역을 같은 비율로 줄인다 (인코더에서, 평가 전)
 에너지    e = (Σ_m s_m^p · T) / (M · T_ref),  p = fan.power_exponent = 3 (팬 상사 법칙)
           현행 운전(전 팬 s=1, T = T_ref = 20 s)이면 e = 1
-쾌적 상한  scenario.nozzle_strength_cap: 임산부는 가슴 쪽 벽 구역 s ≤ 0.6
+쾌적 상한  scenario.nozzle_strength_cap (구역 이름 키): 임산부는 chest_low · chest_high ≤ 0.6
 ```
 
 ### 4.4 점수 확장
@@ -86,7 +86,7 @@ score = Σ_부위 w_부위 · R_부위
 
 - `types.py`: `Phase(pose, duration_s)`, `Plan(phases, zone_strengths)` 추가. `NozzleConfig`는 그대로.
 - `Evaluator.evaluate_plan(plan, nozzle, body, scenario) -> EvalResult` 추가. `extra`에 `energy`, `duration_s`, 단계별 제거율. 기존 `evaluate(pose, …)`는 변경 없음(시간 항 없는 점근값) → 기존 E2~E4·데이터셋 유효.
-- B: `apply_zone_strengths(nozzle, zone_strengths, yaw) -> NozzleConfig`, `nozzles.yaml`에 구역 정의.
+- B: `airis.sim.scenario.apply_zone_strengths(nozzle, zone_strengths, torso_yaw, zones=None) -> NozzleConfig`, `nozzles.yaml`에 구역 정의.
 - C: `PlanEncoder`(21차원, 한도 보수, 대칭 정규화), 데이터셋 스키마에 계획 열.
 - 모델 계약: `predict_plan(body, scenario) -> Plan` (기존 `predict_pose`는 유지).
 - E: 단계별 자세 안내, 구역 세기 표시, 장비 제어용 출력(JSON: 구역별 팬 속도, 시간).
