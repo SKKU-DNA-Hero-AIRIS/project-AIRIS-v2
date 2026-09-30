@@ -1,6 +1,6 @@
 # 공통 규약: 병렬 트랙 개발
 
-네 트랙(B 마네킹·제트, D 패치 기준선, C 최적화, A 입자)을 서로 기다리지 않고 동시에 개발하기 위한 규약이다. 각 트랙의 세션은 이 문서와 자기 트랙 문서만 읽으면 시작할 수 있어야 한다.
+트랙(B 마네킹·제트, D 패치 기준선, C 최적화, A 입자, E 실시간·시각화, F 추천 모델)을 서로 기다리지 않고 동시에 개발하기 위한 규약이다. 각 트랙의 세션은 이 문서와 자기 트랙 문서만 읽으면 시작할 수 있어야 한다.
 
 ## 1. 파일 소유권
 
@@ -8,9 +8,10 @@
 |---|---|---|
 | B | `airis/sim/body.py`, `human_mesh.py`, `jet.py`, `scenario.py`, `airis/viz/debug3d.py`, `configs/*.yaml`, `data/meshes/*`, `scripts/build_sim_mesh.py`, `tests/test_body.py`, `tests/test_jet.py`, `tests/test_human_mesh.py` | |
 | D | `airis/sim/patch_baseline.py`, `airis/sim/scoring.py`, `tests/test_sanity_physics.py`, `tests/fakes.py`, `scripts/compare_evaluators.py`, `scripts/compare_bodies.py`, `tests/test_plan_eval.py` | `configs/` |
-| C | `airis/optimize/*`, `scripts/run_optimize.py`, `scripts/run_baselines.py`, `scripts/run_e4.py`, `scripts/run_e3.py`, `scripts/run_dataset.py`, `scripts/run_e7.py`, `airis/model/*`, `scripts/train_*.py`, `scripts/run_e5_*.py`, `docs/experiments.md`, `docs/proposals/*`, `tests/test_encoding.py`, `tests/test_cmaes_dummy.py`, `tests/test_plan_encoding.py`, `tests/test_pose_flow.py` | `configs/` |
+| C | `airis/optimize/*`, `scripts/run_optimize.py`, `scripts/run_baselines.py`, `scripts/run_e4.py`, `scripts/run_e3.py`, `scripts/run_dataset.py`, `scripts/run_e7.py`, `docs/experiments.md`, `tests/test_encoding.py`, `tests/test_cmaes_dummy.py`, `tests/test_plan_encoding.py` | `configs/` |
 | A | `airis/sim/particles.py`, `airis/sim/kernels/*`, `tests/test_particles.py` | `configs/` |
 | E | `airis/realtime/*`, `airis/viz/*`(단 `debug3d.py`는 B), `scripts/run_dashboard.py`, `scripts/render_frames.py`, `tests/test_realtime.py`, `tests/test_viz.py`, `docs/figures/*` | `configs/`, `airis/sim/*` |
+| F | `airis/model/*`, `scripts/train_*.py`, `scripts/build_pose_knn.py`, `scripts/run_e5_*.py`, `tests/test_pose_flow.py`, `tests/test_model_*.py`, `docs/experiments_model.md`, `docs/proposals/*` (2026-09-30 신설. C의 혼합 추천 PR 병합 뒤부터 소유, `docs/tracks/F_model.md`) | `configs/`, `airis/sim/*`, `airis/optimize/*`, `airis/realtime/*` |
 | 전원 | | `airis/sim/types.py`, `airis/sim/interface.py`, `docs/interfaces.md` |
 
 공용 파일을 바꿔야 한다면 코드를 고치지 말고 PR 설명이나 이슈에 "types.py 변경 제안"으로 남긴다. 병합 담당이 별도 PR로 처리한다.
