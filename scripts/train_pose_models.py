@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import shutil
 import sys
 import time
@@ -169,16 +170,28 @@ def markdown_table(stats, verdict: dict, info: dict) -> str:
 # ---------- 6. 설치 ----------
 
 def install(src_dir: Path, model_dir: Path, names=(FLOW_FILE, KNN_FILE)) -> list[Path]:
-    """src_dir 의 산출물을 model_dir 로 복사. 기존 파일은 <이름>.prev 로 옮긴다."""
+    """src_dir 의 산출물을 model_dir 로 설치. 기존 파일은 <이름>.prev 로 남긴다 (1세대).
+
+    전부 <이름>.new 로 먼저 복사한 뒤 교체하므로, 복사 중에 실패하면 기존 산출물은 그대로다
+    (flow 만 새것이고 kNN 은 옛것인 섞인 상태가 복사 실패로는 생기지 않는다).
+    """
     model_dir.mkdir(parents=True, exist_ok=True)
-    out = []
-    for name in names:
-        dst = model_dir / name
+    staged = []
+    try:
+        for name in names:
+            tmp = model_dir / (name + ".new")
+            shutil.copy2(src_dir / name, tmp)
+            staged.append((tmp, model_dir / name))
+    except Exception:
+        for tmp, _ in staged:
+            tmp.unlink(missing_ok=True)
+        raise
+    for _, dst in staged:
         if dst.exists():
             shutil.copy2(dst, dst.with_name(dst.name + ".prev"))
-        shutil.copy2(src_dir / name, dst)
-        out.append(dst)
-    return out
+    for tmp, dst in staged:
+        os.replace(tmp, dst)
+    return [dst for _, dst in staged]
 
 
 def default_model_dir() -> Path:

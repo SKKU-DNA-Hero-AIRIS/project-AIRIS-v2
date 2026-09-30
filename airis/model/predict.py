@@ -121,7 +121,7 @@ def artifact_status(model_path: Path | str | None = None, knn_path: Path | str |
 
         항목 = {"path": str, "exists": bool,
                 "stamp": {nozzle_layout_hash, physics_hash, body_model, patches_per_m2, commit},  # 없는 키는 None
-                "match": bool | None,         # 지금 설정과 도장이 같은가. 산출물·설정을 못 읽으면 None
+                "match": bool | None,         # 지금 설정과 도장이 같은가. 산출물·설정을 못 읽거나 도장이 없으면 None
                 "mismatched": [키 ...],       # 다른 키 (STAMP_KEYS 중)
                 "error": str | None}          # 읽기 실패 (torch 없음 등)
     """
@@ -141,7 +141,7 @@ def artifact_status(model_path: Path | str | None = None, knn_path: Path | str |
             out["error"] = f"{type(exc).__name__}: {exc}"
             return out
         out["stamp"] = {k: meta.get(k) for k in STAMP_KEYS + INFO_KEYS}
-        if now is not None:
+        if now is not None and any(meta.get(k) is not None for k in STAMP_KEYS):   # 도장이 없으면 확인 불가(None)
             out["mismatched"] = stamp_mismatch(meta, now)
             out["match"] = not out["mismatched"]
         return out
