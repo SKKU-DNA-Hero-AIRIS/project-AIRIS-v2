@@ -442,3 +442,49 @@ def test_export_e4_reference(tmp_path):
     assert "knee_flexion" in top["at_bound"], "범위 끝(30°)에 닿은 변수를 표시한다"
     assert block["peaks"][1]["constraint"] == "shoulder_abduction=0,90"
     json.dumps(data, allow_nan=False)
+
+
+def test_committed_e4_reference_is_consistent():
+    """docs/e4_reference.json (실제 파일) 자체의 규칙을 지킨다 (통합 2026-10-01 지적 1).
+
+    다른 트랙이 이 파일을 그대로 읽으므로, 내보내기 함수뿐 아니라 **커밋된 내용**도 본다.
+    """
+    from pathlib import Path
+
+    from airis.optimize import sensitivity
+    from airis.sim import PoseParams
+    from airis.sim.scenario import load_scenarios
+
+    root = Path(__file__).resolve().parents[1]
+    data = json.loads((root / "docs" / "e4_reference.json").read_text(encoding="utf-8"))
+    scenarios = load_scenarios()
+
+    assert data["pose_keys"] == [f"{k}" for k in e4.POSE_KEYS]
+    for bundle in data["bundles"]:
+        assert not Path(bundle["path"]).is_absolute(), "개인 경로를 남기지 않는다"
+        assert bundle["physics_hash"] and bundle["commit"]
+
+    for name, block in data["scenarios"].items():
+        scenario = scenarios[name]
+        lo_yaw, hi_yaw = scenario.pose_bounds["torso_yaw"]
+        for group, base in block["baselines"].items():
+            assert base["search"]["patches_per_m2"], f"{name}/{group}: 탐색 밀도가 없다"
+            assert set(base["search"]["scores"]) == {"B0", "B1", "B2"}
+            assert base["rescored"]["patches_per_m2"] and base["rescored"]["scores"], "재채점 기준선"
+
+        scores = [p["score"] for p in block["peaks"]]
+        assert scores == sorted(scores, reverse=True), "봉우리는 점수 내림차순"
+        for peak in block["peaks"]:
+            pose = PoseParams(**peak["pose_raw"])
+            folded = peak["pose_folded"]
+            # 접은 yaw 는 0~90°, 단 시나리오 범위가 더 좁으면(휠체어 ±45°) 그 안이다.
+            assert 0.0 <= folded["torso_yaw"] <= min(90.0, hi_yaw) + 1e-6, f"{name} {peak['exp_id']}"
+            assert folded["torso_yaw"] == pytest.approx(e4.fold_yaw(pose.torso_yaw), abs=1e-6)
+            assert lo_yaw <= peak["pose_raw"]["torso_yaw"] <= hi_yaw
+            # arm_class 는 벌림 90° 를 경계로 한다.
+            assert peak["arm_class"] == sensitivity.arm_class(pose)
+            assert (peak["arm_class"] == "hands_up") == (pose.shoulder_abduction >= 90.0)
+            assert peak["score_folded"] is not None or peak["folded_rescored"] is False
+            for key in peak["at_bound"]:
+                lo, hi = scenario.pose_bounds[key]
+                assert min(abs(peak["pose_raw"][key] - lo), abs(peak["pose_raw"][key] - hi)) < 0.1
