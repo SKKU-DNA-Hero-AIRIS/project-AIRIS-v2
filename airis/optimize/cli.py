@@ -7,6 +7,7 @@ from __future__ import annotations
 import hashlib
 import json
 import sys
+import warnings
 from dataclasses import fields
 from typing import Any
 
@@ -51,13 +52,24 @@ def parse_starts(raw: str) -> list[Start]:
 
 
 def parse_pose_bound(spec: str) -> tuple[str, tuple[float, float]]:
-    """'shoulder_abduction=0,90' → ('shoulder_abduction', (0.0, 90.0))."""
-    key, _, rng = spec.partition("=")
-    lo_s, _, hi_s = rng.partition(",")
+    """'shoulder_abduction=0,90' → ('shoulder_abduction', (0.0, 90.0)).
+
+    lo < hi 여야 하고 nan 은 거부한다 (조용히 뒤집거나 원래 범위로 되돌리지 않는다).
+    """
+    import math
+
+    key, sep, rng = spec.partition("=")
+    lo_s, comma, hi_s = rng.partition(",")
+    if not sep or not comma:
+        raise SystemExit(f"--pose-bound 형식이 '변수=lo,hi' 가 아니다: {spec!r}")
     try:
         lo, hi = float(lo_s), float(hi_s)
     except ValueError:
-        raise SystemExit(f"--pose-bound 형식이 '변수=lo,hi' 가 아니다: {spec!r}") from None
+        raise SystemExit(f"--pose-bound 의 lo,hi 가 수가 아니다: {spec!r}") from None
+    if math.isnan(lo) or math.isnan(hi):
+        raise SystemExit(f"--pose-bound 에 nan 은 쓸 수 없다: {spec!r}")
+    if not lo < hi:
+        raise SystemExit(f"--pose-bound 는 lo < hi 여야 한다: {spec!r}")
     return key.strip(), (lo, hi)
 
 
@@ -81,12 +93,34 @@ def narrow_scenario(scenario: Scenario, specs: list[str] | None) -> Scenario:
             raise SystemExit(f"{key} 의 pose_bounds 가 시나리오 {scenario.name} 에 없다 "
                              f"(가능: {', '.join(sorted(bounds))})")
         olo, ohi = bounds[key]
-        nlo, nhi = max(olo, min(lo, hi)), min(ohi, max(lo, hi))
-        if not nlo < nhi:
-            raise SystemExit(f"{key}: 좁힌 범위 [{lo:g}, {hi:g}] 가 시나리오 범위 "
-                             f"[{olo:g}, {ohi:g}] 와 겹치지 않는다")
+        nlo, nhi = max(olo, lo), min(ohi, hi)
+        if nlo >= nhi:
+            raise SystemExit(
+                f"{key}: 좁힌 범위 [{lo:g}, {hi:g}] 와 시나리오 범위 [{olo:g}, {ohi:g}] 의 "
+                f"교집합이 " + ("한 점뿐이라 탐색할 수 없다" if nlo == nhi else "비어 있다"))
+        if (nlo, nhi) != (lo, hi):
+            warnings.warn(f"{scenario.name}: {key} 범위 [{lo:g}, {hi:g}] 를 시나리오 범위 "
+                          f"[{olo:g}, {ohi:g}] 와의 교집합 [{nlo:g}, {nhi:g}] 으로 줄였다",
+                          RuntimeWarning, stacklevel=2)
         bounds[key] = (nlo, nhi)
     return replace(scenario, pose_bounds=bounds)
+
+
+def starts_in_bounds(starts: list[Start], scenario: Scenario) -> tuple[list[Start], list[str]]:
+    """범위 안 시작점만 남긴다. (남은 시작점, 버린 이름) — 하나도 안 남으면 SystemExit.
+
+    좁힌 범위에서 범위 밖 시작점(예: 벌림 0~90° 에 hands_up = 180°)을 그대로 두면 encode 가
+    조용히 잘라 같은 자세에서 두 번 출발하고 예산만 반 쓴다. per_start·peak_gap 도 거짓이 된다.
+    """
+    kept, dropped = [], []
+    for st in starts:
+        pose = st.pose if st.pose is not None else PoseParams()
+        out = [k for k, (lo, hi) in scenario.pose_bounds.items()
+               if k not in scenario.fixed_pose and not lo <= getattr(pose, k) <= hi]
+        (dropped.append(st.name) if out else kept.append(st))
+    if not kept:
+        raise SystemExit(f"시작점이 모두 시나리오 {scenario.name} 의 범위 밖이다: {', '.join(dropped)}")
+    return kept, dropped
 
 
 def format_bounds_note(scenario: Scenario, original: Scenario) -> str:
@@ -188,8 +222,12 @@ def make_evaluator(
     기본 자세로 한 번 시험 평가해 본다. 미구현이면 TrackNotMerged 를 던진다.
     """
     if name == "dummy":
-        weight = float((physics_cfg or {}).get("scoring", {}).get("energy_weight", 0.1))
-        return DummyEvaluator(dummy_target or DEFAULT_DUMMY_TARGET, scenario, energy_weight=weight)
+        scoring_cfg = (physics_cfg or {}).get("scoring", {})
+        weight = float(scoring_cfg.get("energy_weight", 0.1))
+        # T_ref 도 넘긴 설정에서 온다 (없으면 DummyEvaluator 가 configs/physics.yaml 에서 읽는다).
+        t_ref = scoring_cfg.get("reference_duration_s")
+        return DummyEvaluator(dummy_target or DEFAULT_DUMMY_TARGET, scenario, energy_weight=weight,
+                              reference_duration_s=float(t_ref) if t_ref is not None else None)
 
     if name not in _OWNER:
         raise SystemExit(f"알 수 없는 평가기: {name} (가능: {', '.join(EVALUATOR_CHOICES)})")

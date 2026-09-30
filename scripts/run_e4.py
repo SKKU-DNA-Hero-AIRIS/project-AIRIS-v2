@@ -20,11 +20,18 @@
 
 요약 파일은 실행 묶음마다 <group_id> 폴더에 따로 남긴다 (다시 돌려도 이전 요약을 덮어쓰지 않는다).
 범위를 좁힌 탐색 (--pose-bound):
-    configs/scenarios.yaml 을 건드리지 않고 pose_bounds 를 실행 시점에 좁힌다 (원래 범위와 교집합).
+    configs/scenarios.yaml 을 건드리지 않고 **탐색 상자만** 실행 시점에 좁힌다 (원래 범위와 교집합).
     예: 천장(2.15 m)에 손이 닿지 않는 팔 내림 봉우리를 찾을 때
         --starts default --pose-bound shoulder_abduction=0,90 --pose-bound shoulder_flexion=-30,90
     벌림만 막으면 최적화가 어깨 굽힘(팔을 앞으로 들기)으로 빠져나가니 둘 다 건다.
-    좁힌 범위는 meta.json·best_poses.json 의 args 에 남는다.
+
+    **점수는 원래 시나리오로 매긴다.** scoring.discomfort 가 pose_bounds 폭으로 정규화하기 때문에
+    (airis/sim/scoring.py) 좁힌 시나리오로 채점하면 그 변수의 불편도가 폭에 반비례해 커져
+    점수가 다른 E4 묶음과 비교 불가능해지고 탐색 목적함수까지 달라진다 (통합 2026-09-30 지적).
+    그래서 평가기·채점·기준선에는 원래 시나리오를 넘기고, 좁힌 시나리오는 PoseEncoder
+    (= 탐색 상자)에만 쓴다. 범위 밖 시작점은 경고와 함께 건너뛴다.
+    좁힌 범위는 meta.json·best_poses.json 의 args·pose_bounds_effective, 요약 CSV 의
+    pose_bound 열에 남는다.
 
 docs/tracks/C_optimize.md 단계 7.
 """
@@ -42,6 +49,7 @@ if str(ROOT) not in sys.path:
 
 from airis.optimize import baselines, cli, e4, explog         # noqa: E402
 from airis.optimize.cmaes_runner import run_cmaes             # noqa: E402
+from airis.optimize.encoding import PoseEncoder                # noqa: E402
 from airis.sim import PART_NAMES, BodyParams, PoseParams      # noqa: E402
 from airis.sim.scenario import load_scenarios                 # noqa: E402
 
@@ -93,6 +101,9 @@ def main(argv: list[str] | None = None) -> int:
         print("--seeds 가 비어 있다", file=sys.stderr)
         return 2
 
+    # 좁힌 범위는 루프 전에 전부 검증한다 (뒤쪽 시나리오에서 죽으면 앞선 실행이 요약 없이 버려진다).
+    narrowed = {n: cli.narrow_scenario(all_scenarios[n], args.pose_bound) for n in names}
+
     body = cli.dataclass_from_json(BodyParams, args.body)
     dummy_target = cli.dataclass_from_json(PoseParams, args.dummy_target) if args.dummy_target else None
     starts = cli.parse_starts(args.starts)
@@ -123,13 +134,17 @@ def main(argv: list[str] | None = None) -> int:
     }
 
     for name in names:
-        # 기준선(B0·B1·B2)은 **원래 범위**로 평가한다. 좁힌 범위로 재면 B2(만세)가 범위 밖으로
-        # 밀려 나가 개선율이 다른 E4 묶음과 비교 불가능해진다. 탐색만 좁힌 범위로 한다.
-        full_scenario = all_scenarios[name]
-        scenario = cli.narrow_scenario(full_scenario, args.pose_bound)
+        # 채점(평가기·기준선·재채점)은 원래 시나리오로, 탐색 상자만 좁힌 시나리오로 한다.
+        scenario = all_scenarios[name]           # 점수 척도의 기준 (불편도 정규화 포함)
+        search_scenario = narrowed[name]         # 탐색 상자
+        encoder = PoseEncoder(search_scenario) if args.pose_bound else None
+        scenario_starts = starts
         if args.pose_bound:
-            print(f"  [{name}] 좁힌 범위: {cli.format_bounds_note(scenario, full_scenario)}"
-                  f"  (기준선은 원래 범위로 평가)")
+            scenario_starts, dropped = cli.starts_in_bounds(starts, search_scenario)
+            print(f"  [{name}] 좁힌 탐색 상자: {cli.format_bounds_note(search_scenario, scenario)}"
+                  f"  (점수·기준선은 원래 범위)")
+            if dropped:
+                print(f"  [{name}] 범위 밖 시작점 건너뜀: {', '.join(dropped)}")
         try:
             evaluator = cli.make_evaluator(
                 args.evaluator, scenario, body=body, nozzle=nozzle, dummy_target=dummy_target,
@@ -139,12 +154,13 @@ def main(argv: list[str] | None = None) -> int:
             print(str(exc), file=sys.stderr)
             return 3
 
-        base = baselines.evaluate_all(evaluator, nozzle, body, full_scenario)
+        base = baselines.evaluate_all(evaluator, nozzle, body, scenario)
         for cond, agg in base.items():
             row = {"scenario": name, "condition": cond, "infeasible": agg["infeasible"],
                    "score": agg["score"], "total_removal": agg["total_removal"],
                    "discomfort": agg["discomfort"], "n_feasible": agg["n_feasible"],
                    "n_in_bounds": agg["n_in_bounds"], "yaws": agg["yaws"]}
+            row["pose_bound"] = ";".join(args.pose_bound)
             row.update({f"removal_{p}": float(v) for p, v in zip(PART_NAMES, agg["removal_by_part"])})
             baseline_rows.append(row)
 
@@ -154,14 +170,16 @@ def main(argv: list[str] | None = None) -> int:
             result = run_cmaes(
                 evaluator, body, scenario, nozzle,
                 max_evals=args.max_evals, seed=seed, popsize=args.popsize, sigma0=args.sigma0,
-                tol_stagnation_gens=args.tol_stagnation_gens, starts=starts,
-                log_dir=args.log_dir, exp_id=exp_id,
+                tol_stagnation_gens=args.tol_stagnation_gens, starts=scenario_starts,
+                log_dir=args.log_dir, exp_id=exp_id, encoder=encoder,
             )
             explog.write_run(
                 args.log_dir, exp_id,
                 scenario=scenario, body=body, nozzle_hash=nozzle_hash, physics_hash=physics_hash,
                 commit=commit, seed=seed,
                 args={**vars(args), "e4_group": group_id, "scenario": name, "seed": seed,
+                      "pose_bounds_effective": {k: list(v) for k, v in search_scenario.pose_bounds.items()
+                                                if v != scenario.pose_bounds[k]},
                       "nozzle_source": nozzle_source, "free_keys": result.free_keys,
                       "stop_reason": result.stop_reason, "elapsed_s": round(result.elapsed_s, 3)},
                 result=result,
@@ -179,13 +197,13 @@ def main(argv: list[str] | None = None) -> int:
                   f"{result.elapsed_s:6.1f} s  [{exp_id}]")
 
         summary = e4.summarize_scenario(runs, base)
-        row = {"scenario": name, **summary}
+        row = {"scenario": name, "pose_bound": ";".join(args.pose_bound), **summary}
         base_fine = None
         if rescore:
             # 같은 자세를 촘촘한 격자로 다시 평가한다 (탐색은 하지 않는다).
             fine = cli.make_evaluator(args.evaluator, scenario, body=body, nozzle=nozzle,
                                       patches_per_m2=args.rescore_patches_per_m2)
-            base_fine = baselines.evaluate_all(fine, nozzle, body, full_scenario)
+            base_fine = baselines.evaluate_all(fine, nozzle, body, scenario)
             for r in runs:
                 r["rescore_score"] = float(fine.evaluate(r["best_pose"], nozzle, body, scenario).score)
             fine_summary = e4.summarize_scenario(
@@ -209,7 +227,9 @@ def main(argv: list[str] | None = None) -> int:
             # 기준선은 밀도별로 따로 남긴다. 시드별 best 의 rescore_score 와 비교할 때는
             # 반드시 baselines_rescored(재채점 밀도) 쪽을 써야 한다 (통합 2026-09-30 지적).
             "baselines": {c: {"score": a["score"], "infeasible": a["infeasible"]} for c, a in base.items()},
-            "baselines_patches_per_m2": args.patches_per_m2,
+            "pose_bounds_effective": {k: list(v) for k, v in search_scenario.pose_bounds.items()
+                                      if v != scenario.pose_bounds[k]},
+            "baselines_patches_per_m2": args.patches_per_m2 if args.evaluator == "patch" else None,
             "baselines_rescored": ({c: {"score": a["score"], "infeasible": a["infeasible"]}
                                     for c, a in base_fine.items()} if base_fine else None),
             "baselines_rescored_patches_per_m2": args.rescore_patches_per_m2 if base_fine else None,

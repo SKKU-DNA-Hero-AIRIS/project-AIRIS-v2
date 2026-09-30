@@ -210,7 +210,57 @@ def test_best_poses_records_baselines_per_density(tmp_path):
 
     group = next(p for p in out.iterdir() if (p / "best_poses.json").exists())
     data = json.loads((group / "best_poses.json").read_text(encoding="utf-8"))["scenarios"]["default"]
-    assert data["baselines_patches_per_m2"] is not None
-    # 더미 평가기는 재채점을 하지 않으므로 재채점 기준선은 비어 있고, 키 자체는 있다.
+    # 더미 평가기는 패치 밀도도 재채점도 없다. 키는 남고 값만 None 이다.
+    assert data["baselines_patches_per_m2"] is None
     assert "baselines_rescored" in data and "baselines_rescored_patches_per_m2" in data
     assert set(data["baselines"]) == {"B0", "B1", "B2"}
+
+
+def test_pose_bound_scores_on_original_scale(tmp_path):
+    """--pose-bound 는 탐색 상자만 좁히고 점수는 원래 시나리오로 매긴다 (통합 2026-09-30 지적).
+
+    scoring.discomfort 가 pose_bounds 폭으로 정규화하므로, 좁힌 시나리오로 채점하면 그 변수의
+    불편도가 폭에 반비례해 커져 다른 E4 묶음과 비교할 수 없는 점수가 된다. 더미 평가기도
+    정규화 공간에서 거리를 재므로 같은 실수를 드러낸다.
+    """
+    import json
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    from airis.optimize.cli import DEFAULT_DUMMY_TARGET
+    from airis.optimize.dummy import DummyEvaluator
+    from airis.sim import BodyParams, PoseParams
+    from airis.sim.scenario import load_nozzles, load_scenarios
+
+    root = Path(__file__).resolve().parents[1]
+    out = tmp_path / "outputs"
+    cmd = [sys.executable, str(root / "scripts" / "run_e4.py"),
+           "--evaluator", "dummy", "--scenarios", "default", "--seeds", "0",
+           "--max-evals", "120", "--popsize", "20", "--starts", "default",
+           "--pose-bound", "shoulder_abduction=0,90", "--tag", "t", "--log-dir", str(out)]
+    assert subprocess.run(cmd, cwd=root, capture_output=True).returncode == 0
+
+    best = json.loads(next(out.glob("t_*/best.json")).read_text(encoding="utf-8"))
+    pose = PoseParams(**best["best_pose"])
+    assert 0.0 <= pose.shoulder_abduction <= 90.0, "탐색 상자는 좁혀져야 한다"
+
+    full = load_scenarios()["default"]
+    nozzle, _ = load_nozzles(), None
+    on_full = DummyEvaluator(DEFAULT_DUMMY_TARGET, full).evaluate(
+        pose, nozzle, BodyParams(), full).score
+    assert best["best_score"] == pytest.approx(on_full, abs=1e-9), "원래 시나리오 척도로 채점해야 한다"
+
+    # 좁힌 시나리오로 채점했다면 다른 값이 나온다 (이 테스트가 실제로 구분력이 있는지 확인).
+    from airis.optimize.cli import narrow_scenario
+    narrowed = narrow_scenario(full, ["shoulder_abduction=0,90"])
+    on_narrow = DummyEvaluator(DEFAULT_DUMMY_TARGET, narrowed).evaluate(
+        pose, nozzle, BodyParams(), narrowed).score
+    assert abs(on_narrow - on_full) > 1e-6
+
+    group = next(p for p in out.iterdir() if (p / "best_poses.json").exists())
+    data = json.loads((group / "best_poses.json").read_text(encoding="utf-8"))["scenarios"]["default"]
+    assert data["pose_bounds_effective"] == {"shoulder_abduction": [0.0, 90.0]}
+    assert data["baselines_patches_per_m2"] is None, "더미 실행에 패치 밀도를 적으면 안 된다"
+    rows = list(csv.DictReader((group / "e4_summary.csv").open(encoding="utf-8")))
+    assert rows[0]["pose_bound"] == "shoulder_abduction=0,90"

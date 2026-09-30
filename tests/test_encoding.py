@@ -104,8 +104,9 @@ def test_narrow_scenario_intersects_and_keeps_original(scenarios):
     assert base.pose_bounds == before, "원본 시나리오를 바꾸면 안 된다"
     assert cli.narrow_scenario(base, []) is base
 
-    # 넓히려 해도 원래 범위를 못 넘는다 (교집합).
-    wide = cli.narrow_scenario(base, ["shoulder_abduction=-90,900"])
+    # 넓히려 해도 원래 범위를 못 넘는다 (교집합). 조용히 줄이지 않고 경고를 낸다.
+    with pytest.warns(RuntimeWarning, match="교집합"):
+        wide = cli.narrow_scenario(base, ["shoulder_abduction=-90,900"])
     assert wide.pose_bounds["shoulder_abduction"] == before["shoulder_abduction"]
 
     # 좁힌 범위는 PoseEncoder 에 그대로 들어간다.
@@ -118,7 +119,17 @@ def test_narrow_scenario_rejects_bad_specs(scenarios):
     from airis.optimize import cli
 
     base = scenarios["default"]
-    for spec in ["shoulder_abduction=0", "없는변수=0,90", "shoulder_abduction=200,300"]:
+    bad = [
+        "shoulder_abduction=0",          # 쉼표 없음
+        "shoulder_abduction",            # = 없음
+        "shoulder_abduction=a,b",        # 수가 아님
+        "shoulder_abduction=nan,90",     # nan
+        "shoulder_abduction=90,0",       # lo > hi 를 조용히 뒤집지 않는다
+        "shoulder_abduction=90,90",      # 한 점
+        "없는변수=0,90",
+        "shoulder_abduction=200,300",    # 시나리오 범위 밖
+    ]
+    for spec in bad:
         with pytest.raises(SystemExit):
             cli.narrow_scenario(base, [spec])
 
@@ -127,3 +138,21 @@ def test_narrow_scenario_rejects_bad_specs(scenarios):
     if fixed:                                  # 고정된 변수는 좁히지 못한다
         with pytest.raises(SystemExit):
             cli.narrow_scenario(seated, [f"{fixed}=0,10"])
+
+
+def test_starts_in_bounds_skips_out_of_range(scenarios):
+    """좁힌 상자 밖 시작점은 조용히 잘리지 않고 걸러진다 (통합 2026-09-30 지적)."""
+    from airis.optimize import cli
+
+    base = scenarios["default"]
+    starts = cli.parse_starts("default,hands_up")
+    kept, dropped = cli.starts_in_bounds(starts, base)
+    assert [s.name for s in kept] == ["default", "hands_up"] and dropped == []
+
+    narrowed = cli.narrow_scenario(base, ["shoulder_abduction=0,90"])
+    kept, dropped = cli.starts_in_bounds(starts, narrowed)
+    assert [s.name for s in kept] == ["default"] and dropped == ["hands_up"]
+
+    only_up = cli.narrow_scenario(base, ["shoulder_abduction=170,180"])
+    with pytest.raises(SystemExit):                     # 전부 범위 밖이면 멈춘다
+        cli.starts_in_bounds([starts[0]], only_up)
