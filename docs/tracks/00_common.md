@@ -8,7 +8,7 @@
 |---|---|---|
 | B | `airis/sim/body.py`, `human_mesh.py`, `jet.py`, `scenario.py`, `airis/viz/debug3d.py`, `configs/*.yaml`, `data/meshes/*`, `scripts/build_sim_mesh.py`, `tests/test_body.py`, `tests/test_jet.py`, `tests/test_human_mesh.py` | |
 | D | `airis/sim/patch_baseline.py`, `airis/sim/scoring.py`, `tests/test_sanity_physics.py`, `tests/fakes.py`, `scripts/compare_evaluators.py`, `scripts/compare_bodies.py`, `tests/test_plan_eval.py` | `configs/` |
-| C | `airis/optimize/*`, `scripts/run_optimize.py`, `scripts/run_baselines.py`, `scripts/run_e4.py`, `scripts/run_e3.py`, `scripts/run_dataset.py`, `scripts/run_e7.py`, `docs/experiments.md`, `tests/test_encoding.py`, `tests/test_cmaes_dummy.py`, `tests/test_plan_encoding.py` | `configs/` |
+| C | `airis/optimize/*`, `scripts/run_optimize.py`, `scripts/run_baselines.py`, `scripts/run_e4.py`, `scripts/run_e3.py`, `scripts/run_dataset.py`, `scripts/run_e7.py`, `docs/experiments.md`, `tests/test_encoding.py`, `tests/test_cmaes_dummy.py`, `tests/test_plan_encoding.py`, `tests/test_e3.py`, `tests/test_e4.py`, `tests/test_dataset.py`, `docs/e4_reference.json`·`scripts/export_e4_reference.py`(예정, 2026-09-30 합의) | `configs/` |
 | A | `airis/sim/particles.py`, `airis/sim/kernels/*`, `tests/test_particles.py` | `configs/` |
 | E | `airis/realtime/*`, `airis/viz/*`(단 `debug3d.py`는 B), `scripts/run_dashboard.py`, `scripts/render_frames.py`, `tests/test_realtime.py`, `tests/test_viz.py`, `docs/figures/*` | `configs/`, `airis/sim/*` |
 | F | `airis/model/*`, `scripts/train_*.py`, `scripts/build_pose_knn.py`, `scripts/run_e5_*.py`, `tests/test_pose_flow.py`, `tests/test_model_*.py`, `docs/experiments_model.md`, `docs/proposals/*` (2026-09-30 신설. C의 혼합 추천 PR 병합 뒤부터 소유, `docs/tracks/F_model.md`) | `configs/`, `airis/sim/*`, `airis/optimize/*`, `airis/realtime/*` |
@@ -171,6 +171,7 @@ T_r         = adhesion.kinetics.time_constant_s
 ```
 
 - 임계 전단이 `τ_c`인 입자는 `τ_ik > τ_c`인 단계에서만 떨어질 수 있다는 가정에서 나온 정확한 식이다. K = 1이면 단일 단계 식과 같다.
+- `adhesion.kinetics.enabled`가 거짓이면 `evaluate_plan`의 제거율은 시간 항이 없는 점근값 `R_i = F(max_k τ_ik)`다(`scoring.removal_fraction_plan`. 위 식의 t → ∞ 극한). 단계가 1개면 4.3의 제거율과 같아, 구역 세기가 전부 1인 1단계 계획의 제거율은 `evaluate`와 같다.
 - 단계 사이 전환 시간 `plan.transition_s` 동안은 제거 0으로 본다.
 - **A (입자판)**: `τ > τ_c`인 부착 입자가 스텝마다 확률 `1 − exp(−dt/T_r)`로 이탈한다. 단계가 바뀌면 몸 자세를 바꾸고 부착 입자는 자기 패치를 따라 움직인다.
 - **B 보장**: 패치는 자세와 무관한 같은 물질점이어야 한다(휴지 자세에서 샘플링 후 스키닝). 단계가 달라도 패치 i는 같은 옷 위치다.
@@ -189,7 +190,7 @@ T_r         = adhesion.kinetics.time_constant_s
             전 팬 s = 1, T = T_ref 이면 e = 1 (현행 운전)
 ```
 
-- 쾌적 상한의 키는 부위 이름이 아니라 구역 이름이다. `airis.sim.scenario.zone_strength_caps(scenario)`가 구역별 상한 (5,)를 돌려준다(상한 없는 구역은 inf, 몸 기준이라 `torso_yaw`와 무관). 옛 부위 키 `torso_front`는 C가 `zone_strength_caps()`로 옮길 때까지만 `configs/scenarios.yaml`에 남긴다.
+- 쾌적 상한의 키는 부위 이름이 아니라 구역 이름이다. `airis.sim.scenario.zone_strength_caps(scenario)`가 구역별 상한 (5,)를 돌려준다(상한 없는 구역은 inf, 몸 기준이라 `torso_yaw`와 무관). 키는 구역 이름(`ZONE_NAMES`)이어야 하고, 다른 키(옛 부위 키 `torso_front` 등)는 `load_scenarios`와 `zone_strength_caps`가 `ValueError`로 막는다(옛 키는 PR #103에서 제거).
 - 구역 세기는 계획 전체에서 하나다. 단계마다 가슴 쪽 벽이 바뀌면 구역 → 노즐 매핑만 단계별로 다시 계산한다.
 - 몸 기준 구역이라 기존 대칭 접기(`yaw ±θ`, `θ ≡ 180° − θ`)가 계획에서도 성립한다.
 - **계획의 대칭 정규화 (C의 `PlanEncoder`, 데이터셋·모델 공통)**: 좌우 거울(전 단계 `yaw → −yaw`)과 앞뒤 등가(전 단계 `θ → 180° − θ`)는 **계획 전체에 함께** 적용한다. 1단계 yaw만 0~90°가 되게 두 변환을 고르고, 나머지 단계의 yaw는 그 변환을 따라 바뀐 값을 시나리오 범위 그대로 둔다. 단계마다 따로 접으면 "1단계 왼쪽 벽, 2단계 오른쪽 벽" 같은 계획이 사라진다. 구역 세기는 몸 기준이라 두 변환에서 바뀌지 않는다.
