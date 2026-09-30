@@ -375,6 +375,51 @@ def test_predict_plan_contract_and_rescoring(plan_model, model, scenarios, tmp_p
                           evaluator=_PlanEvaluator(), nozzle=object())
 
 
+def test_plan_rescorer_uses_plan_physics_cfg(plan_model, scenarios, tmp_path, monkeypatch):
+    """계획 재채점은 C 의 plan_physics_cfg (kinetics 켬), 자세 재채점은 설정 파일 그대로 (docs/plan_extension.md 4절)."""
+    from airis.sim.scenario import load_physics
+
+    meta = {"body_model": "capsule", "patches_per_m2": 400.0}
+    plan_ev, _ = pred.default_rescorer(meta, plan=True)
+    pose_ev, _ = pred.default_rescorer(meta)
+    assert plan_ev.cfg["adhesion"]["kinetics"]["enabled"] is True
+    assert pose_ev.cfg["adhesion"]["kinetics"]["enabled"] == load_physics()["adhesion"]["kinetics"]["enabled"]
+    assert plan_ev is not pose_ev
+
+    seen = {}
+
+    def fake_rescorer(model, *, plan=False):
+        seen["plan"] = plan
+        return _PlanEvaluator(), object()
+
+    monkeypatch.setattr(pred, "default_rescorer", fake_rescorer)
+    pred.predict_plan_candidates(BodyParams(), scenarios["default"], n_samples=4,
+                                 path=plan_model.save(tmp_path / "plan.pt"))
+    assert seen == {"plan": True}, "predict_plan 의 기본 재채점기는 계획 설정"
+
+
+def test_stamp_mismatch_compares_kinetics_only_when_stamped():
+    now = {"nozzle_layout_hash": "1e500000", "physics_hash": "p0", "kinetics_enabled": True, "time_constant_s": 2.0}
+    assert pred.stamp_mismatch({"nozzle_layout_hash": "1e500000", "physics_hash": "p0"}, now) == [], \
+        "자세 산출물(kinetics 도장 없음)은 kinetics 를 비교하지 않는다"
+    same = {"nozzle_layout_hash": "1e500000", "physics_hash": "p0",
+            "kinetics_enabled": np.bool_(True), "time_constant_s": 2}
+    assert pred.stamp_mismatch(same, now) == []
+    assert pred.stamp_mismatch({**same, "kinetics_enabled": "True", "time_constant_s": "2.0"}, now) == []
+    assert pred.stamp_mismatch({**same, "kinetics_enabled": False}, now) == ["kinetics_enabled"]
+    assert pred.stamp_mismatch({**same, "time_constant_s": 5.0}, now) == ["time_constant_s"]
+    assert pred.stamp_mismatch({**same, "nozzle_layout_hash": "2e500000"}, now) == ["nozzle_layout_hash"], \
+        "해시는 문자열로 비교한다 (16진 해시를 숫자로 읽으면 둘 다 inf 가 된다)"
+
+
+def test_current_stamp_carries_plan_kinetics():
+    from airis.sim.scenario import load_physics
+
+    now = pred.current_stamp()
+    assert now["kinetics_enabled"] is True
+    assert now["time_constant_s"] == pytest.approx(load_physics()["adhesion"]["kinetics"]["time_constant_s"])
+
+
 def test_predict_plan_clips_before_rescoring(plan_model, scenarios, tmp_path):
     """계획 후보(flow 샘플 + 고정 계획)는 채점 전에 전부 PlanEncoder.clip_plan 을 거친다."""
     from dataclasses import replace
@@ -459,10 +504,16 @@ def test_artifact_status_reports_stamps_without_warning(model, tmp_path, monkeyp
     assert flow_st["match"] is None and flow_st["mismatched"] == []
     assert flow_st["stamp"]["physics_hash"] is None
 
-    matching = model.save(tmp_path / "m2.pt")                   # 도장이 지금 설정과 같으면 True
-    again = flow.PoseFlow.load(matching)
-    again.meta.update({"nozzle_layout_hash": "n0", "physics_hash": "p1"})
-    assert pred.artifact_status(model_path=again.save(matching), knn_path=knn)["flow"]["match"] is True
+    def stamped(name, **stamp):
+        m = flow.PoseFlow.load(model.save(tmp_path / name))
+        m.meta.update(stamp)
+        return pred.artifact_status(model_path=m.save(tmp_path / name), knn_path=knn)["flow"]
+
+    assert stamped("m2.pt", nozzle_layout_hash="n0", physics_hash="p1")["match"] is True   # 전부 같을 때만 True
+    part = stamped("m3.pt", nozzle_layout_hash="n0")            # 일부만 찍혔고 그 키는 같다 → 확인 불가
+    assert part["match"] is None and part["mismatched"] == []
+    part_bad = stamped("m4.pt", nozzle_layout_hash="n9")        # 일부만 찍혔어도 다른 키가 있으면 False
+    assert part_bad["match"] is False and part_bad["mismatched"] == ["nozzle_layout_hash"]
 
     def broken():
         raise OSError("설정 없음")

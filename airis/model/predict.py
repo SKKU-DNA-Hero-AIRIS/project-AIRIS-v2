@@ -78,22 +78,45 @@ class PlanPrediction:
 
 #: 산출물이 유효한지 가르는 설정 해시 (학습 데이터의 도장과 지금 설정을 비교한다).
 STAMP_KEYS = ("nozzle_layout_hash", "physics_hash")
+#: 계획 산출물만 갖는 도장: 계획 채점 설정(C 의 plan_kinetics_stamp). 산출물에 있을 때만 비교한다.
+KINETICS_KEYS = ("kinetics_enabled", "time_constant_s")
 #: artifact_status 가 함께 보여 주는 도장 (학습 조건 기록용).
 INFO_KEYS = ("body_model", "patches_per_m2", "commit")
 
 
-def current_stamp() -> dict[str, str]:
-    """지금 설정의 해시 {nozzle_layout_hash, physics_hash}. 해시 규약은 airis.optimize.explog 를 따른다."""
+def current_stamp() -> dict:
+    """지금 설정의 도장 {nozzle_layout_hash, physics_hash, kinetics_enabled, time_constant_s}.
+
+    해시 규약은 airis.optimize.explog, 시간 상수는 계획 채점 설정(plan_physics_cfg)을 따른다.
+    """
     from airis.optimize import cli, explog
+    from airis.optimize.plan_encoding import plan_kinetics_stamp
 
     return {"nozzle_layout_hash": cli.nozzle_hash(cli.resolve_nozzles()[0]),
-            "physics_hash": explog.file_hash(explog.ROOT / "configs" / "physics.yaml")}
+            "physics_hash": explog.file_hash(explog.ROOT / "configs" / "physics.yaml"),
+            **plan_kinetics_stamp(_physics_cfg(plan=True))}
 
 
-def stamp_mismatch(meta: dict, now: dict[str, str] | None = None) -> list[str]:
-    """학습 도장과 지금 설정이 다른 키. 도장이 없는 키는 비교하지 않는다."""
+def _same(key: str, a, b) -> bool:
+    """도장 값 비교. 해시는 문자열로 (16진 해시 '1e500000' 을 숫자로 읽지 않게), kinetics 는 값으로
+    (시간 상수 2 == 2.0, numpy bool, parquet 에서 읽은 문자열 'True')."""
+    if key == "kinetics_enabled":
+        def truthy(v) -> bool:
+            return str(v).strip().lower() in ("true", "1", "1.0")
+        return truthy(a) == truthy(b)
+    if key == "time_constant_s":
+        try:
+            return bool(np.isclose(float(a), float(b)))
+        except (TypeError, ValueError):
+            return str(a) == str(b)
+    return str(a) == str(b)
+
+
+def stamp_mismatch(meta: dict, now: dict | None = None) -> list[str]:
+    """학습 도장과 지금 설정이 다른 키. 산출물에 없는 키(자세 산출물의 kinetics 등)는 비교하지 않는다."""
     now = current_stamp() if now is None else now
-    return [k for k in STAMP_KEYS if meta.get(k) is not None and str(meta[k]) != str(now[k])]
+    return [k for k in STAMP_KEYS + KINETICS_KEYS
+            if meta.get(k) is not None and now.get(k) is not None and not _same(k, meta[k], now[k])]
 
 
 def _check_stamp(meta: dict, path: Path) -> None:
@@ -120,8 +143,10 @@ def artifact_status(model_path: Path | str | None = None, knn_path: Path | str |
          "flow": 항목, "knn": 항목}
 
         항목 = {"path": str, "exists": bool,
-                "stamp": {nozzle_layout_hash, physics_hash, body_model, patches_per_m2, commit},  # 없는 키는 None
-                "match": bool | None,         # 지금 설정과 도장이 같은가. 산출물·설정을 못 읽거나 도장이 없으면 None
+                "stamp": {nozzle_layout_hash, physics_hash, kinetics_enabled, time_constant_s,
+                          body_model, patches_per_m2, commit},  # 없는 키는 None (kinetics 는 계획 산출물만)
+                "match": bool | None,         # 도장 키가 전부 있고 전부 같으면 True, 다른 키가 있으면 False,
+                                              # 도장이 없거나 일부만 있거나 산출물·설정을 못 읽으면 None
                 "mismatched": [키 ...],       # 다른 키 (STAMP_KEYS 중)
                 "error": str | None}          # 읽기 실패 (torch 없음 등)
     """
@@ -140,10 +165,14 @@ def artifact_status(model_path: Path | str | None = None, knn_path: Path | str |
         except Exception as exc:             # torch 없음, 손상된 파일 등
             out["error"] = f"{type(exc).__name__}: {exc}"
             return out
-        out["stamp"] = {k: meta.get(k) for k in STAMP_KEYS + INFO_KEYS}
-        if now is not None and any(meta.get(k) is not None for k in STAMP_KEYS):   # 도장이 없으면 확인 불가(None)
+        out["stamp"] = {k: meta.get(k) for k in STAMP_KEYS + KINETICS_KEYS + INFO_KEYS}
+        if now is not None:
+            # 다른 키가 하나라도 있으면 False. 전부 찍혀 있고 전부 같을 때만 True. 그 밖(도장 없음·일부만)은 확인 불가 None.
             out["mismatched"] = stamp_mismatch(meta, now)
-            out["match"] = not out["mismatched"]
+            if out["mismatched"]:
+                out["match"] = False
+            elif all(meta.get(k) is not None for k in STAMP_KEYS):
+                out["match"] = True
         return out
 
     return {"current": now, "current_error": now_error,
@@ -183,15 +212,26 @@ def load_model(path: Path | str | None = None, *, kind: str | None = None) -> Po
 
 
 @lru_cache(maxsize=4)
-def _rescore_evaluator(body_model: str, patches_per_m2: float) -> Evaluator:
+def _rescore_evaluator(body_model: str, patches_per_m2: float, plan: bool = False) -> Evaluator:
+    """패치판 재채점기. plan=True 면 C 의 plan_physics_cfg() (시간 의존 제거 kinetics 켬, 계획 데이터셋과 같은 설정)."""
     from functools import partial
 
     from airis.sim.body import build_body
     from airis.sim.patch_baseline import PatchEvaluator
+
+    return PatchEvaluator(_physics_cfg(plan), partial(build_body, model=body_model),
+                          patches_per_m2=patches_per_m2)
+
+
+def _physics_cfg(plan: bool) -> dict:
+    """자세 경로는 설정 파일 그대로, 계획 경로는 plan_physics_cfg (docs/plan_extension.md 4절)."""
     from airis.sim.scenario import load_physics
 
-    return PatchEvaluator(load_physics(), partial(build_body, model=body_model),
-                          patches_per_m2=patches_per_m2)
+    if plan:
+        from airis.optimize.plan_encoding import plan_physics_cfg
+
+        return plan_physics_cfg()
+    return load_physics()
 
 
 @lru_cache(maxsize=1)
@@ -201,14 +241,17 @@ def _default_nozzles() -> NozzleConfig:
     return cli.resolve_nozzles()[0]
 
 
-def default_rescorer(model: PoseFlow | PoseKNN | dict) -> tuple[Evaluator, NozzleConfig]:
-    """학습 데이터와 같은 몸 모델·패치 밀도의 패치판 (점수를 데이터셋 score 와 비교할 수 있게)."""
+def default_rescorer(model: PoseFlow | PoseKNN | dict, *, plan: bool = False) -> tuple[Evaluator, NozzleConfig]:
+    """학습 데이터와 같은 몸 모델·패치 밀도의 패치판 (점수를 데이터셋 score 와 비교할 수 있게).
+
+    plan=True 면 계획 채점용 설정(plan_physics_cfg, kinetics 켬)이다. 계획 데이터셋도 같은 함수로 만든다.
+    """
     from airis.optimize.dataset import configured_body_model
 
     meta = model if isinstance(model, dict) else model.meta
     body_model = str(meta.get("body_model") or configured_body_model())
     density = float(meta.get("patches_per_m2") or 400.0)
-    return _rescore_evaluator(body_model, density), _default_nozzles()
+    return _rescore_evaluator(body_model, density, plan), _default_nozzles()
 
 
 def _gather(body: BodyParams, scenario: Scenario, *, backend: str, n_flow: int, n_knn: int, seed: int,
@@ -374,7 +417,7 @@ def predict_plan_candidates(body: BodyParams, scenario: Scenario, *, n_samples: 
         return PlanPrediction(candidates[0], candidates, None, None)
 
     if evaluator is None or nozzle is None:
-        ev, nz = default_rescorer(model)
+        ev, nz = default_rescorer(model, plan=True)
         evaluator, nozzle = evaluator or ev, nozzle or nz
     scores, infeasible = score_plans(evaluator, candidates, nozzle, body, scenario)
     pick = np.where(infeasible, -np.inf, scores) if not infeasible.all() else scores
