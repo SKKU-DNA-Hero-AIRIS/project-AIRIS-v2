@@ -382,10 +382,9 @@ def test_predict_plan_clips_before_rescoring(plan_model, scenarios, tmp_path):
     from airis.optimize.plan_encoding import PlanLimits
 
     path = plan_model.save(tmp_path / "plan.pt")
-    # 임산부 설정의 쾌적 상한을 그대로 쓴다 (plan_model 은 default·wheelchair 로만 학습했으므로 이름은 default).
-    # 주의: PlanEncoder 는 아직 옛 부위 키(torso_front)만 읽는다. scenarios.yaml 이 옛 키를 지우기 전에 C 가
-    # airis.sim.scenario.zone_strength_caps 로 옮겨야 한다.
-    capped = replace(scenarios["default"], nozzle_strength_cap=dict(scenarios["pregnant"].nozzle_strength_cap))
+    # 구역 이름 키만 쓴 쾌적 상한 (옛 부위 키 torso_front 없이도 걸려야 한다, #92).
+    # plan_model 은 default·wheelchair 로만 학습했으므로 이름은 default 로 둔다.
+    capped = replace(scenarios["default"], nozzle_strength_cap={"chest_low": 0.6, "chest_high": 0.6})
     chest = [ZONE_NAMES.index(z) for z in ("chest_low", "chest_high")]
     raw = plan_model.sample_plans(BodyParams(), capped, 16, seed=0)
     assert any(np.any(p.zone_strengths[chest] > 0.6) for p in raw), "투영 전에는 쾌적 상한을 넘는 샘플이 있다"
