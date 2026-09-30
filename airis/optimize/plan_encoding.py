@@ -13,9 +13,9 @@ K = 2 면 21차원이다.
 1. 자세: 시나리오 `pose_bounds` + `fixed_pose` (`PoseEncoder.clip_pose`)
 2. 시간: `plan.duration_bounds_s`, 단계마다 `plan.min_phase_s` 이상
 3. 구역 세기: 0 ≤ s_z ≤ `fan.s_max`
-4. 쾌적 상한: `scenario.nozzle_strength_cap`(부위별) → 그 부위를 향한 구역에 상한 (임산부 가슴 0.6)
-5. 풍량 한도 보수: Σ_노즐 s ≤ `fan.cap_ratio` · M 을 넘으면 **전 구역을 같은 비율로** 줄인다
-   (구역별 노즐 수를 모르면 구역마다 같은 수로 본다)
+4. 쾌적 상한: `airis.sim.scenario.zone_strength_caps(scenario)` (임산부 chest_low·chest_high ≤ 0.6)
+5. 풍량 한도 보수: Σ_노즐 s ≤ `fan.cap_ratio` · M 을 넘으면 **전 구역을 같은 비율로** 줄인다.
+   구역별 노즐 수는 B 의 `zone_nozzle_counts()` (기준 배치 [2, 2, 2, 2, 4], top 은 상단 바 4개)
 
 `normalize` 는 같은 점수인 계획을 하나로 모은다 (00_common 4.7).
 
@@ -34,6 +34,8 @@ from typing import Sequence
 import numpy as np
 
 from airis.sim import ZONE_NAMES, Phase, Plan, PoseParams, Scenario
+from airis.sim.scenario import zone_nozzle_counts as _load_zone_counts
+from airis.sim.scenario import zone_strength_caps
 
 from .e4 import fold_yaw
 from .encoding import PoseEncoder
@@ -42,9 +44,7 @@ POSE_KEYS: list[str] = [f.name for f in fields(PoseParams)]
 YAW_KEY = "torso_yaw"
 FRONT_EPS = 1e-6
 
-#: 쾌적 상한(`scenario.nozzle_strength_cap`)의 부위 → 그 부위를 향한 구역.
-ZONE_PART: dict[str, str] = {"chest_low": "torso_front", "chest_high": "torso_front",
-                             "back_low": "torso_back", "back_high": "torso_back", "top": "head"}
+
 
 
 @dataclass(frozen=True)
@@ -71,6 +71,14 @@ class PlanLimits:
             s_max=float(fan.get("s_max", 1.0)),
             cap_ratio=float(fan.get("cap_ratio", 1.0)),
         )
+
+
+def _default_zone_counts() -> np.ndarray:
+    """기준 노즐 배치의 구역별 노즐 수. 배치를 읽을 수 없으면 구역마다 1개로 본다."""
+    try:
+        return np.asarray(_load_zone_counts(), dtype=np.float64)
+    except Exception:                       # 노즐 설정을 못 읽는 단위 테스트 등
+        return np.ones(len(ZONE_NAMES), dtype=np.float64)
 
 
 def wrap_deg(deg: float) -> float:
@@ -102,7 +110,7 @@ class PlanEncoder:
             raise ValueError(
                 f"총 시간 하한 {lo_t} s 가 단계 {self.limits.n_phases}개 × 최소 {self.limits.min_phase_s} s 보다 짧다")
         counts = (np.asarray(zone_nozzle_counts, dtype=np.float64) if zone_nozzle_counts is not None
-                  else np.ones(len(ZONE_NAMES), dtype=np.float64))
+                  else _default_zone_counts())
         if counts.shape != (len(ZONE_NAMES),) or counts.sum() <= 0:
             raise ValueError(f"구역별 노즐 수는 {len(ZONE_NAMES)}개 양수여야 한다: {zone_nozzle_counts}")
         self.zone_counts = counts
@@ -165,10 +173,7 @@ class PlanEncoder:
         s = np.clip(np.asarray(zones, dtype=np.float64).reshape(-1), 0.0, self.limits.s_max)
         if s.size != len(ZONE_NAMES):
             raise ValueError(f"구역 세기는 {len(ZONE_NAMES)}개: {s.size}")
-        for i, z in enumerate(ZONE_NAMES):                       # 쾌적 상한 (임산부 가슴 0.6 등)
-            cap = self.scenario.nozzle_strength_cap.get(ZONE_PART.get(z, ""))
-            if cap is not None:
-                s[i] = min(s[i], float(cap))
+        s = np.minimum(s, zone_strength_caps(self.scenario))     # 쾌적 상한 (임산부 가슴 0.6 등)
         total = float(self.zone_counts @ s)                      # 풍량 한도 Σ_노즐 s ≤ cap_ratio·M
         budget = self.limits.cap_ratio * float(self.zone_counts.sum())
         if total > budget > 0:
