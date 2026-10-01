@@ -13,6 +13,7 @@
 """
 from __future__ import annotations
 
+import json
 from dataclasses import replace
 from types import SimpleNamespace
 
@@ -610,6 +611,10 @@ def test_pose_instructions():
 # ---------------------------------------------------------------------------
 # 대시보드 (Streamlit AppTest, 카메라·YOLO 없이)
 # ---------------------------------------------------------------------------
+#: ⑤ 운전 계획 영역의 지표 (`plan_section`, 기본으로 켜져 있다)
+PLAN_METRICS = ["P0 현행 운전 대비", "P1 제품 안내 대비", "에너지 e", "분사 시간"]
+
+
 @pytest.mark.parametrize("mode,scenario", [("합성 마네킹 (카메라 없이)", "default"),
                                            ("체형 직접 입력", "wheelchair")])
 def test_dashboard_runs_to_recommendation(mode, scenario):
@@ -628,7 +633,7 @@ def test_dashboard_runs_to_recommendation(mode, scenario):
     scen_radio = next(r for r in at.radio if r.key == "scenario")
     assert scen_radio.value == scenario
     labels = [m.label for m in at.metric]
-    assert labels == ["B0 기본 대비", "B1 몸 회전 대비", "B2 만세 대비"]
+    assert labels == ["B0 기본 대비", "B1 몸 회전 대비", "B2 만세 대비", *PLAN_METRICS]
     at.selectbox[0].set_value("합성 프레임 미리보기 (가짜 궤적)").run()
     assert not at.exception, [e.value for e in at.exception]
 
@@ -647,7 +652,28 @@ def test_dashboard_capsule_model_query():
     assert not at.exception, [e.value for e in at.exception]
     model_radio = next(r for r in at.sidebar.radio if "캡슐 마네킹" in r.options)
     assert model_radio.value == "캡슐 마네킹"
-    assert len(at.metric) == 3
+    assert len(at.metric) == 3 + len(PLAN_METRICS)
+
+
+def test_dashboard_plan_section_toggle_and_device_json():
+    """⑤ 운전 계획: 장비 JSON 을 내보내고, 끄면 계획 지표가 사라진다."""
+    pytest.importorskip("streamlit")
+    from pathlib import Path
+    from streamlit.testing.v1 import AppTest
+
+    path = Path(__file__).resolve().parents[1] / "scripts" / "run_dashboard.py"
+    at = AppTest.from_file(str(path), default_timeout=240)
+    at.query_params["model"] = "capsule"
+    at.run()
+    at.sidebar.radio[0].set_value("체형 직접 입력").run()
+    assert not at.exception, [e.value for e in at.exception]
+    codes = [c.value for c in at.code if '"schema": "airis.device_control.v1"' in c.value]
+    assert len(codes) == 1
+    payload = json.loads(codes[0])
+    assert payload["scenario"] == "default" and payload["segments"]
+    at.toggle[0].set_value(False).run()
+    assert not at.exception, [e.value for e in at.exception]
+    assert [m.label for m in at.metric] == ["B0 기본 대비", "B1 몸 회전 대비", "B2 만세 대비"]
 
 
 # ---------------------------------------------------------------------------

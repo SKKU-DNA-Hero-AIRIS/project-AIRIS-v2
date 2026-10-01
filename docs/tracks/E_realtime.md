@@ -82,3 +82,22 @@ A의 프레임 덤프(`docs/interfaces.md` "시각화용 상태 덤프": `output
 1. `airis/viz/human_mesh.py`는 MakeHuman 렌더 비교용으로 시작했고, B가 `airis/sim/human_mesh.py`로 이관·확장한 뒤에는 sim 모듈을 import하는 얇은 시각화로 줄인다.
 2. `pose_view`·`anim`: 캡슐 대신 `BodyState.mesh_vertices/mesh_faces`(또는 원본 메시)를 그린다. 부위별 제거율 색은 `mesh_face_part`로 칠한다.
 3. 포즈 추정의 `BodyParams` 추정을 재정의된 5개 필드(관절 중심 기준)에 맞춘다.
+
+## 단계 6. 운전 계획 안내와 장비 제어 출력 (`airis/realtime/plan_guide.py`, `airis/viz/plan_view.py`, `docs/plan_extension.md` 7절 5번)
+
+계획 확장(자세 순서 + 구역 세기 + 시간)을 화면과 장비 출력까지 잇는다. 물리 계산은 하지 않고 D의 `evaluate_plan`을 부른다.
+
+- `recommend_plan(body, scenario, model=…) -> PlanRecommendation`
+  - 후보 = C의 `predict_plan_candidates`(산출물 `data/models/plan_flow.pt`, 샘플 8개, `rescore=False`) + **계획 후보표**(`PLAN_STUB_TABLE`, E7 P5 w=0.1 시드 0, 묶음 `e7k14_20261001_012825_948aed`) + **P1 제품 안내 12방향 회전**(C의 `plan_baseline`).
+  - 전부 이 체형·몸 모델의 패치판(`plan_physics_cfg()`, 메시 2,000/m²)으로 재채점해 최고. P1 은 12단계라 2단계 인코더를 지나지 못하므로 모델 풀 밖에서 같은 자로 잰다. E7 에서 pregnant 는 P1 이 P5 보다 높았으므로(w=0.1: 0.4975 > 0.4532) P1 이 이기면 P1 을 그대로 안내한다.
+  - 예외 규약은 `recommend` 와 같다: 산출물 없음(`FileNotFoundError`)·torch 없음(`ImportError`)·학습에 없던 시나리오(`KeyError`) → 표 + P1, 사유는 `notes`. 평가기가 후보를 못 재면(`ValueError`, 아래 알려진 문제) 그 후보만 빼고 사유를 남긴다. 쓸 후보가 없으면 P0.
+- `compare_plan_with_baselines` → [추천, P0 현행 운전, P1 제품 안내]. 같은 채점기라 세로 비교가 된다. 에너지 e 는 현행 운전 = 1.
+- `device_control(plan, scenario, result=…) -> dict` (`airis.device_control.v1`): 몸 기준 구역 세기, 쾌적 상한, 단계별 `speed_ratio`(노즐 12개 = `apply_zone_strengths(…).strengths`)·`flow_m3_min`(비율 × `fan.rated_flow_m3_min`)·`nozzle_zone`·`chest_wall`·안내 문장, 단계 사이 `transition` 구간, `timeline_s`. `result` 를 주면 D의 에너지·점수를 옮긴다.
+  - 전환(`plan.transition_s`, 1.5 s) 동안 팬은 기본 **끔**: D가 전환 동안 제거 0·에너지 0으로 보므로 같은 가정. `transition_fans="hold"`면 앞 단계 값 유지. 단계 수가 `plan.n_phases`보다 많은 계획(P1)은 이어서 도는 회전이라 전환이 없다.
+- 그림: `figure_plan_phases`(단계별 3D, 4칸 초과면 고르게 4개), `figure_zone_strengths`(구역 세기 + 쾌적 상한 + 장비 상한), `figure_timeline`(단계·전환 시각표).
+- 대시보드 ⑤: 단계별 안내, P0·P1 대비, 에너지·분사 시간, 3D, 구역 세기, 시각표, 비교 표, 장비 JSON 내려받기. 토글로 끌 수 있다(기존 ⑥ 애니메이션은 번호만 바뀜).
+- `recommend_plan` 응답 시간(메시 2,000/m², 계획 모델 없음 = 후보 2개, 이 브랜치 측정, Apple M2 CPU): default 0.9 s, pregnant 0.3 s, wheelchair 0.6 s. P0·P1 비교는 별도로 든다.
+
+**알려진 문제 (B에 전달)**: 캡슐 몸 휠체어에서 체형 `BodyParams(1.70, 0.42, 0.22, 0.62, 0.85)` + yaw −30° 이면 패치 수가 1,062 → 1,071 로 바뀌어 `evaluate_plan` 이 `ValueError`("단계마다 패치 수가 다르다")를 낸다. 같은 체형의 다른 yaw, 메시 몸, 다른 시나리오에서는 재현되지 않았다. E는 그 후보만 빼고 화면을 유지한다(`tests/test_plan_guide.py::test_unevaluable_candidate_is_dropped_with_note`).
+
+테스트: `tests/test_plan_guide.py` (표가 계획 범위 안·부스 안, 최고점 선택, P1 우선, 모델 후보 사용, 폴백, 장비 JSON 의 속도 = 구역 매핑·가슴 쪽 벽 전환·시각표·풍량 한도, 그림 직렬화), `tests/test_realtime.py` 대시보드 테스트에 ⑤ 지표·JSON·토글.

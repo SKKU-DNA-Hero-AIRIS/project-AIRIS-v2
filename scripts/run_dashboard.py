@@ -9,7 +9,9 @@
     ③ 시나리오 선택 (영상으로 판별하지 않는다)
     ④ 추천 자세 3D 마네킹 + 기준 자세(B0·B1·B2)와 점수 비교 (D PatchEvaluator, 400/m²)
        추천은 C의 혼합 모델(flow + kNN + 고정 후보표)을 부르고, 산출물이 없으면 표만 쓴다.
-    ⑤ 입자 애니메이션 (A 덤프가 있으면, 없으면 합성 프레임 미리보기)
+    ⑤ 운전 계획 (자세 순서 + 구역 세기 + 시간): 단계별 안내, 현행 운전(P0)·제품 안내(P1)와 비교,
+       장비 제어 JSON (`airis/realtime/plan_guide.py`, docs/plan_extension.md 7절 5번)
+    ⑥ 입자 애니메이션 (A 덤프가 있으면, 없으면 합성 프레임 미리보기)
 
 URL 쿼리 `?demo=1`이면 예시 이미지로 바로 시작한다 (스크린샷용). `?scenario=wheelchair` 등으로 시나리오 지정.
 몸 모델은 사이드바에서 고른다 (기본 사람 메시, `?model=capsule`이면 캡슐 마네킹). 체형 추정 비율·추천·점수·
@@ -33,6 +35,9 @@ import numpy as np                                                    # noqa: E4
 import streamlit as st                                                # noqa: E402
 
 from airis.realtime import camera, pose_estimate as pe               # noqa: E402
+from airis.realtime.plan_guide import (ZONE_LABELS, compare_plan_with_baselines,  # noqa: E402
+                                       device_control, plan_instructions, plan_limits,
+                                       recommend_plan, transition_for)
 from airis.realtime.recommend import (MESH_E4_BASELINES, MESH_E4_HANDS_UP_SEEDS,  # noqa: E402
                                       RESPONSE_BUDGET_S, compare_with_baselines, default_body,
                                       improvement, model_artifacts, pose_instructions, recommend,
@@ -41,6 +46,7 @@ from airis.sim.body import build_body                                 # noqa: E4
 from airis.sim.scenario import load_nozzle_layout, load_scenarios     # noqa: E402
 from airis.sim.types import PART_NAMES, BodyParams, PoseParams       # noqa: E402
 from airis.viz import anim                                            # noqa: E402
+from airis.viz.plan_view import figure_plan_phases, figure_timeline, figure_zone_strengths  # noqa: E402
 from airis.viz.pose_view import figure_from_pose, pose_label          # noqa: E402
 
 SCENARIO_LABELS = {"default": "일반 성인", "pregnant": "임산부", "wheelchair": "휠체어 사용자"}
@@ -118,6 +124,13 @@ def recommend_cached(body_t: tuple, scenario: str, body_model: str):
 def compare_cached(body_t: tuple, scenario: str, pose_t: tuple, body_model: str):
     sc = get_scenarios()[scenario]
     return compare_with_baselines(BodyParams(*body_t), sc, PoseParams(*pose_t), model=body_model)
+
+
+@st.cache_data(show_spinner="운전 계획을 고르는 중 (계획 후보 재채점)…", max_entries=64)
+def plan_cached(body_t: tuple, scenario: str, body_model: str):
+    sc, body = get_scenarios()[scenario], BodyParams(*body_t)
+    rec = recommend_plan(body, sc, model=body_model)
+    return rec, compare_plan_with_baselines(body, sc, rec, model=body_model)
 
 
 def _digest(arr: np.ndarray) -> str:
@@ -400,8 +413,14 @@ def main() -> None:
     with st.expander("점수 표 (부위별 값은 시뮬레이터 내부 값, 순위 비교용)"):
         st.dataframe(table, **WIDE, hide_index=True)
 
-    # ---------------- ⑤ 입자 애니메이션 ----------------
-    st.subheader("⑤ 입자 애니메이션")
+    # ---------------- ⑤ 운전 계획 ----------------
+    st.subheader("⑤ 운전 계획 (자세 순서 · 구역 세기 · 시간)")
+    if st.toggle("운전 계획 계산", value=True,
+                 help="계획 후보(E7 표 + 제품 안내 회전 + 계획 모델)를 이 체형으로 다시 채점합니다 (약 1 s)."):
+        plan_section(body, scenario, scen, body_model, density)
+
+    # ---------------- ⑥ 입자 애니메이션 ----------------
+    st.subheader("⑥ 입자 애니메이션")
     out_dir = ROOT / "outputs"
     dumps = sorted(p.parent.name for p in out_dir.glob("*/frames") if any(p.glob("*.npz")))
     choice = st.selectbox("덤프", ["(보지 않음)", "합성 프레임 미리보기 (가짜 궤적)"] + dumps)
@@ -428,6 +447,76 @@ def main() -> None:
             state = build_body(body, rec.pose, scenario, patches_per_m2=400, model=body_model)
         st.plotly_chart(anim.animation(frames, state, booth, candidate=cand, title=choice),
                         **WIDE)
+
+
+def plan_section(body: BodyParams, scenario, scen: str, body_model: str, density: float) -> None:
+    """⑤ 운전 계획. 점수·에너지는 D의 evaluate_plan 값이고, 장비 JSON 은 plan_guide.device_control 이다."""
+    prec, prows = plan_cached(tuple(asdict(body).values()), scen, body_model)
+    pby = {r.name: r for r in prows}
+    rec_r = pby["추천"]
+
+    guide, metrics = st.columns([1.2, 1.0], gap="large")
+    with guide:
+        st.markdown(f"#### {prec.label}")
+        for title, lines in plan_instructions(prec.plan, scenario):
+            st.markdown(f"**{title}**")
+            for line in lines:
+                st.markdown(f"- {line}")
+        st.caption(f"출처: {prec.source}")
+        for note in prec.notes:
+            st.info(note)
+        st.caption(f"응답 시간 {prec.elapsed_s:.2f} s (후보 {len(prec.candidates)}개 재채점). "
+                   "같은 체형·시나리오는 캐시합니다.")
+    with metrics:
+        cols = st.columns(2)
+        for col, name in zip(cols, ("P0 현행 운전", "P1 제품 안내 (12방향 회전)")):
+            base = pby[name]
+            imp = (None if base.infeasible or rec_r.infeasible or base.score <= 0
+                   else rec_r.score / base.score - 1.0)
+            same = name.startswith("P1") and prec.source == "baseline: P1"
+            col.metric(f"{name.split(' (')[0]} 대비", "같은 계획" if same else
+                       ("불가" if imp is None else f"{imp:+.0%}"),
+                       help=f"{name} 점수 {base.score:.3f} → 추천 {rec_r.score:.3f}")
+        cols = st.columns(2)
+        cols[0].metric("에너지 e", f"{rec_r.energy:.2f}", f"{rec_r.energy - 1.0:+.2f} vs 현행 1.00",
+                       delta_color="inverse")
+        cols[1].metric("분사 시간", f"{rec_r.duration_s:.1f} s",
+                       f"{rec_r.duration_s - pby['P0 현행 운전'].duration_s:+.1f} s vs 현행",
+                       delta_color="inverse")
+        st.caption("점수 = 부위 가중 제거율 − 시간 가중 불편도 − 에너지 가중 × e (00_common 4.4). "
+                   "e = 현행 운전(전 팬 최대, 20 s)을 1로 둔 팬 에너지. 절대값이 아니라 같은 채점기 안의 비교입니다.")
+
+    st.plotly_chart(figure_plan_phases(body, prec.plan, scenario, model=body_model,
+                                       patches_per_m2=density), **WIDE)
+    control = device_control(prec.plan, scenario, result=prec.result)
+    z_col, t_col = st.columns([1.0, 1.3], gap="large")
+    with z_col:
+        st.markdown("**구역 세기**")
+        st.plotly_chart(figure_zone_strengths(prec.plan, scenario, s_max=plan_limits().s_max), **WIDE)
+        st.caption(f"점선 = 장비 세기 상한 {plan_limits().s_max:.1f} (fan.s_max). 주황 표시 = 시나리오 쾌적 상한. "
+                   "구역은 몸 기준이라 몸을 돌리면 같은 구역이 다른 벽의 노즐을 가리킵니다.")
+    with t_col:
+        st.markdown("**운전 시각표**")
+        st.plotly_chart(figure_timeline(control), **WIDE)
+        if transition_for(prec.plan) > 0:
+            st.caption(f"단계 사이 {transition_for(prec.plan):.1f} s 는 자세를 바꾸는 시간입니다. 시뮬레이터는 이 동안 "
+                       "제거·에너지를 0으로 보므로 장비 출력도 팬을 끕니다(`transition_fans=\"off\"`).")
+        else:
+            st.caption("제품 안내 회전은 멈추지 않고 이어서 돌기 때문에 단계 사이 전환 시간이 없습니다.")
+
+    table = [{"조건": r.name, "점수": None if r.infeasible else round(r.score, 4),
+              "제거율(면적 평균)": round(r.total_removal, 4), "에너지 e": round(r.energy, 3),
+              "분사 시간 (s)": round(r.duration_s, 1), "불편도": round(r.discomfort, 3),
+              "단계 수": len(r.plan.phases)} for r in prows]
+    with st.expander("계획 비교 표 (같은 채점기, 순위 비교용)"):
+        st.dataframe(table, **WIDE, hide_index=True)
+        st.caption("구역: " + " · ".join(f"{ZONE_LABELS[z]} {v:.2f}"
+                                         for z, v in control["zone_strengths"].items()))
+    payload = json.dumps(control, ensure_ascii=False, indent=2)
+    st.download_button("장비 제어 JSON 내려받기", payload, file_name=f"airis_plan_{scen}.json",
+                       mime="application/json")
+    with st.expander("장비 제어 JSON (구역 세기 + 단계별 노즐 12개 속도 비율)"):
+        st.code(payload, language="json")
 
 
 main()
