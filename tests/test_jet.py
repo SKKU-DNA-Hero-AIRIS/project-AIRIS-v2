@@ -1177,12 +1177,26 @@ def test_stagnation_factor_multiplies_peak_wall_shear():
 
 
 @pytest.mark.parametrize("key,value", [("stagnation_shear_factor", -0.1), ("stagnation_zone_xi", 0.0),
-                                       ("stagnation_zone_xi", -1.0)])
+                                       ("stagnation_zone_xi", -1.0),
+                                       ("stagnation_shear_factor", float("inf")),
+                                       ("stagnation_shear_factor", float("nan")),
+                                       ("stagnation_zone_xi", float("inf")),
+                                       ("stagnation_zone_xi", float("nan"))])
 def test_stagnation_keys_validated(key, value):
     cfg = copy.deepcopy(CFG)
     cfg["jet"]["impingement"][key] = value
     with pytest.raises(ValueError, match=key):
         jet_params(cfg)
+
+
+def test_stagnation_factor_zero_removes_wall_jet_inside_zone():
+    """m = 0 이면 영역 안(ξ ≤ ξ_z) 벽면 제트 항이 0 이고, 멀리 밖에서는 m = 1 과 같다."""
+    xi = np.array([0.5, 2.16, 3.0, 9.0])
+    pts, normals = _slot_wall(xi)
+    base = np.linalg.norm(_correction_only(pts, normals, _single_slot())[0], axis=1)
+    zero = np.linalg.norm(_correction_only(pts, normals, _single_slot(), _with_stagnation(0.0))[0], axis=1)
+    assert zero[:3].max() < 1e-6 and base[:3].min() > 0.1
+    assert zero[3] == pytest.approx(base[3], rel=1e-5)
 
 
 def test_stagnation_factor_keeps_mirror_symmetry_on_body():
