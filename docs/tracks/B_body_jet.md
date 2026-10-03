@@ -2,7 +2,7 @@
 
 **목표**: 체형과 자세를 받아 패치와 캡슐로 표현된 마네킹을 만들고, 고정 노즐 배치에서 임의의 점의 공기 속도를 계산한다. 다른 세 트랙의 실제 입력이 여기서 나오므로 가장 먼저 시작하고 가장 먼저 병합한다.
 
-**파일**: `airis/sim/body.py`, `airis/sim/human_mesh.py`, `airis/sim/jet.py`, `airis/sim/scenario.py`, `airis/viz/debug3d.py`, `configs/*.yaml`, `tests/test_body.py`, `tests/test_jet.py`
+**파일**: `airis/sim/body.py`, `airis/sim/human_mesh.py`, `airis/sim/jet.py`, `airis/sim/scenario.py`, `airis/viz/debug3d.py`, `configs/*.yaml`, `data/meshes/*`, `scripts/build_sim_mesh.py`, `tests/test_body.py`, `tests/test_jet.py`, `tests/test_human_mesh.py`
 
 **의존성**: 없음. `types.py`와 `configs/`만 있으면 시작 가능.
 
@@ -120,7 +120,11 @@ pelvis
 
 ## 단계 8. 충돌 제트 → 벽면 제트 보정 (필수, 총괄 결정 ⑩)
 
-`00_common.md` 4.2b를 그대로 구현한다. `velocity_field_per_nozzle`·`velocity_field`가 `surface_normals (P,3)`를 받고 `cfg["jet"]["impingement"]["enabled"]`면 노즐별 `w·e_r`을 더한 값을 돌려준다. `None`이면 보정 없음. 상수는 `jet.impingement.wall_jet_gain`(k, 기본 1.0, E3 스윕 변수) 하나. 옛 키 `stagnation_radius_factor`·`wall_jet_start_factor`는 삭제됐다. 보정을 켜면 τ가 커지므로 `adhesion.fabric_roughness_factor`를 같이 잡는다(PR #27: k=1, f=0.25, 기준 자세 전신 R ≈ 7.9%).
+`00_common.md` 4.2b를 그대로 구현한다. `velocity_field_per_nozzle`·`velocity_field`가 `surface_normals (P,3)`를 받고 `cfg["jet"]["impingement"]["enabled"]`면 노즐별 `w·e_r`을 더한 값을 돌려준다. `None`이면 보정 없음. 상수는 `jet.impingement.wall_jet_gain`(k, 기본 1.0 → 1.4, E3 스윕 변수 {1.0, 1.4, 1.6, 2.0})와 아래 충돌 영역 전단 배율 2개. 옛 키 `stagnation_radius_factor`·`wall_jet_start_factor`는 삭제됐다. 보정을 켜면 τ가 커지므로 `adhesion.fabric_roughness_factor`를 같이 잡는다(PR #27: k=1, f=0.25, 기준 자세 전신 R ≈ 7.9%) → 기본 1.4·f 0.45 (PR #108, 2026-09-30): 메시 1,500/m² 기준 자세 R 8.13% → 8.01%, 근거 Phares 2000 그림 3a(슬롯 k ≤ 1.63).
+
+충돌 영역 전단 배율 (PR #104, `00_common.md` 4.2b g(ξ)). 벽면 제트 항 w에만 곱하고 m = 1이면 결과는 비트 단위로 같다. 입자판(A)은 미구현이라 m ≠ 1은 패치판 전용이다(입자판은 `NotImplementedError`, PR #107).
+- `jet.impingement.stagnation_shear_factor`(m, 기본 1.0, ≥ 0): g(ξ) = 1 + (√m − 1)·T(ξ)로 정면 충돌 영역(ξ ≤ ξ_z) 전단을 ≈ m배로 만든다. E3 축(예 1·3·6), m별로 f를 다시 보정한다.
+- `jet.impingement.stagnation_zone_xi`(ξ_z, 기본 3.0, > 0): T = 1인 충돌 영역 반경 ξ = r/σ(H). 3은 r ≈ 0.29~0.32H(슬롯·원형, H 0.4~0.7 m)로 모델 w 최대와 Phares 전단 최대를 덮는다. 밖은 σ 1개 폭의 가우시안으로 줄인다.
 
 ## 단계 9. 테스트
 
