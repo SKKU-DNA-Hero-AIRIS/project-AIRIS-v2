@@ -9,6 +9,9 @@ v1(project-AIRIS-MVP, `C:\\Users\\SEONGWOO\\Documents\\AIRIS`)에서 가져온 �
 
 `ultralytics`·`cv2`는 함수 안에서 지연 import 한다 (테스트·import 가 가볍게). 카메라는 대시보드에서만 연다.
 모델 가중치는 `data/models/`(git 밖, `*.pt` 는 .gitignore)에 첫 실행 때 내려받는다.
+
+**개인정보**: 원본 프레임은 YOLO 추론에만 쓰고 화면에는 띄우지 않는다. 대시보드가 보여 주는 그림은
+`draw_skeleton_only` 가 빈 캔버스에 뼈대만 그린 것이다 (원본 픽셀을 인자로 받지 않는다).
 """
 from __future__ import annotations
 
@@ -177,22 +180,44 @@ def detect_marker_scale(image_bgr: np.ndarray, marker_size_m: float,
     return scale_from_marker(np.asarray(corners[0]).reshape(4, 2), marker_size_m)
 
 
+def frames_from_video_bytes(name: str, data: bytes, *, every_n: int = 5,
+                            max_frames: int = 30) -> list[np.ndarray]:
+    """업로드한 영상 바이트에서 프레임을 뽑고 **임시 파일을 지운다** (원본을 남기지 않는다).
+
+    cv2 가 파일 경로를 받으므로 임시 폴더에 잠깐 쓸 수밖에 없다. 중간에 실패해도 지우도록 finally 를 쓴다.
+    """
+    import os
+    import tempfile
+    import uuid
+
+    tmp = Path(tempfile.gettempdir()) / f"airis_upload_{os.getpid()}_{uuid.uuid4().hex}{Path(name).suffix}"
+    try:
+        tmp.write_bytes(data)
+        return list(iter_video_frames(tmp, every_n=every_n, max_frames=max_frames))
+    finally:
+        tmp.unlink(missing_ok=True)
+
+
 # ---------------------------------------------------------------------------
 # 그리기
 # ---------------------------------------------------------------------------
-def draw_pose(image_bgr: np.ndarray, det: PoseDetection | None, *,
-              min_conf: float = MIN_CONF, line_width: int | None = None) -> np.ndarray:
-    """키포인트·뼈대·상자를 겹친 RGB 이미지 (streamlit `st.image` 용). v1 `_draw_pose` 를 PIL 로."""
-    from PIL import Image, ImageDraw
+#: 뼈대만 그릴 때의 배경색 (단색 캔버스)
+SKELETON_BACKGROUND = (245, 245, 245)
 
-    img = Image.fromarray(np.ascontiguousarray(image_bgr[:, :, ::-1]))
+
+def _draw_on(img, det: PoseDetection | None, *, min_conf: float, line_width: int | None,
+             show_box: bool):
+    """PIL 이미지 위에 뼈대·관절(·상자)을 그린다. `draw_pose` 와 `draw_skeleton_only` 의 공통부."""
+    from PIL import ImageDraw
+
     if det is None:
-        return np.asarray(img)
+        return img
     draw = ImageDraw.Draw(img)
     lw = line_width or max(2, int(round(min(img.size) / 250)))
     kp, conf = det.keypoints, det.conf
-    x1, y1, x2, y2 = (float(v) for v in det.box)
-    draw.rectangle([x1, y1, x2, y2], outline=(75, 220, 120), width=lw)
+    if show_box:
+        x1, y1, x2, y2 = (float(v) for v in det.box)
+        draw.rectangle([x1, y1, x2, y2], outline=(75, 220, 120), width=lw)
     for a, b in SKELETON:
         if conf[a] >= min_conf and conf[b] >= min_conf:
             draw.line([tuple(kp[a]), tuple(kp[b])], fill=(84, 214, 199), width=lw)
@@ -200,4 +225,42 @@ def draw_pose(image_bgr: np.ndarray, det: PoseDetection | None, *,
     for (x, y), c in zip(kp, conf):
         color = (255, 190, 70) if c >= min_conf else (160, 160, 160)
         draw.ellipse([x - r, y - r, x + r, y + r], fill=color)
-    return np.asarray(img)
+    return img
+
+
+def draw_pose(image_bgr: np.ndarray, det: PoseDetection | None, *,
+              min_conf: float = MIN_CONF, line_width: int | None = None) -> np.ndarray:
+    """키포인트·뼈대·상자를 **원본 위에** 겹친 RGB 이미지. v1 `_draw_pose` 를 PIL 로.
+
+    대시보드는 이것을 쓰지 않는다 (화면에 원본 영상을 띄우지 않는다는 결정, `draw_skeleton_only`).
+    사람이 제대로 잡혔는지 눈으로 확인할 때 쓰는 디버그용이다.
+    """
+    from PIL import Image
+
+    img = Image.fromarray(np.ascontiguousarray(image_bgr[:, :, ::-1]))
+    return np.asarray(_draw_on(img, det, min_conf=min_conf, line_width=line_width, show_box=True))
+
+
+def draw_skeleton_only(det: PoseDetection | None, *, image_size: tuple[int, int] | None = None,
+                       min_conf: float = MIN_CONF, line_width: int | None = None,
+                       background: tuple[int, int, int] = SKELETON_BACKGROUND,
+                       show_box: bool = False) -> np.ndarray:
+    """**원본 픽셀 없이** 단색 배경 위에 뼈대·관절만 그린 RGB 이미지.
+
+    입력 프레임을 인자로 받지 않으므로 결과에 원본이 섞일 수 없다. 대시보드는 카메라·업로드 입력을
+    전부 이것으로 보여 준다 (팀원 제안 3ab035e `airis/realtime/privacy.py` 를 E 코드로 받은 것.
+    그리기 자체는 `draw_pose` 와 같은 `_draw_on` 을 쓴다).
+
+    `image_size` 는 (너비, 높이). `det` 가 있으면 `det.image_size` 를 쓰고, 없으면 이 값이 필요하다.
+    상자는 사람 위치·크기를 드러내므로 기본으로 그리지 않는다.
+    """
+    from PIL import Image
+
+    if det is not None:
+        w, h = det.image_size
+    elif image_size is not None:
+        w, h = image_size
+    else:
+        raise ValueError("det 또는 image_size 가 필요하다")
+    img = Image.new("RGB", (int(w), int(h)), tuple(int(v) for v in background))
+    return np.asarray(_draw_on(img, det, min_conf=min_conf, line_width=line_width, show_box=show_box))

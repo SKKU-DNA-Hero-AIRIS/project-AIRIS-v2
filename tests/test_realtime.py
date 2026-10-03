@@ -258,6 +258,101 @@ def test_draw_pose_and_read_image(tmp_path):
     assert out.shape == img.shape and not np.array_equal(out, img[:, :, ::-1])
 
 
+# ---------------------------------------------------------------------------
+# 개인정보: 화면에 원본 영상을 띄우지 않는다 (팀원 제안 3ab035e 를 받은 것)
+# ---------------------------------------------------------------------------
+def test_skeleton_only_has_no_input_pixels():
+    """뼈대 그림에는 입력 프레임의 픽셀이 섞일 수 없다 (프레임을 인자로 받지 않는다)."""
+    import inspect
+
+    from airis.realtime.camera import SKELETON_BACKGROUND, draw_skeleton_only
+
+    det = largest_person(_fake_result(1))
+    params = set(inspect.signature(draw_skeleton_only).parameters)
+    assert params == {"det", "image_size", "min_conf", "line_width", "background", "show_box"},         "원본 프레임을 받는 인자가 생기면 안 된다"
+
+    out = draw_skeleton_only(det)
+    assert out.shape == (720, 1280, 3)
+    # 화면에 나오는 색은 배경 + 그리기 색뿐이다. 사진에서 올 수 있는 그 밖의 색은 없다.
+    allowed = {SKELETON_BACKGROUND, (84, 214, 199), (255, 190, 70), (160, 160, 160)}
+    colors = {tuple(c) for c in np.unique(out.reshape(-1, 3), axis=0)}
+    assert colors <= allowed, f"예상 밖의 색: {sorted(colors - allowed)[:5]}"
+    assert len(colors) > 1, "뼈대가 그려지지 않았다"
+    assert (75, 220, 120) not in colors, "상자는 사람 위치·크기를 드러내므로 그리지 않는다"
+    # det 가 없으면 완전한 단색 (사람을 못 찾았다고 원본을 보여 주지 않는다)
+    blank = draw_skeleton_only(None, image_size=(64, 48))
+    assert blank.shape == (48, 64, 3) and (blank == np.array(SKELETON_BACKGROUND)).all()
+
+
+def test_dashboard_does_not_show_original_frames():
+    """대시보드는 원본 위에 겹쳐 그리는 draw_pose 를 쓰지 않고, 프레임을 세션에 남기지 않는다."""
+    from pathlib import Path as P
+    src = (P(__file__).resolve().parents[1] / "scripts" / "run_dashboard.py").read_text(encoding="utf-8")
+    assert "draw_pose" not in src and "draw_skeleton_only" in src
+    assert "local_frames" not in src
+
+
+def test_uploaded_video_file_is_deleted(tmp_path):
+    """업로드한 영상은 프레임을 뽑은 뒤 임시 파일을 지운다 (열지 못해 실패해도 지운다)."""
+    import tempfile
+    from pathlib import Path as P
+
+    cv2 = pytest.importorskip("cv2")
+    from airis.realtime.camera import frames_from_video_bytes
+
+    def leftovers():
+        return set(P(tempfile.gettempdir()).glob("airis_upload_*"))
+
+    before = leftovers()
+    src = tmp_path / "source.mp4"
+    writer = cv2.VideoWriter(str(src), cv2.VideoWriter_fourcc(*"mp4v"), 10.0, (64, 48))
+    for i in range(12):
+        writer.write(np.full((48, 64, 3), i * 10, np.uint8))
+    writer.release()
+    assert src.exists() and src.stat().st_size > 0
+
+    frames = frames_from_video_bytes("up.mp4", src.read_bytes(), every_n=5, max_frames=30)
+    assert frames and frames[0].shape == (48, 64, 3)
+    assert leftovers() == before, "임시 파일이 남았다"
+
+    with pytest.raises(OSError):                      # 깨진 파일이어도
+        frames_from_video_bytes("bad.mp4", b"not a video")
+    assert leftovers() == before, "실패했을 때 임시 파일이 남았다"
+
+
+def test_dashboard_keeps_estimated_body_across_rerun(monkeypatch):
+    """촬영 뒤 시나리오를 바꿔 rerun 이 나도 추정 체형이 유지된다 (프레임 대신 결과를 세션에 남긴다)."""
+    pytest.importorskip("streamlit")
+    from pathlib import Path as P
+
+    from streamlit.testing.v1 import AppTest
+
+    from airis.realtime import camera as cam
+
+    wide = replace(MESH_DEFAULT_BODY, shoulder_width_m=0.50)      # 기본(0.342)과 확실히 다른 체형
+    kp, conf = pe.synthetic_keypoints(wide, PoseParams(), SCENARIOS["default"], model="mesh")
+    det = cam.PoseDetection(kp, conf, np.r_[kp.min(axis=0) - 20, kp.max(axis=0) + 20], (1280, 720))
+    frames = [np.full((720, 1280, 3), 30, np.uint8)]
+    monkeypatch.setattr(cam, "capture_frames", lambda *a, **k: frames)   # 실제 카메라를 열지 않는다
+    monkeypatch.setattr(cam, "load_pose_model", lambda *a, **k: object())
+    monkeypatch.setattr(cam, "detect_pose", lambda model, image, **k: det)
+
+    path = P(__file__).resolve().parents[1] / "scripts" / "run_dashboard.py"
+    at = AppTest.from_file(str(path), default_timeout=240)
+    at.run()
+    at.sidebar.radio[0].set_value("로컬 카메라 (OpenCV)").run()
+    at.button[0].click().run()                                   # 촬영
+    assert not at.exception, [e.value for e in at.exception]
+
+    def shoulder():
+        return next(n.value for n in at.number_input if n.key and n.key.endswith("_shoulder_width_m"))
+
+    assert shoulder() > 0.45, "추정 체형이 반영되지 않았다"
+    at.radio(key="scenario").set_value("pregnant").run()          # rerun (촬영 버튼을 다시 누르지 않는다)
+    assert not at.exception, [e.value for e in at.exception]
+    assert shoulder() > 0.45, "rerun 뒤 추정 체형이 기본값으로 돌아갔다"
+
+
 def test_ultralytics_lazy_import():
     """ultralytics 가 설치돼 있으면 YOLO 클래스를 import 할 수 있다 (가중치는 내려받지 않는다)."""
     ultralytics = pytest.importorskip("ultralytics")
