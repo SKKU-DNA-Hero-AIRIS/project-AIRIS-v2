@@ -5,11 +5,15 @@
 
 화면 순서
     ① 입력 (예시 이미지 · 이미지 업로드 · 브라우저 카메라 · 영상 파일 · 로컬 카메라 · 합성 마네킹 · 직접 입력)
-    ② 키포인트 오버레이와 추정 체형 5개 (수정 가능)
+    ② 뼈대 그림과 추정 체형 5개 (수정 가능)
     ③ 시나리오 선택 (영상으로 판별하지 않는다)
     ④ 추천 자세 3D 마네킹 + 기준 자세(B0·B1·B2)와 점수 비교 (D PatchEvaluator, 400/m²)
        추천은 C의 혼합 모델(flow + kNN + 고정 후보표)을 부르고, 산출물이 없으면 표만 쓴다.
     ⑤ 입자 애니메이션 (A 덤프가 있으면, 없으면 합성 프레임 미리보기)
+
+**개인정보**: 카메라·업로드 영상은 YOLO 추론에만 쓰고 **화면에는 원본을 띄우지 않는다**. ②에 보이는 것은
+`camera.draw_skeleton_only` 가 빈 캔버스에 그린 뼈대뿐이다(원본 픽셀을 인자로 받지 않는다). 업로드한 영상 파일은
+프레임을 뽑은 뒤 바로 지우고, 세션에는 프레임 대신 **추정 결과만** 남긴다. 팀원 제안 3ab035e 를 받은 것이다.
 
 URL 쿼리 `?demo=1`이면 예시 이미지로 바로 시작한다 (스크린샷용). `?scenario=wheelchair` 등으로 시나리오 지정.
 몸 모델은 사이드바에서 고른다 (기본 사람 메시, `?model=capsule`이면 캡슐 마네킹). 체형 추정 비율·추천·점수·
@@ -22,7 +26,7 @@ import argparse
 import hashlib
 import json
 import sys
-from dataclasses import asdict, fields
+from dataclasses import asdict, dataclass, fields
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -52,6 +56,8 @@ BODY_LABELS = {"height_m": "키 (m)", "shoulder_width_m": "어깨 너비 (m)",
 INPUT_MODES = ["예시 이미지", "이미지 업로드", "브라우저 카메라", "영상 파일", "로컬 카메라 (OpenCV)",
                "합성 마네킹 (카메라 없이)", "체형 직접 입력"]
 BODY_MODELS = {"사람 메시 (MakeHuman)": "mesh", "캡슐 마네킹": "capsule"}
+#: 분석 결과를 담아 두는 세션 키 (원본 프레임은 넣지 않는다)
+ANALYSIS_KEY = "analysis"
 
 
 def _wide_kw() -> dict:
@@ -139,37 +145,78 @@ def collect_frames(mode: str) -> tuple[list[np.ndarray], str | None]:
         up = st.file_uploader("전신 정면 사진", type=["jpg", "jpeg", "png", "webp"])
         return ([camera.read_image(up.getvalue())], up.name) if up else ([], None)
     if mode == "브라우저 카메라":
-        shot = st.camera_input("게이트 앞에서 전신이 보이게 정면으로 서서 촬영하세요")
+        # 위젯 자체가 촬영 전 미리보기와 촬영한 사진을 브라우저에 보여 준다 (streamlit 위젯 특성이라
+        # 없앨 수 없다). 촬영이 끝나면 접어 두어 화면에 계속 떠 있지 않게 한다.
+        taken = bool(st.session_state.get("browser_shot_taken"))
+        with st.expander("브라우저 카메라로 촬영", expanded=not taken):
+            shot = st.camera_input("게이트 앞에서 전신이 보이게 정면으로 서서 촬영하세요")
+        st.session_state["browser_shot_taken"] = shot is not None
         return ([camera.read_image(shot.getvalue())], "브라우저 카메라") if shot else ([], None)
     if mode == "영상 파일":
         up = st.file_uploader("영상 파일", type=["mp4", "mov", "avi", "mkv"])
         if not up:
             return [], None
-        tmp = ROOT / "outputs" / "dashboard_upload" / up.name
-        tmp.parent.mkdir(parents=True, exist_ok=True)
-        tmp.write_bytes(up.getvalue())
-        frames = list(camera.iter_video_frames(tmp, every_n=5, max_frames=30))
+        frames = camera.frames_from_video_bytes(up.name, up.getvalue())
         return frames, f"{up.name} ({len(frames)} 프레임 사용)"
     if mode == "로컬 카메라 (OpenCV)":
-        st.caption("서버 컴퓨터의 카메라 0번에서 약 1초(15 프레임)를 찍습니다. 영상은 저장하지 않습니다.")
+        st.caption("서버 컴퓨터의 카메라 0번에서 약 1초(15 프레임)를 찍습니다. "
+                   "프레임은 추정이 끝나면 버리고 저장하지 않습니다.")
         if st.button("촬영", type="primary"):
             try:
-                st.session_state["local_frames"] = camera.capture_frames(0, n=15)
+                # 세션에 남기지 않는다. 이 실행 안에서 추정까지 끝내고 결과만 보관한다 (analyze_frames).
+                return camera.capture_frames(0, n=15), "로컬 카메라 15 프레임"
             except IOError as e:
                 st.error(str(e))
-        frames = st.session_state.get("local_frames", [])
-        return frames, (f"로컬 카메라 {len(frames)} 프레임" if frames else None)
+        return [], None
     return [], None
 
 
-def synthetic_input(height_m: float, body_model: str) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+def synthetic_input(height_m: float, body_model: str) -> tuple[np.ndarray, np.ndarray]:
     """합성 마네킹: 몸 모델의 기본 비율 체형을 정면 카메라에 투영한 키포인트 (가짜 입력)."""
     base = default_body(body_model)
     k = height_m / base.height_m
     body = BodyParams(*(k * np.array(list(asdict(base).values()))))
-    kp, conf = pe.synthetic_keypoints(body, PoseParams(), get_scenarios()["default"], model=body_model)
-    canvas = np.full((720, 1280, 3), 245, np.uint8)
-    return canvas, kp, conf
+    return pe.synthetic_keypoints(body, PoseParams(), get_scenarios()["default"], model=body_model)
+
+
+@dataclass
+class Analysis:
+    """프레임 분석 결과. **원본 프레임을 담지 않는다** — 세션에 남겨도 영상이 남지 않는다."""
+    skeleton: np.ndarray                 # 빈 캔버스에 그린 뼈대 (RGB)
+    body: BodyParams | None              # 안정화한 추정 체형
+    estimate: pe.BodyEstimate | None
+    caption: str
+    warning: str | None = None
+    note: str | None = None
+
+
+def analyze_frames(frames: list[np.ndarray], desc: str, *, height_m: float | None, seated: bool,
+                   calib: str, marker_cm: float, body_model: str) -> Analysis:
+    """프레임 → (뼈대 그림, 추정 체형). 프레임은 이 함수 밖으로 나가지 않는다."""
+    stab = pe.BodyEstimator(height_m=height_m, seated=seated, window=30,
+                            min_frames=1 if len(frames) == 1 else 3, profile=body_model)
+    size = (frames[-1].shape[1], frames[-1].shape[0])
+    last_det, estimate = None, None
+    for img in frames:
+        det = detect_cached(_digest(img), img)
+        if calib != "키 입력" and not seated:
+            scale = camera.detect_marker_scale(img, marker_cm / 100.0)
+            if scale is None:
+                continue
+            stab.kw["scale_m_per_px"] = scale
+        if det is not None:
+            estimate = stab.add(det.keypoints, det.conf, det.image_size)
+            last_det = det
+    warning = None
+    if last_det is None:
+        warning = ("바닥 마커나 사람이 보이지 않습니다. 마커를 발 옆에 두거나 키 입력으로 바꾸세요."
+                   if calib != "키 입력" and not seated else
+                   "사람을 찾지 못했습니다. 전신이 보이게 다시 찍어 주세요.")
+    return Analysis(
+        skeleton=camera.draw_skeleton_only(last_det, image_size=size),
+        body=stab.body(), estimate=estimate, caption=desc, warning=warning,
+        note=(f"프레임 {stab.n_frames}개 중 {len(stab.bodies)}개 성공, 중앙값 사용"
+              if len(frames) > 1 else None))
 
 
 # ---------------------------------------------------------------------------
@@ -233,8 +280,10 @@ def main() -> None:
         st.caption("읽기 전용입니다. 산출물은 추천 모델 담당이 만들고, 물리 설정이 바뀌면 다시 학습해야 합니다. "
                    "**산출물을 새로 설치했으면 대시보드를 다시 시작하세요** (추천 결과는 재시작 전까지 캐시됩니다).")
         st.divider()
-        st.caption("카메라 영상은 저장하지 않습니다. 시나리오(임산부·휠체어)는 영상으로 판별하지 않고 "
-                   "사용자가 직접 고릅니다.")
+        st.caption("**개인정보**: 화면에는 뼈대만 그립니다. 카메라·업로드 영상은 자세 추정에만 쓰고 저장하지 "
+                   "않으며, 업로드한 영상 파일은 프레임을 뽑은 뒤 바로 지웁니다. 브라우저 카메라는 위젯이 "
+                   "촬영 전 미리보기를 보여 주는데, 그 화면은 브라우저 안에만 있습니다. "
+                   "시나리오(임산부·휠체어)는 영상으로 판별하지 않고 사용자가 직접 고릅니다.")
 
     scen_names = list(SCENARIO_LABELS)
     scen_default = q.get("scenario", "default")
@@ -244,7 +293,7 @@ def main() -> None:
     height_m = height_cm / 100.0 if calib == "키 입력" or seated else None
 
     # ---------------- ① 입력 → ② 체형 ----------------
-    st.subheader("① 입력  →  ② 키포인트와 추정 체형")
+    st.subheader("① 입력  →  ② 뼈대와 추정 체형")
     left, right = st.columns([1.1, 1.0], gap="large")
     estimate: pe.BodyEstimate | None = None
     stab_body: BodyParams | None = None
@@ -252,11 +301,11 @@ def main() -> None:
         if mode == "체형 직접 입력":
             st.info("카메라 없이 체형 값을 직접 입력합니다 (오른쪽).")
         elif mode == "합성 마네킹 (카메라 없이)":
-            canvas, kp, conf = synthetic_input(height_cm / 100.0, body_model)
+            kp, conf = synthetic_input(height_cm / 100.0, body_model)
             det = camera.PoseDetection(kp, conf, np.r_[kp.min(axis=0) - 20, kp.max(axis=0) + 20],
-                                       (canvas.shape[1], canvas.shape[0]))
-            st.image(camera.draw_pose(canvas, det), caption="합성 마네킹 키포인트 (몸 모델 관절을 정면 카메라에 투영한 가짜 입력)",
-                     **WIDE)
+                                       (1280, 720))
+            st.image(camera.draw_skeleton_only(det),
+                     caption="합성 마네킹 키포인트 (몸 모델 관절을 정면 카메라에 투영한 가짜 입력)", **WIDE)
             estimate = pe.estimate_body(kp, conf, height_m=height_cm / 100.0, seated=False,
                                         profile=body_model)
             stab_body = estimate.body
@@ -269,31 +318,20 @@ def main() -> None:
                     st.error(f"포즈 모델을 불러오지 못했습니다: {e}. '체형 직접 입력'을 쓰세요.")
                     pose_model = None
                 if pose_model is not None:
-                    stab = pe.BodyEstimator(height_m=height_m, seated=seated, window=30,
-                                            min_frames=1 if len(frames) == 1 else 3,
-                                            profile=body_model)
-                    last_img, last_det = frames[-1], None
-                    for img in frames:
-                        det = detect_cached(_digest(img), img)
-                        scale = None
-                        if calib != "키 입력" and not seated:
-                            scale = camera.detect_marker_scale(img, marker_cm / 100.0)
-                            if scale is None:
-                                continue
-                            stab.kw["scale_m_per_px"] = scale
-                        if det is not None:
-                            estimate = stab.add(det.keypoints, det.conf, det.image_size)
-                            last_img, last_det = img, det
-                    st.image(camera.draw_pose(last_img, last_det), caption=desc,
-                             **WIDE)
-                    if last_det is None:
-                        if calib != "키 입력" and not seated:
-                            st.warning("바닥 마커나 사람이 보이지 않습니다. 마커를 발 옆에 두거나 키 입력으로 바꾸세요.")
-                        else:
-                            st.warning("사람을 찾지 못했습니다. 전신이 보이게 다시 찍어 주세요.")
-                    stab_body = stab.body()
-                    if len(frames) > 1:
-                        st.caption(f"프레임 {stab.n_frames}개 중 {len(stab.bodies)}개 성공, 중앙값 사용")
+                    # 프레임은 여기서 끝난다. 세션에는 결과(Analysis)만 남는다.
+                    st.session_state[ANALYSIS_KEY] = (mode, analyze_frames(
+                        frames, desc, height_m=height_m, seated=seated, calib=calib,
+                        marker_cm=marker_cm, body_model=body_model))
+            saved = st.session_state.get(ANALYSIS_KEY)
+            done: Analysis | None = saved[1] if saved and saved[0] == mode else None
+            if done is not None:
+                st.image(done.skeleton, caption=done.caption, **WIDE)
+                st.caption("화면에 띄우는 것은 뼈대뿐입니다. 원본 영상은 추정에만 쓰고 저장하지 않습니다.")
+                if done.warning:
+                    st.warning(done.warning)
+                if done.note:
+                    st.caption(done.note)
+                estimate, stab_body = done.estimate, done.body
             else:
                 st.info("입력을 기다리는 중입니다.")
     with right:
