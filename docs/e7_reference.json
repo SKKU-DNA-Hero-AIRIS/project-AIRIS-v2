@@ -1,0 +1,5539 @@
+{
+  "generated_by": "scripts/export_e7_reference.py",
+  "bundle": {
+    "group_id": "e7k14_20261001_012825_948aed",
+    "path": "airis-v2-e4bound/outputs/e7k14_20261001_012825_948aed",
+    "commit": "4edeb82",
+    "physics_hash": "c5aea26d",
+    "nozzle_hash": "3b99200e",
+    "kinetics_enabled": true,
+    "time_constant_s": 2.0,
+    "zone_nozzle_counts": {
+      "chest_low": 2.0,
+      "chest_high": 2.0,
+      "back_low": 2.0,
+      "back_high": 2.0,
+      "top": 4.0
+    },
+    "args": {
+      "evaluator": "patch",
+      "conditions": "P0,P1,P2,P3,P4,P5",
+      "scenarios": [
+        "default",
+        "pregnant",
+        "wheelchair"
+      ],
+      "seeds": [
+        0
+      ],
+      "energy_weights": [
+        0.0,
+        0.01,
+        0.03,
+        0.1
+      ],
+      "max_evals": 6000,
+      "pose_max_evals": 3000,
+      "popsize": 100,
+      "sigma0": 0.5,
+      "starts": "default,hands_up",
+      "patches_per_m2": 1500.0,
+      "body": null,
+      "tag": "e7k14",
+      "log_dir": "C:\\Users\\SEONGWOO\\Documents\\airis-v2-e4bound\\outputs",
+      "dummy_target": null
+    },
+    "note": "E7 본 실행 (main 4edeb82, 메시, 1,500/m², 단계 2개, kinetics T_r 2 s, 시드 0). worktree airis-v2-e4bound 에서 01:28~06:53 실행, 다른 세션 테스트와 겹친 혼잡 상태"
+  },
+  "zone_names": [
+    "chest_low",
+    "chest_high",
+    "back_low",
+    "back_high",
+    "top"
+  ],
+  "pose_keys": [
+    "shoulder_abduction",
+    "shoulder_flexion",
+    "elbow_flexion",
+    "torso_pitch",
+    "torso_yaw",
+    "hip_flexion",
+    "knee_flexion"
+  ],
+  "score_note": "score 는 제거율 − 불편도 − w·에너지다. w(energy_weight)가 다르면 목적함수가 달라 score 를 가로로 비교하지 않는다. w 를 고를 때는 total_removal · energy · duration_s · discomfort 를 본다.",
+  "rows": [
+    {
+      "scenario": "default",
+      "condition": "P0",
+      "energy_weight": 0.0,
+      "seed": 0,
+      "infeasible": false,
+      "score": 0.23763272541504507,
+      "total_removal": 0.0800878464724983,
+      "discomfort": 0.0,
+      "energy": 1.0,
+      "duration_s": 20.0,
+      "n_phases": 1,
+      "phase_durations_s": [
+        20.0
+      ],
+      "plan": {
+        "duration_s": 20.0,
+        "phases": [
+          {
+            "duration_s": 20.0,
+            "pose": {
+              "shoulder_abduction": 20.0,
+              "shoulder_flexion": -7.105427357601002e-15,
+              "elbow_flexion": 9.999999999999996,
+              "torso_pitch": 0.0,
+              "torso_yaw": 0.0,
+              "hip_flexion": 0.0,
+              "knee_flexion": 0.0
+            },
+            "torso_yaw_folded": 0.0
+          }
+        ],
+        "zone_strengths": {
+          "chest_low": 1.0,
+          "chest_high": 1.0,
+          "back_low": 1.0,
+          "back_high": 1.0,
+          "top": 1.0
+        }
+      }
+    },
+    {
+      "scenario": "default",
+      "condition": "P1",
+      "energy_weight": 0.0,
+      "seed": 0,
+      "infeasible": false,
+      "score": 0.8246476943615499,
+      "total_removal": 0.27001810048886543,
+      "discomfort": 0.0,
+      "energy": 1.0,
+      "duration_s": 20.0,
+      "n_phases": 12,
+      "phase_durations_s": [
+        1.67,
+        1.67,
+        1.67,
+        1.67,
+        1.67,
+        1.67,
+        1.67,
+        1.67,
+        1.67,
+        1.67,
+        1.67,
+        1.67
+      ],
+      "plan": {
+        "duration_s": 20.0,
+        "phases": [
+          {
+            "duration_s": 1.67,
+            "pose": {
+              "shoulder_abduction": 20.0,
+              "shoulder_flexion": -7.105427357601002e-15,
+              "elbow_flexion": 9.999999999999996,
+              "torso_pitch": 0.0,
+              "torso_yaw": 0.0,
+              "hip_flexion": 0.0,
+              "knee_flexion": 0.0
+            },
+            "torso_yaw_folded": 0.0
+          },
+          {
+            "duration_s": 1.67,
+            "pose": {
+              "shoulder_abduction": 20.0,
+              "shoulder_flexion": -7.105427357601002e-15,
+              "elbow_flexion": 9.999999999999996,
+              "torso_pitch": 0.0,
+              "torso_yaw": 30.0,
+              "hip_flexion": 0.0,
+              "knee_flexion": 0.0
+            },
+            "torso_yaw_folded": 30.0
+          },
+          {
+            "duration_s": 1.67,
+            "pose": {
+              "shoulder_abduction": 20.0,
+              "shoulder_flexion": -7.105427357601002e-15,
+              "elbow_flexion": 9.999999999999996,
+              "torso_pitch": 0.0,
+              "torso_yaw": 60.0,
+              "hip_flexion": 0.0,
+              "knee_flexion": 0.0
+            },
+            "torso_yaw_folded": 60.0
+          },
+          {
+            "duration_s": 1.67,
+            "pose": {
+              "shoulder_abduction": 20.0,
+              "shoulder_flexion": -7.105427357601002e-15,
+              "elbow_flexion": 9.999999999999996,
+              "torso_pitch": 0.0,
+              "torso_yaw": 90.0,
+              "hip_flexion": 0.0,
+              "knee_flexion": 0.0
+            },
+            "torso_yaw_folded": 90.0
+          },
+          {
+            "duration_s": 1.67,
+            "pose": {
+              "shoulder_abduction": 20.0,
+              "shoulder_flexion": -7.105427357601002e-15,
+              "elbow_flexion": 9.999999999999996,
+              "torso_pitch": 0.0,
+              "torso_yaw": 120.0,
+              "hip_flexion": 0.0,
+              "knee_flexion": 0.0
+            },
+            "torso_yaw_folded": 60.0
+          },
+          {
+            "duration_s": 1.67,
+            "pose": {
+              "shoulder_abduction": 20.0,
+              "shoulder_flexion": -7.105427357601002e-15,
+              "elbow_flexion": 9.999999999999996,
+              "torso_pitch": 0.0,
+              "torso_yaw": 150.0,
+              "hip_flexion": 0.0,
+              "knee_flexion": 0.0
+            },
+            "torso_yaw_folded": 30.0
+          },
+          {
+            "duration_s": 1.67,
+            "pose": {
+              "shoulder_abduction": 20.0,
+              "shoulder_flexion": -7.105427357601002e-15,
+              "elbow_flexion": 9.999999999999996,
+              "torso_pitch": 0.0,
+              "torso_yaw": 180.0,
+              "hip_flexion": 0.0,
+              "knee_flexion": 0.0
+            },
+            "torso_yaw_folded": 0.0
+          },
+          {
+            "duration_s": 1.67,
+            "pose": {
+              "shoulder_abduction": 20.0,
+              "shoulder_flexion": -7.105427357601002e-15,
+              "elbow_flexion": 9.999999999999996,
+              "torso_pitch": 0.0,
+              "torso_yaw": -150.0,
+              "hip_flexion": 0.0,
+              "knee_flexion": 0.0
+            },
+            "torso_yaw_folded": 30.0
+          },
+          {
+            "duration_s": 1.67,
+            "pose": {
+              "shoulder_abduction": 20.0,
+              "shoulder_flexion": -7.105427357601002e-15,
+              "elbow_flexion": 9.999999999999996,
+              "torso_pitch": 0.0,
+              "torso_yaw": -120.00000000000001,
+              "hip_flexion": 0.0,
+              "knee_flexion": 0.0
+            },
+            "torso_yaw_folded": 59.999999999999986
+          },
+          {
+            "duration_s": 1.67,
+            "pose": {
+              "shoulder_abduction": 20.0,
+              "shoulder_flexion": -7.105427357601002e-15,
+              "elbow_flexion": 9.999999999999996,
+              "torso_pitch": 0.0,
+              "torso_yaw": -90.0,
+              "hip_flexion": 0.0,
+              "knee_flexion": 0.0
+            },
+            "torso_yaw_folded": 90.0
+          },
+          {
+            "duration_s": 1.67,
+            "pose": {
+              "shoulder_abduction": 20.0,
+              "shoulder_flexion": -7.105427357601002e-15,
+              "elbow_flexion": 9.999999999999996,
+              "torso_pitch": 0.0,
+              "torso_yaw": -60.0,
+              "hip_flexion": 0.0,
+              "knee_flexion": 0.0
+            },
+            "torso_yaw_folded": 60.0
+          },
+          {
+            "duration_s": 1.67,
+            "pose": {
+              "shoulder_abduction": 20.0,
+              "shoulder_flexion": -7.105427357601002e-15,
+              "elbow_flexion": 9.999999999999996,
+              "torso_pitch": 0.0,
+              "torso_yaw": -30.0,
+              "hip_flexion": 0.0,
+              "knee_flexion": 0.0
+            },
+            "torso_yaw_folded": 30.0
+          }
+        ],
+        "zone_strengths": {
+          "chest_low": 1.0,
+          "chest_high": 1.0,
+          "back_low": 1.0,
+          "back_high": 1.0,
+          "top": 1.0
+        }
+      }
+    },
+    {
+      "scenario": "default",
+      "condition": "P2",
+      "energy_weight": 0.0,
+      "seed": 0,
+      "infeasible": false,
+      "score": 0.6295002174025845,
+      "total_removal": 0.18195563864008535,
+      "discomfort": 0.26508849875177115,
+      "energy": 1.0,
+      "duration_s": 20.0,
+      "n_phases": 2,
+      "phase_durations_s": [
+        10.0,
+        10.0
+      ],
+      "plan": {
+        "duration_s": 20.0,
+        "phases": [
+          {
+            "duration_s": 10.0,
+            "pose": {
+              "shoulder_abduction": 177.4370184010355,
+              "shoulder_flexion": -4.577659747662885,
+              "elbow_flexion": 0.7476397974124083,
+              "torso_pitch": 0.3501508508392277,
+              "torso_yaw": 70.53945835242834,
+              "hip_flexion": 0.5574865043752458,
+              "knee_flexion": 10.258002535224986
+            },
+            "torso_yaw_folded": 70.53945835242834
+          },
+          {
+            "duration_s": 10.0,
+            "pose": {
+              "shoulder_abduction": 177.4370184010355,
+              "shoulder_flexion": -4.577659747662885,
+              "elbow_flexion": 0.7476397974124083,
+              "torso_pitch": 0.3501508508392277,
+              "torso_yaw": 70.53945835242834,
+              "hip_flexion": 0.5574865043752458,
+              "knee_flexion": 10.258002535224986
+            },
+            "torso_yaw_folded": 70.53945835242834
+          }
+        ],
+        "zone_strengths": {
+          "chest_low": 1.0,
+          "chest_high": 1.0,
+          "back_low": 1.0,
+          "back_high": 1.0,
+          "top": 1.0
+        }
+      }
+    },
+    {
+      "scenario": "default",
+      "condition": "P3",
+      "energy_weight": 0.0,
+      "seed": 0,
+      "infeasible": false,
+      "score": 0.23761633857997552,
+      "total_removal": 0.08008255410649592,
+      "discomfort": 0.0,
+      "energy": 0.9875081402314466,
+      "duration_s": 19.752397263014345,
+      "n_phases": 2,
+      "phase_durations_s": [
+        12.56,
+        7.2
+      ],
+      "plan": {
+        "duration_s": 19.75,
+        "phases": [
+          {
+            "duration_s": 12.56,
+            "pose": {
+              "shoulder_abduction": 20.0,
+              "shoulder_flexion": -7.105427357601002e-15,
+              "elbow_flexion": 9.999999999999996,
+              "torso_pitch": 0.0,
+              "torso_yaw": 0.0,
+              "hip_flexion": 0.0,
+              "knee_flexion": 0.0
+            },
+            "torso_yaw_folded": 0.0
+          },
+          {
+            "duration_s": 7.2,
+            "pose": {
+              "shoulder_abduction": 20.0,
+              "shoulder_flexion": -7.105427357601002e-15,
+              "elbow_flexion": 9.999999999999996,
+              "torso_pitch": 0.0,
+              "torso_yaw": 0.0,
+              "hip_flexion": 0.0,
+              "knee_flexion": 0.0
+            },
+            "torso_yaw_folded": 0.0
+          }
+        ],
+        "zone_strengths": {
+          "chest_low": 1.0,
+          "chest_high": 0.9999,
+          "back_low": 1.0,
+          "back_high": 1.0,
+          "top": 0.9999
+        }
+      }
+    },
+    {
+      "scenario": "default",
+      "condition": "P4",
+      "energy_weight": 0.0,
+      "seed": 0,
+      "infeasible": false,
+      "score": 0.6387327355432567,
+      "total_removal": 0.1813022969834106,
+      "discomfort": 0.14918051556174614,
+      "energy": 0.5627307732641222,
+      "duration_s": 11.255148093123328,
+      "n_phases": 2,
+      "phase_durations_s": [
+        5.67,
+        5.59
+      ],
+      "plan": {
+        "duration_s": 11.26,
+        "phases": [
+          {
+            "duration_s": 5.67,
+            "pose": {
+              "shoulder_abduction": 177.4370184010355,
+              "shoulder_flexion": -4.577659747662885,
+              "elbow_flexion": 0.7476397974124083,
+              "torso_pitch": 0.3501508508392277,
+              "torso_yaw": 70.53945835242834,
+              "hip_flexion": 0.5574865043752458,
+              "knee_flexion": 10.258002535224986
+            },
+            "torso_yaw_folded": 70.53945835242834
+          },
+          {
+            "duration_s": 5.59,
+            "pose": {
+              "shoulder_abduction": 177.4370184010355,
+              "shoulder_flexion": -4.577659747662885,
+              "elbow_flexion": 0.7476397974124083,
+              "torso_pitch": 0.3501508508392277,
+              "torso_yaw": 70.53945835242834,
+              "hip_flexion": 0.5574865043752458,
+              "knee_flexion": 10.258002535224986
+            },
+            "torso_yaw_folded": 70.53945835242834
+          }
+        ],
+        "zone_strengths": {
+          "chest_low": 1.0,
+          "chest_high": 1.0,
+          "back_low": 1.0,
+          "back_high": 0.9999,
+          "top": 1.0
+        }
+      }
+    },
+    {
+      "scenario": "default",
+      "condition": "P5",
+      "energy_weight": 0.0,
+      "seed": 0,
+      "infeasible": false,
+      "score": 0.9530868379192627,
+      "total_removal": 0.2890764717076573,
+      "discomfort": 0.2471187713965163,
+      "energy": 0.9244996420717273,
+      "duration_s": 19.17997149316289,
+      "n_phases": 2,
+      "phase_durations_s": [
+        9.85,
+        9.33
+      ],
+      "plan": {
+        "duration_s": 19.18,
+        "phases": [
+          {
+            "duration_s": 9.85,
+            "pose": {
+              "shoulder_abduction": 179.7117569771171,
+              "shoulder_flexion": 2.212674085249617,
+              "elbow_flexion": 13.527188139035967,
+              "torso_pitch": -0.03853853816310959,
+              "torso_yaw": 54.76654123198898,
+              "hip_flexion": 3.064047360683737,
+              "knee_flexion": 0.178387346532769
+            },
+            "torso_yaw_folded": 54.76654123198898
+          },
+          {
+            "duration_s": 9.33,
+            "pose": {
+              "shoulder_abduction": 165.00110386548204,
+              "shoulder_flexion": 1.437912580594805,
+              "elbow_flexion": 7.565367245513008,
+              "torso_pitch": 0.8749415923153201,
+              "torso_yaw": -57.04637428867068,
+              "hip_flexion": 2.6908515028220057,
+              "knee_flexion": 7.285529097467972
+            },
+            "torso_yaw_folded": 57.04637428867068
+          }
+        ],
+        "zone_strengths": {
+          "chest_low": 0.9977,
+          "chest_high": 0.9966,
+          "back_low": 0.999,
+          "back_high": 0.9935,
+          "top": 0.9697
+        }
+      }
+    },
+    {
+      "scenario": "default",
+      "condition": "P0",
+      "energy_weight": 0.01,
+      "seed": 0,
+      "infeasible": false,
+      "score": 0.22763272541504506,
+      "total_removal": 0.0800878464724983,
+      "discomfort": 0.0,
+      "energy": 1.0,
+      "duration_s": 20.0,
+      "n_phases": 1,
+      "phase_durations_s": [
+        20.0
+      ],
+      "plan": {
+        "duration_s": 20.0,
+        "phases": [
+          {
+            "duration_s": 20.0,
+            "pose": {
+              "shoulder_abduction": 20.0,
+              "shoulder_flexion": -7.105427357601002e-15,
+              "elbow_flexion": 9.999999999999996,
+              "torso_pitch": 0.0,
+              "torso_yaw": 0.0,
+              "hip_flexion": 0.0,
+              "knee_flexion": 0.0
+            },
+            "torso_yaw_folded": 0.0
+          }
+        ],
+        "zone_strengths": {
+          "chest_low": 1.0,
+          "chest_high": 1.0,
+          "back_low": 1.0,
+          "back_high": 1.0,
+          "top": 1.0
+        }
+      }
+    },
+    {
+      "scenario": "default",
+      "condition": "P1",
+      "energy_weight": 0.01,
+      "seed": 0,
+      "infeasible": false,
+      "score": 0.8146476943615499,
+      "total_removal": 0.27001810048886543,
+      "discomfort": 0.0,
+      "energy": 1.0,
+      "duration_s": 20.0,
+      "n_phases": 12,
+      "phase_durations_s": [
+        1.67,
+        1.67,
+        1.67,
+        1.67,
+        1.67,
+        1.67,
+        1.67,
+        1.67,
+        1.67,
+        1.67,
+        1.67,
+        1.67
+      ],
+      "plan": {
+        "duration_s": 20.0,
+        "phases": [
+          {
+            "duration_s": 1.67,
+            "pose": {
+              "shoulder_abduction": 20.0,
+              "shoulder_flexion": -7.105427357601002e-15,
+              "elbow_flexion": 9.999999999999996,
+              "torso_pitch": 0.0,
+              "torso_yaw": 0.0,
+              "hip_flexion": 0.0,
+              "knee_flexion": 0.0
+            },
+            "torso_yaw_folded": 0.0
+          },
+          {
+            "duration_s": 1.67,
+            "pose": {
+              "shoulder_abduction": 20.0,
+              "shoulder_flexion": -7.105427357601002e-15,
+              "elbow_flexion": 9.999999999999996,
+              "torso_pitch": 0.0,
+              "torso_yaw": 30.0,
+              "hip_flexion": 0.0,
+              "knee_flexion": 0.0
+            },
+            "torso_yaw_folded": 30.0
+          },
+          {
+            "duration_s": 1.67,
+            "pose": {
+              "shoulder_abduction": 20.0,
+              "shoulder_flexion": -7.105427357601002e-15,
+              "elbow_flexion": 9.999999999999996,
+              "torso_pitch": 0.0,
+              "torso_yaw": 60.0,
+              "hip_flexion": 0.0,
+              "knee_flexion": 0.0
+            },
+            "torso_yaw_folded": 60.0
+          },
+          {
+            "duration_s": 1.67,
+            "pose": {
+              "shoulder_abduction": 20.0,
+              "shoulder_flexion": -7.105427357601002e-15,
+              "elbow_flexion": 9.999999999999996,
+              "torso_pitch": 0.0,
+              "torso_yaw": 90.0,
+              "hip_flexion": 0.0,
+              "knee_flexion": 0.0
+            },
+            "torso_yaw_folded": 90.0
+          },
+          {
+            "duration_s": 1.67,
+            "pose": {
+              "shoulder_abduction": 20.0,
+              "shoulder_flexion": -7.105427357601002e-15,
+              "elbow_flexion": 9.999999999999996,
+              "torso_pitch": 0.0,
+              "torso_yaw": 120.0,
+              "hip_flexion": 0.0,
+              "knee_flexion": 0.0
+            },
+            "torso_yaw_folded": 60.0
+          },
+          {
+            "duration_s": 1.67,
+            "pose": {
+              "shoulder_abduction": 20.0,
+              "shoulder_flexion": -7.105427357601002e-15,
+              "elbow_flexion": 9.999999999999996,
+              "torso_pitch": 0.0,
+              "torso_yaw": 150.0,
+              "hip_flexion": 0.0,
+              "knee_flexion": 0.0
+            },
+            "torso_yaw_folded": 30.0
+          },
+          {
+            "duration_s": 1.67,
+            "pose": {
+              "shoulder_abduction": 20.0,
+              "shoulder_flexion": -7.105427357601002e-15,
+              "elbow_flexion": 9.999999999999996,
+              "torso_pitch": 0.0,
+              "torso_yaw": 180.0,
+              "hip_flexion": 0.0,
+              "knee_flexion": 0.0
+            },
+            "torso_yaw_folded": 0.0
+          },
+          {
+            "duration_s": 1.67,
+            "pose": {
+              "shoulder_abduction": 20.0,
+              "shoulder_flexion": -7.105427357601002e-15,
+              "elbow_flexion": 9.999999999999996,
+              "torso_pitch": 0.0,
+              "torso_yaw": -150.0,
+              "hip_flexion": 0.0,
+              "knee_flexion": 0.0
+            },
+            "torso_yaw_folded": 30.0
+          },
+          {
+            "duration_s": 1.67,
+            "pose": {
+              "shoulder_abduction": 20.0,
+              "shoulder_flexion": -7.105427357601002e-15,
+              "elbow_flexion": 9.999999999999996,
+              "torso_pitch": 0.0,
+              "torso_yaw": -120.00000000000001,
+              "hip_flexion": 0.0,
+              "knee_flexion": 0.0
+            },
+            "torso_yaw_folded": 59.999999999999986
+          },
+          {
+            "duration_s": 1.67,
+            "pose": {
+              "shoulder_abduction": 20.0,
+              "shoulder_flexion": -7.105427357601002e-15,
+              "elbow_flexion": 9.999999999999996,
+              "torso_pitch": 0.0,
+              "torso_yaw": -90.0,
+              "hip_flexion": 0.0,
+              "knee_flexion": 0.0
+            },
+            "torso_yaw_folded": 90.0
+          },
+          {
+            "duration_s": 1.67,
+            "pose": {
+              "shoulder_abduction": 20.0,
+              "shoulder_flexion": -7.105427357601002e-15,
+              "elbow_flexion": 9.999999999999996,
+              "torso_pitch": 0.0,
+              "torso_yaw": -60.0,
+              "hip_flexion": 0.0,
+              "knee_flexion": 0.0
+            },
+            "torso_yaw_folded": 60.0
+          },
+          {
+            "duration_s": 1.67,
+            "pose": {
+              "shoulder_abduction": 20.0,
+              "shoulder_flexion": -7.105427357601002e-15,
+              "elbow_flexion": 9.999999999999996,
+              "torso_pitch": 0.0,
+              "torso_yaw": -30.0,
+              "hip_flexion": 0.0,
+              "knee_flexion": 0.0
+            },
+            "torso_yaw_folded": 30.0
+          }
+        ],
+        "zone_strengths": {
+          "chest_low": 1.0,
+          "chest_high": 1.0,
+          "back_low": 1.0,
+          "back_high": 1.0,
+          "top": 1.0
+        }
+      }
+    },
+    {
+      "scenario": "default",
+      "condition": "P2",
+      "energy_weight": 0.01,
+      "seed": 0,
+      "infeasible": false,
+      "score": 0.6195002174025845,
+      "total_removal": 0.18195563864008535,
+      "discomfort": 0.26508849875177115,
+      "energy": 1.0,
+      "duration_s": 20.0,
+      "n_phases": 2,
+      "phase_durations_s": [
+        10.0,
+        10.0
+      ],
+      "plan": {
+        "duration_s": 20.0,
+        "phases": [
+          {
+            "duration_s": 10.0,
+            "pose": {
+              "shoulder_abduction": 177.4370184010355,
+              "shoulder_flexion": -4.577659747662885,
+              "elbow_flexion": 0.7476397974124083,
+              "torso_pitch": 0.3501508508392277,
+              "torso_yaw": 70.53945835242834,
+              "hip_flexion": 0.5574865043752458,
+              "knee_flexion": 10.258002535224986
+            },
+            "torso_yaw_folded": 70.53945835242834
+          },
+          {
+            "duration_s": 10.0,
+            "pose": {
+              "shoulder_abduction": 177.4370184010355,
+              "shoulder_flexion": -4.577659747662885,
+              "elbow_flexion": 0.7476397974124083,
+              "torso_pitch": 0.3501508508392277,
+              "torso_yaw": 70.53945835242834,
+              "hip_flexion": 0.5574865043752458,
+              "knee_flexion": 10.258002535224986
+            },
+            "torso_yaw_folded": 70.53945835242834
+          }
+        ],
+        "zone_strengths": {
+          "chest_low": 1.0,
+          "chest_high": 1.0,
+          "back_low": 1.0,
+          "back_high": 1.0,
+          "top": 1.0
+        }
+      }
+    },
+    {
+      "scenario": "default",
+      "condition": "P3",
+      "energy_weight": 0.01,
+      "seed": 0,
+      "infeasible": false,
+      "score": 0.2311236580806216,
+      "total_removal": 0.07969100523358971,
+      "discomfort": 0.0,
+      "energy": 0.5327515735359039,
+      "duration_s": 10.656562095706986,
+      "n_phases": 2,
+      "phase_durations_s": [
+        3.69,
+        6.96
+      ],
+      "plan": {
+        "duration_s": 10.66,
+        "phases": [
+          {
+            "duration_s": 3.69,
+            "pose": {
+              "shoulder_abduction": 20.0,
+              "shoulder_flexion": -7.105427357601002e-15,
+              "elbow_flexion": 9.999999999999996,
+              "torso_pitch": 0.0,
+              "torso_yaw": 0.0,
+              "hip_flexion": 0.0,
+              "knee_flexion": 0.0
+            },
+            "torso_yaw_folded": 0.0
+          },
+          {
+            "duration_s": 6.96,
+            "pose": {
+              "shoulder_abduction": 20.0,
+              "shoulder_flexion": -7.105427357601002e-15,
+              "elbow_flexion": 9.999999999999996,
+              "torso_pitch": 0.0,
+              "torso_yaw": 0.0,
+              "hip_flexion": 0.0,
+              "knee_flexion": 0.0
+            },
+            "torso_yaw_folded": 0.0
+          }
+        ],
+        "zone_strengths": {
+          "chest_low": 0.9999,
+          "chest_high": 1.0,
+          "back_low": 1.0,
+          "back_high": 0.9998,
+          "top": 1.0
+        }
+      }
+    },
+    {
+      "scenario": "default",
+      "condition": "P4",
+      "energy_weight": 0.01,
+      "seed": 0,
+      "infeasible": false,
+      "score": 0.6332737722949002,
+      "total_removal": 0.180923565601705,
+      "discomfort": 0.1382325360044994,
+      "energy": 0.5210415693086184,
+      "duration_s": 10.429161329548311,
+      "n_phases": 2,
+      "phase_durations_s": [
+        8.41,
+        2.02
+      ],
+      "plan": {
+        "duration_s": 10.43,
+        "phases": [
+          {
+            "duration_s": 8.41,
+            "pose": {
+              "shoulder_abduction": 177.4370184010355,
+              "shoulder_flexion": -4.577659747662885,
+              "elbow_flexion": 0.7476397974124083,
+              "torso_pitch": 0.3501508508392277,
+              "torso_yaw": 70.53945835242834,
+              "hip_flexion": 0.5574865043752458,
+              "knee_flexion": 10.258002535224986
+            },
+            "torso_yaw_folded": 70.53945835242834
+          },
+          {
+            "duration_s": 2.02,
+            "pose": {
+              "shoulder_abduction": 177.4370184010355,
+              "shoulder_flexion": -4.577659747662885,
+              "elbow_flexion": 0.7476397974124083,
+              "torso_pitch": 0.3501508508392277,
+              "torso_yaw": 70.53945835242834,
+              "hip_flexion": 0.5574865043752458,
+              "knee_flexion": 10.258002535224986
+            },
+            "torso_yaw_folded": 70.53945835242834
+          }
+        ],
+        "zone_strengths": {
+          "chest_low": 1.0,
+          "chest_high": 0.9999,
+          "back_low": 0.9998,
+          "back_high": 1.0,
+          "top": 0.9994
+        }
+      }
+    },
+    {
+      "scenario": "default",
+      "condition": "P5",
+      "energy_weight": 0.01,
+      "seed": 0,
+      "infeasible": false,
+      "score": 0.9218319315455239,
+      "total_removal": 0.2857649933906459,
+      "discomfort": 0.25972568241034466,
+      "energy": 0.8939689358633383,
+      "duration_s": 19.696663605787368,
+      "n_phases": 2,
+      "phase_durations_s": [
+        11.33,
+        8.36
+      ],
+      "plan": {
+        "duration_s": 19.7,
+        "phases": [
+          {
+            "duration_s": 11.33,
+            "pose": {
+              "shoulder_abduction": 164.7783054813576,
+              "shoulder_flexion": 1.0909821514450115,
+              "elbow_flexion": 11.998691969154224,
+              "torso_pitch": -2.4772953926588315,
+              "torso_yaw": 49.542992667784745,
+              "hip_flexion": 3.159782027538042,
+              "knee_flexion": 0.44054296062694565
+            },
+            "torso_yaw_folded": 49.542992667784745
+          },
+          {
+            "duration_s": 8.36,
+            "pose": {
+              "shoulder_abduction": 178.7109561835897,
+              "shoulder_flexion": 3.523640542543049,
+              "elbow_flexion": 5.081107644380762,
+              "torso_pitch": -0.4912185783947507,
+              "torso_yaw": -54.33766080914458,
+              "hip_flexion": 2.7621575563471064,
+              "knee_flexion": 0.3160061606277148
+            },
+            "torso_yaw_folded": 54.33766080914458
+          }
+        ],
+        "zone_strengths": {
+          "chest_low": 0.9992,
+          "chest_high": 0.9972,
+          "back_low": 0.9419,
+          "back_high": 0.9992,
+          "top": 0.9329
+        }
+      }
+    },
+    {
+      "scenario": "default",
+      "condition": "P0",
+      "energy_weight": 0.03,
+      "seed": 0,
+      "infeasible": false,
+      "score": 0.20763272541504507,
+      "total_removal": 0.0800878464724983,
+      "discomfort": 0.0,
+      "energy": 1.0,
+      "duration_s": 20.0,
+      "n_phases": 1,
+      "phase_durations_s": [
+        20.0
+      ],
+      "plan": {
+        "duration_s": 20.0,
+        "phases": [
+          {
+            "duration_s": 20.0,
+            "pose": {
+              "shoulder_abduction": 20.0,
+              "shoulder_flexion": -7.105427357601002e-15,
+              "elbow_flexion": 9.999999999999996,
+              "torso_pitch": 0.0,
+              "torso_yaw": 0.0,
+              "hip_flexion": 0.0,
+              "knee_flexion": 0.0
+            },
+            "torso_yaw_folded": 0.0
+          }
+        ],
+        "zone_strengths": {
+          "chest_low": 1.0,
+          "chest_high": 1.0,
+          "back_low": 1.0,
+          "back_high": 1.0,
+          "top": 1.0
+        }
+      }
+    },
+    {
+      "scenario": "default",
+      "condition": "P1",
+      "energy_weight": 0.03,
+      "seed": 0,
+      "infeasible": false,
+      "score": 0.7946476943615499,
+      "total_removal": 0.27001810048886543,
+      "discomfort": 0.0,
+      "energy": 1.0,
+      "duration_s": 20.0,
+      "n_phases": 12,
+      "phase_durations_s": [
+        1.67,
+        1.67,
+        1.67,
+        1.67,
+        1.67,
+        1.67,
+        1.67,
+        1.67,
+        1.67,
+        1.67,
+        1.67,
+        1.67
+      ],
+      "plan": {
+        "duration_s": 20.0,
+        "phases": [
+          {
+            "duration_s": 1.67,
+            "pose": {
+              "shoulder_abduction": 20.0,
+              "shoulder_flexion": -7.105427357601002e-15,
+              "elbow_flexion": 9.999999999999996,
+              "torso_pitch": 0.0,
+              "torso_yaw": 0.0,
+              "hip_flexion": 0.0,
+              "knee_flexion": 0.0
+            },
+            "torso_yaw_folded": 0.0
+          },
+          {
+            "duration_s": 1.67,
+            "pose": {
+              "shoulder_abduction": 20.0,
+              "shoulder_flexion": -7.105427357601002e-15,
+              "elbow_flexion": 9.999999999999996,
+              "torso_pitch": 0.0,
+              "torso_yaw": 30.0,
+              "hip_flexion": 0.0,
+              "knee_flexion": 0.0
+            },
+            "torso_yaw_folded": 30.0
+          },
+          {
+            "duration_s": 1.67,
+            "pose": {
+              "shoulder_abduction": 20.0,
+              "shoulder_flexion": -7.105427357601002e-15,
+              "elbow_flexion": 9.999999999999996,
+              "torso_pitch": 0.0,
+              "torso_yaw": 60.0,
+              "hip_flexion": 0.0,
+              "knee_flexion": 0.0
+            },
+            "torso_yaw_folded": 60.0
+          },
+          {
+            "duration_s": 1.67,
+            "pose": {
+              "shoulder_abduction": 20.0,
+              "shoulder_flexion": -7.105427357601002e-15,
+              "elbow_flexion": 9.999999999999996,
+              "torso_pitch": 0.0,
+              "torso_yaw": 90.0,
+              "hip_flexion": 0.0,
+              "knee_flexion": 0.0
+            },
+            "torso_yaw_folded": 90.0
+          },
+          {
+            "duration_s": 1.67,
+            "pose": {
+              "shoulder_abduction": 20.0,
+              "shoulder_flexion": -7.105427357601002e-15,
+              "elbow_flexion": 9.999999999999996,
+              "torso_pitch": 0.0,
+              "torso_yaw": 120.0,
+              "hip_flexion": 0.0,
+              "knee_flexion": 0.0
+            },
+            "torso_yaw_folded": 60.0
+          },
+          {
+            "duration_s": 1.67,
+            "pose": {
+              "shoulder_abduction": 20.0,
+              "shoulder_flexion": -7.105427357601002e-15,
+              "elbow_flexion": 9.999999999999996,
+              "torso_pitch": 0.0,
+              "torso_yaw": 150.0,
+              "hip_flexion": 0.0,
+              "knee_flexion": 0.0
+            },
+            "torso_yaw_folded": 30.0
+          },
+          {
+            "duration_s": 1.67,
+            "pose": {
+              "shoulder_abduction": 20.0,
+              "shoulder_flexion": -7.105427357601002e-15,
+              "elbow_flexion": 9.999999999999996,
+              "torso_pitch": 0.0,
+              "torso_yaw": 180.0,
+              "hip_flexion": 0.0,
+              "knee_flexion": 0.0
+            },
+            "torso_yaw_folded": 0.0
+          },
+          {
+            "duration_s": 1.67,
+            "pose": {
+              "shoulder_abduction": 20.0,
+              "shoulder_flexion": -7.105427357601002e-15,
+              "elbow_flexion": 9.999999999999996,
+              "torso_pitch": 0.0,
+              "torso_yaw": -150.0,
+              "hip_flexion": 0.0,
+              "knee_flexion": 0.0
+            },
+            "torso_yaw_folded": 30.0
+          },
+          {
+            "duration_s": 1.67,
+            "pose": {
+              "shoulder_abduction": 20.0,
+              "shoulder_flexion": -7.105427357601002e-15,
+              "elbow_flexion": 9.999999999999996,
+              "torso_pitch": 0.0,
+              "torso_yaw": -120.00000000000001,
+              "hip_flexion": 0.0,
+              "knee_flexion": 0.0
+            },
+            "torso_yaw_folded": 59.999999999999986
+          },
+          {
+            "duration_s": 1.67,
+            "pose": {
+              "shoulder_abduction": 20.0,
+              "shoulder_flexion": -7.105427357601002e-15,
+              "elbow_flexion": 9.999999999999996,
+              "torso_pitch": 0.0,
+              "torso_yaw": -90.0,
+              "hip_flexion": 0.0,
+              "knee_flexion": 0.0
+            },
+            "torso_yaw_folded": 90.0
+          },
+          {
+            "duration_s": 1.67,
+            "pose": {
+              "shoulder_abduction": 20.0,
+              "shoulder_flexion": -7.105427357601002e-15,
+              "elbow_flexion": 9.999999999999996,
+              "torso_pitch": 0.0,
+              "torso_yaw": -60.0,
+              "hip_flexion": 0.0,
+              "knee_flexion": 0.0
+            },
+            "torso_yaw_folded": 60.0
+          },
+          {
+            "duration_s": 1.67,
+            "pose": {
+              "shoulder_abduction": 20.0,
+              "shoulder_flexion": -7.105427357601002e-15,
+              "elbow_flexion": 9.999999999999996,
+              "torso_pitch": 0.0,
+              "torso_yaw": -30.0,
+              "hip_flexion": 0.0,
+              "knee_flexion": 0.0
+            },
+            "torso_yaw_folded": 30.0
+          }
+        ],
+        "zone_strengths": {
+          "chest_low": 1.0,
+          "chest_high": 1.0,
+          "back_low": 1.0,
+          "back_high": 1.0,
+          "top": 1.0
+        }
+      }
+    },
+    {
+      "scenario": "default",
+      "condition": "P2",
+      "energy_weight": 0.03,
+      "seed": 0,
+      "infeasible": false,
+      "score": 0.5995002174025845,
+      "total_removal": 0.18195563864008535,
+      "discomfort": 0.26508849875177115,
+      "energy": 1.0,
+      "duration_s": 20.0,
+      "n_phases": 2,
+      "phase_durations_s": [
+        10.0,
+        10.0
+      ],
+      "plan": {
+        "duration_s": 20.0,
+        "phases": [
+          {
+            "duration_s": 10.0,
+            "pose": {
+              "shoulder_abduction": 177.4370184010355,
+              "shoulder_flexion": -4.577659747662885,
+              "elbow_flexion": 0.7476397974124083,
+              "torso_pitch": 0.3501508508392277,
+              "torso_yaw": 70.53945835242834,
+              "hip_flexion": 0.5574865043752458,
+              "knee_flexion": 10.258002535224986
+            },
+            "torso_yaw_folded": 70.53945835242834
+          },
+          {
+            "duration_s": 10.0,
+            "pose": {
+              "shoulder_abduction": 177.4370184010355,
+              "shoulder_flexion": -4.577659747662885,
+              "elbow_flexion": 0.7476397974124083,
+              "torso_pitch": 0.3501508508392277,
+              "torso_yaw": 70.53945835242834,
+              "hip_flexion": 0.5574865043752458,
+              "knee_flexion": 10.258002535224986
+            },
+            "torso_yaw_folded": 70.53945835242834
+          }
+        ],
+        "zone_strengths": {
+          "chest_low": 1.0,
+          "chest_high": 1.0,
+          "back_low": 1.0,
+          "back_high": 1.0,
+          "top": 1.0
+        }
+      }
+    },
+    {
+      "scenario": "default",
+      "condition": "P3",
+      "energy_weight": 0.03,
+      "seed": 0,
+      "infeasible": false,
+      "score": 0.22138274369854133,
+      "total_removal": 0.0789512712107684,
+      "discomfort": 0.0,
+      "energy": 0.4288116709738484,
+      "duration_s": 8.580602026793422,
+      "n_phases": 2,
+      "phase_durations_s": [
+        5.59,
+        2.99
+      ],
+      "plan": {
+        "duration_s": 8.58,
+        "phases": [
+          {
+            "duration_s": 5.59,
+            "pose": {
+              "shoulder_abduction": 20.0,
+              "shoulder_flexion": -7.105427357601002e-15,
+              "elbow_flexion": 9.999999999999996,
+              "torso_pitch": 0.0,
+              "torso_yaw": 0.0,
+              "hip_flexion": 0.0,
+              "knee_flexion": 0.0
+            },
+            "torso_yaw_folded": 0.0
+          },
+          {
+            "duration_s": 2.99,
+            "pose": {
+              "shoulder_abduction": 20.0,
+              "shoulder_flexion": -7.105427357601002e-15,
+              "elbow_flexion": 9.999999999999996,
+              "torso_pitch": 0.0,
+              "torso_yaw": 0.0,
+              "hip_flexion": 0.0,
+              "knee_flexion": 0.0
+            },
+            "torso_yaw_folded": 0.0
+          }
+        ],
+        "zone_strengths": {
+          "chest_low": 0.9998,
+          "chest_high": 0.9995,
+          "back_low": 0.9999,
+          "back_high": 0.9998,
+          "top": 1.0
+        }
+      }
+    },
+    {
+      "scenario": "default",
+      "condition": "P4",
+      "energy_weight": 0.03,
+      "seed": 0,
+      "infeasible": false,
+      "score": 0.6234194126484787,
+      "total_removal": 0.18037917801246037,
+      "discomfort": 0.1262230036975086,
+      "energy": 0.4760251308590092,
+      "duration_s": 9.523084124121418,
+      "n_phases": 2,
+      "phase_durations_s": [
+        6.18,
+        3.34
+      ],
+      "plan": {
+        "duration_s": 9.52,
+        "phases": [
+          {
+            "duration_s": 6.18,
+            "pose": {
+              "shoulder_abduction": 177.4370184010355,
+              "shoulder_flexion": -4.577659747662885,
+              "elbow_flexion": 0.7476397974124083,
+              "torso_pitch": 0.3501508508392277,
+              "torso_yaw": 70.53945835242834,
+              "hip_flexion": 0.5574865043752458,
+              "knee_flexion": 10.258002535224986
+            },
+            "torso_yaw_folded": 70.53945835242834
+          },
+          {
+            "duration_s": 3.34,
+            "pose": {
+              "shoulder_abduction": 177.4370184010355,
+              "shoulder_flexion": -4.577659747662885,
+              "elbow_flexion": 0.7476397974124083,
+              "torso_pitch": 0.3501508508392277,
+              "torso_yaw": 70.53945835242834,
+              "hip_flexion": 0.5574865043752458,
+              "knee_flexion": 10.258002535224986
+            },
+            "torso_yaw_folded": 70.53945835242834
+          }
+        ],
+        "zone_strengths": {
+          "chest_low": 1.0,
+          "chest_high": 1.0,
+          "back_low": 0.9999,
+          "back_high": 0.9999,
+          "top": 0.9999
+        }
+      }
+    },
+    {
+      "scenario": "default",
+      "condition": "P5",
+      "energy_weight": 0.03,
+      "seed": 0,
+      "infeasible": false,
+      "score": 0.8845786556769885,
+      "total_removal": 0.2778485946131709,
+      "discomfort": 0.2609111232023582,
+      "energy": 0.8423367210797178,
+      "duration_s": 18.61143738281685,
+      "n_phases": 2,
+      "phase_durations_s": [
+        9.68,
+        8.93
+      ],
+      "plan": {
+        "duration_s": 18.61,
+        "phases": [
+          {
+            "duration_s": 9.68,
+            "pose": {
+              "shoulder_abduction": 174.0648413891637,
+              "shoulder_flexion": 6.332428913039742,
+              "elbow_flexion": 5.618986613630151,
+              "torso_pitch": 1.1791539085638263,
+              "torso_yaw": 45.03568764808466,
+              "hip_flexion": 3.826078769560559,
+              "knee_flexion": 19.709287334922937
+            },
+            "torso_yaw_folded": 45.03568764808466
+          },
+          {
+            "duration_s": 8.93,
+            "pose": {
+              "shoulder_abduction": 172.63424447595102,
+              "shoulder_flexion": 12.954297547548684,
+              "elbow_flexion": 8.485677244097534,
+              "torso_pitch": 5.42614435932958,
+              "torso_yaw": -51.227668388356676,
+              "hip_flexion": 3.0862236042510616,
+              "knee_flexion": 8.058116481335706
+            },
+            "torso_yaw_folded": 51.227668388356676
+          }
+        ],
+        "zone_strengths": {
+          "chest_low": 0.9966,
+          "chest_high": 0.9925,
+          "back_low": 0.9769,
+          "back_high": 0.9963,
+          "top": 0.917
+        }
+      }
+    },
+    {
+      "scenario": "default",
+      "condition": "P0",
+      "energy_weight": 0.1,
+      "seed": 0,
+      "infeasible": false,
+      "score": 0.13763272541504507,
+      "total_removal": 0.0800878464724983,
+      "discomfort": 0.0,
+      "energy": 1.0,
+      "duration_s": 20.0,
+      "n_phases": 1,
+      "phase_durations_s": [
+        20.0
+      ],
+      "plan": {
+        "duration_s": 20.0,
+        "phases": [
+          {
+            "duration_s": 20.0,
+            "pose": {
+              "shoulder_abduction": 20.0,
+              "shoulder_flexion": -7.105427357601002e-15,
+              "elbow_flexion": 9.999999999999996,
+              "torso_pitch": 0.0,
+              "torso_yaw": 0.0,
+              "hip_flexion": 0.0,
+              "knee_flexion": 0.0
+            },
+            "torso_yaw_folded": 0.0
+          }
+        ],
+        "zone_strengths": {
+          "chest_low": 1.0,
+          "chest_high": 1.0,
+          "back_low": 1.0,
+          "back_high": 1.0,
+          "top": 1.0
+        }
+      }
+    },
+    {
+      "scenario": "default",
+      "condition": "P1",
+      "energy_weight": 0.1,
+      "seed": 0,
+      "infeasible": false,
+      "score": 0.72464769436155,
+      "total_removal": 0.27001810048886543,
+      "discomfort": 0.0,
+      "energy": 1.0,
+      "duration_s": 20.0,
+      "n_phases": 12,
+      "phase_durations_s": [
+        1.67,
+        1.67,
+        1.67,
+        1.67,
+        1.67,
+        1.67,
+        1.67,
+        1.67,
+        1.67,
+        1.67,
+        1.67,
+        1.67
+      ],
+      "plan": {
+        "duration_s": 20.0,
+        "phases": [
+          {
+            "duration_s": 1.67,
+            "pose": {
+              "shoulder_abduction": 20.0,
+              "shoulder_flexion": -7.105427357601002e-15,
+              "elbow_flexion": 9.999999999999996,
+              "torso_pitch": 0.0,
+              "torso_yaw": 0.0,
+              "hip_flexion": 0.0,
+              "knee_flexion": 0.0
+            },
+            "torso_yaw_folded": 0.0
+          },
+          {
+            "duration_s": 1.67,
+            "pose": {
+              "shoulder_abduction": 20.0,
+              "shoulder_flexion": -7.105427357601002e-15,
+              "elbow_flexion": 9.999999999999996,
+              "torso_pitch": 0.0,
+              "torso_yaw": 30.0,
+              "hip_flexion": 0.0,
+              "knee_flexion": 0.0
+            },
+            "torso_yaw_folded": 30.0
+          },
+          {
+            "duration_s": 1.67,
+            "pose": {
+              "shoulder_abduction": 20.0,
+              "shoulder_flexion": -7.105427357601002e-15,
+              "elbow_flexion": 9.999999999999996,
+              "torso_pitch": 0.0,
+              "torso_yaw": 60.0,
+              "hip_flexion": 0.0,
+              "knee_flexion": 0.0
+            },
+            "torso_yaw_folded": 60.0
+          },
+          {
+            "duration_s": 1.67,
+            "pose": {
+              "shoulder_abduction": 20.0,
+              "shoulder_flexion": -7.105427357601002e-15,
+              "elbow_flexion": 9.999999999999996,
+              "torso_pitch": 0.0,
+              "torso_yaw": 90.0,
+              "hip_flexion": 0.0,
+              "knee_flexion": 0.0
+            },
+            "torso_yaw_folded": 90.0
+          },
+          {
+            "duration_s": 1.67,
+            "pose": {
+              "shoulder_abduction": 20.0,
+              "shoulder_flexion": -7.105427357601002e-15,
+              "elbow_flexion": 9.999999999999996,
+              "torso_pitch": 0.0,
+              "torso_yaw": 120.0,
+              "hip_flexion": 0.0,
+              "knee_flexion": 0.0
+            },
+            "torso_yaw_folded": 60.0
+          },
+          {
+            "duration_s": 1.67,
+            "pose": {
+              "shoulder_abduction": 20.0,
+              "shoulder_flexion": -7.105427357601002e-15,
+              "elbow_flexion": 9.999999999999996,
+              "torso_pitch": 0.0,
+              "torso_yaw": 150.0,
+              "hip_flexion": 0.0,
+              "knee_flexion": 0.0
+            },
+            "torso_yaw_folded": 30.0
+          },
+          {
+            "duration_s": 1.67,
+            "pose": {
+              "shoulder_abduction": 20.0,
+              "shoulder_flexion": -7.105427357601002e-15,
+              "elbow_flexion": 9.999999999999996,
+              "torso_pitch": 0.0,
+              "torso_yaw": 180.0,
+              "hip_flexion": 0.0,
+              "knee_flexion": 0.0
+            },
+            "torso_yaw_folded": 0.0
+          },
+          {
+            "duration_s": 1.67,
+            "pose": {
+              "shoulder_abduction": 20.0,
+              "shoulder_flexion": -7.105427357601002e-15,
+              "elbow_flexion": 9.999999999999996,
+              "torso_pitch": 0.0,
+              "torso_yaw": -150.0,
+              "hip_flexion": 0.0,
+              "knee_flexion": 0.0
+            },
+            "torso_yaw_folded": 30.0
+          },
+          {
+            "duration_s": 1.67,
+            "pose": {
+              "shoulder_abduction": 20.0,
+              "shoulder_flexion": -7.105427357601002e-15,
+              "elbow_flexion": 9.999999999999996,
+              "torso_pitch": 0.0,
+              "torso_yaw": -120.00000000000001,
+              "hip_flexion": 0.0,
+              "knee_flexion": 0.0
+            },
+            "torso_yaw_folded": 59.999999999999986
+          },
+          {
+            "duration_s": 1.67,
+            "pose": {
+              "shoulder_abduction": 20.0,
+              "shoulder_flexion": -7.105427357601002e-15,
+              "elbow_flexion": 9.999999999999996,
+              "torso_pitch": 0.0,
+              "torso_yaw": -90.0,
+              "hip_flexion": 0.0,
+              "knee_flexion": 0.0
+            },
+            "torso_yaw_folded": 90.0
+          },
+          {
+            "duration_s": 1.67,
+            "pose": {
+              "shoulder_abduction": 20.0,
+              "shoulder_flexion": -7.105427357601002e-15,
+              "elbow_flexion": 9.999999999999996,
+              "torso_pitch": 0.0,
+              "torso_yaw": -60.0,
+              "hip_flexion": 0.0,
+              "knee_flexion": 0.0
+            },
+            "torso_yaw_folded": 60.0
+          },
+          {
+            "duration_s": 1.67,
+            "pose": {
+              "shoulder_abduction": 20.0,
+              "shoulder_flexion": -7.105427357601002e-15,
+              "elbow_flexion": 9.999999999999996,
+              "torso_pitch": 0.0,
+              "torso_yaw": -30.0,
+              "hip_flexion": 0.0,
+              "knee_flexion": 0.0
+            },
+            "torso_yaw_folded": 30.0
+          }
+        ],
+        "zone_strengths": {
+          "chest_low": 1.0,
+          "chest_high": 1.0,
+          "back_low": 1.0,
+          "back_high": 1.0,
+          "top": 1.0
+        }
+      }
+    },
+    {
+      "scenario": "default",
+      "condition": "P2",
+      "energy_weight": 0.1,
+      "seed": 0,
+      "infeasible": false,
+      "score": 0.5295002174025846,
+      "total_removal": 0.18195563864008535,
+      "discomfort": 0.26508849875177115,
+      "energy": 1.0,
+      "duration_s": 20.0,
+      "n_phases": 2,
+      "phase_durations_s": [
+        10.0,
+        10.0
+      ],
+      "plan": {
+        "duration_s": 20.0,
+        "phases": [
+          {
+            "duration_s": 10.0,
+            "pose": {
+              "shoulder_abduction": 177.4370184010355,
+              "shoulder_flexion": -4.577659747662885,
+              "elbow_flexion": 0.7476397974124083,
+              "torso_pitch": 0.3501508508392277,
+              "torso_yaw": 70.53945835242834,
+              "hip_flexion": 0.5574865043752458,
+              "knee_flexion": 10.258002535224986
+            },
+            "torso_yaw_folded": 70.53945835242834
+          },
+          {
+            "duration_s": 10.0,
+            "pose": {
+              "shoulder_abduction": 177.4370184010355,
+              "shoulder_flexion": -4.577659747662885,
+              "elbow_flexion": 0.7476397974124083,
+              "torso_pitch": 0.3501508508392277,
+              "torso_yaw": 70.53945835242834,
+              "hip_flexion": 0.5574865043752458,
+              "knee_flexion": 10.258002535224986
+            },
+            "torso_yaw_folded": 70.53945835242834
+          }
+        ],
+        "zone_strengths": {
+          "chest_low": 1.0,
+          "chest_high": 1.0,
+          "back_low": 1.0,
+          "back_high": 1.0,
+          "top": 1.0
+        }
+      }
+    },
+    {
+      "scenario": "default",
+      "condition": "P3",
+      "energy_weight": 0.1,
+      "seed": 0,
+      "infeasible": false,
+      "score": 0.1984992650792274,
+      "total_removal": 0.07445709535592829,
+      "discomfort": 0.0,
+      "energy": 0.2488563006477998,
+      "duration_s": 6.757475812830988,
+      "n_phases": 2,
+      "phase_durations_s": [
+        2.28,
+        4.48
+      ],
+      "plan": {
+        "duration_s": 6.76,
+        "phases": [
+          {
+            "duration_s": 2.28,
+            "pose": {
+              "shoulder_abduction": 20.0,
+              "shoulder_flexion": -7.105427357601002e-15,
+              "elbow_flexion": 9.999999999999996,
+              "torso_pitch": 0.0,
+              "torso_yaw": 0.0,
+              "hip_flexion": 0.0,
+              "knee_flexion": 0.0
+            },
+            "torso_yaw_folded": 0.0
+          },
+          {
+            "duration_s": 4.48,
+            "pose": {
+              "shoulder_abduction": 20.0,
+              "shoulder_flexion": -7.105427357601002e-15,
+              "elbow_flexion": 9.999999999999996,
+              "torso_pitch": 0.0,
+              "torso_yaw": 0.0,
+              "hip_flexion": 0.0,
+              "knee_flexion": 0.0
+            },
+            "torso_yaw_folded": 0.0
+          }
+        ],
+        "zone_strengths": {
+          "chest_low": 0.9999,
+          "chest_high": 0.9999,
+          "back_low": 1.0,
+          "back_high": 0.9995,
+          "top": 0.5951
+        }
+      }
+    },
+    {
+      "scenario": "default",
+      "condition": "P4",
+      "energy_weight": 0.1,
+      "seed": 0,
+      "infeasible": false,
+      "score": 0.5927575820894252,
+      "total_removal": 0.1774425525577123,
+      "discomfort": 0.09846929234595414,
+      "energy": 0.3712179852192952,
+      "duration_s": 7.429163680025272,
+      "n_phases": 2,
+      "phase_durations_s": [
+        2.84,
+        4.58
+      ],
+      "plan": {
+        "duration_s": 7.43,
+        "phases": [
+          {
+            "duration_s": 2.84,
+            "pose": {
+              "shoulder_abduction": 177.4370184010355,
+              "shoulder_flexion": -4.577659747662885,
+              "elbow_flexion": 0.7476397974124083,
+              "torso_pitch": 0.3501508508392277,
+              "torso_yaw": 70.53945835242834,
+              "hip_flexion": 0.5574865043752458,
+              "knee_flexion": 10.258002535224986
+            },
+            "torso_yaw_folded": 70.53945835242834
+          },
+          {
+            "duration_s": 4.58,
+            "pose": {
+              "shoulder_abduction": 177.4370184010355,
+              "shoulder_flexion": -4.577659747662885,
+              "elbow_flexion": 0.7476397974124083,
+              "torso_pitch": 0.3501508508392277,
+              "torso_yaw": 70.53945835242834,
+              "hip_flexion": 0.5574865043752458,
+              "knee_flexion": 10.258002535224986
+            },
+            "torso_yaw_folded": 70.53945835242834
+          }
+        ],
+        "zone_strengths": {
+          "chest_low": 0.9997,
+          "chest_high": 1.0,
+          "back_low": 0.9993,
+          "back_high": 1.0,
+          "top": 0.9999
+        }
+      }
+    },
+    {
+      "scenario": "default",
+      "condition": "P5",
+      "energy_weight": 0.1,
+      "seed": 0,
+      "infeasible": false,
+      "score": 0.85328223553221,
+      "total_removal": 0.2763524585895325,
+      "discomfort": 0.18771823933279613,
+      "energy": 0.5914266059645359,
+      "duration_s": 14.192049213975375,
+      "n_phases": 2,
+      "phase_durations_s": [
+        7.2,
+        6.99
+      ],
+      "plan": {
+        "duration_s": 14.19,
+        "phases": [
+          {
+            "duration_s": 7.2,
+            "pose": {
+              "shoulder_abduction": 169.0822989292695,
+              "shoulder_flexion": 13.865769247314766,
+              "elbow_flexion": 2.4877641460291935,
+              "torso_pitch": 3.1288388919218164,
+              "torso_yaw": 47.73198069021731,
+              "hip_flexion": 0.20558378035630986,
+              "knee_flexion": 3.846681245190642
+            },
+            "torso_yaw_folded": 47.73198069021731
+          },
+          {
+            "duration_s": 6.99,
+            "pose": {
+              "shoulder_abduction": 169.72225430407792,
+              "shoulder_flexion": 16.996608066110177,
+              "elbow_flexion": 20.223734007301946,
+              "torso_pitch": 0.8789788547591968,
+              "torso_yaw": -55.6255219715909,
+              "hip_flexion": 0.30363910464790034,
+              "knee_flexion": 9.369299799561956
+            },
+            "torso_yaw_folded": 55.6255219715909
+          }
+        ],
+        "zone_strengths": {
+          "chest_low": 0.9998,
+          "chest_high": 0.9992,
+          "back_low": 0.9957,
+          "back_high": 0.998,
+          "top": 0.7996
+        }
+      }
+    },
+    {
+      "scenario": "pregnant",
+      "condition": "P0",
+      "energy_weight": 0.0,
+      "seed": 0,
+      "infeasible": false,
+      "score": 0.15127880455350037,
+      "total_removal": 0.049660955929532076,
+      "discomfort": 0.0,
+      "energy": 0.7386666752497357,
+      "duration_s": 20.0,
+      "n_phases": 1,
+      "phase_durations_s": [
+        20.0
+      ],
+      "plan": {
+        "duration_s": 20.0,
+        "phases": [
+          {
+            "duration_s": 20.0,
+            "pose": {
+              "shoulder_abduction": 20.0,
+              "shoulder_flexion": -7.105427357601002e-15,
+              "elbow_flexion": 9.999999999999996,
+              "torso_pitch": 0.0,
+              "torso_yaw": 0.0,
+              "hip_flexion": 0.0,
+              "knee_flexion": 0.0
+            },
+            "torso_yaw_folded": 0.0
+          }
+        ],
+        "zone_strengths": {
+          "chest_low": 0.6,
+          "chest_high": 0.6,
+          "back_low": 1.0,
+          "back_high": 1.0,
+          "top": 1.0
+        }
+      }
+    },
+    {
+      "scenario": "pregnant",
+      "condition": "P1",
+      "energy_weight": 0.0,
+      "seed": 0,
+      "infeasible": false,
+      "score": 0.5713291049718836,
+      "total_removal": 0.1892877128595047,
+      "discomfort": 0.0,
+      "energy": 0.7386666752497358,
+      "duration_s": 20.0,
+      "n_phases": 12,
+      "phase_durations_s": [
+        1.67,
+        1.67,
+        1.67,
+        1.67,
+        1.67,
+        1.67,
+        1.67,
+        1.67,
+        1.67,
+        1.67,
+        1.67,
+        1.67
+      ],
+      "plan": {
+        "duration_s": 20.0,
+        "phases": [
+          {
+            "duration_s": 1.67,
+            "pose": {
+              "shoulder_abduction": 20.0,
+              "shoulder_flexion": -7.105427357601002e-15,
+              "elbow_flexion": 9.999999999999996,
+              "torso_pitch": 0.0,
+              "torso_yaw": 0.0,
+              "hip_flexion": 0.0,
+              "knee_flexion": 0.0
+            },
+            "torso_yaw_folded": 0.0
+          },
+          {
+            "duration_s": 1.67,
+            "pose": {
+              "shoulder_abduction": 20.0,
+              "shoulder_flexion": -7.105427357601002e-15,
+              "elbow_flexion": 9.999999999999996,
+              "torso_pitch": 0.0,
+              "torso_yaw": 30.0,
+              "hip_flexion": 0.0,
+              "knee_flexion": 0.0
+            },
+            "torso_yaw_folded": 30.0
+          },
+          {
+            "duration_s": 1.67,
+            "pose": {
+              "shoulder_abduction": 20.0,
+              "shoulder_flexion": -7.105427357601002e-15,
+              "elbow_flexion": 9.999999999999996,
+              "torso_pitch": 0.0,
+              "torso_yaw": 60.0,
+              "hip_flexion": 0.0,
+              "knee_flexion": 0.0
+            },
+            "torso_yaw_folded": 60.0
+          },
+          {
+            "duration_s": 1.67,
+            "pose": {
+              "shoulder_abduction": 20.0,
+              "shoulder_flexion": -7.105427357601002e-15,
+              "elbow_flexion": 9.999999999999996,
+              "torso_pitch": 0.0,
+              "torso_yaw": 90.0,
+              "hip_flexion": 0.0,
+              "knee_flexion": 0.0
+            },
+            "torso_yaw_folded": 90.0
+          },
+          {
+            "duration_s": 1.67,
+            "pose": {
+              "shoulder_abduction": 20.0,
+              "shoulder_flexion": -7.105427357601002e-15,
+              "elbow_flexion": 9.999999999999996,
+              "torso_pitch": 0.0,
+              "torso_yaw": 120.0,
+              "hip_flexion": 0.0,
+              "knee_flexion": 0.0
+            },
+            "torso_yaw_folded": 60.0
+          },
+          {
+            "duration_s": 1.67,
+            "pose": {
+              "shoulder_abduction": 20.0,
+              "shoulder_flexion": -7.105427357601002e-15,
+              "elbow_flexion": 9.999999999999996,
+              "torso_pitch": 0.0,
+              "torso_yaw": 150.0,
+              "hip_flexion": 0.0,
+              "knee_flexion": 0.0
+            },
+            "torso_yaw_folded": 30.0
+          },
+          {
+            "duration_s": 1.67,
+            "pose": {
+              "shoulder_abduction": 20.0,
+              "shoulder_flexion": -7.105427357601002e-15,
+              "elbow_flexion": 9.999999999999996,
+              "torso_pitch": 0.0,
+              "torso_yaw": 180.0,
+              "hip_flexion": 0.0,
+              "knee_flexion": 0.0
+            },
+            "torso_yaw_folded": 0.0
+          },
+          {
+            "duration_s": 1.67,
+            "pose": {
+              "shoulder_abduction": 20.0,
+              "shoulder_flexion": -7.105427357601002e-15,
+              "elbow_flexion": 9.999999999999996,
+              "torso_pitch": 0.0,
+              "torso_yaw": -150.0,
+              "hip_flexion": 0.0,
+              "knee_flexion": 0.0
+            },
+            "torso_yaw_folded": 30.0
+          },
+          {
+            "duration_s": 1.67,
+            "pose": {
+              "shoulder_abduction": 20.0,
+              "shoulder_flexion": -7.105427357601002e-15,
+              "elbow_flexion": 9.999999999999996,
+              "torso_pitch": 0.0,
+              "torso_yaw": -120.00000000000001,
+              "hip_flexion": 0.0,
+              "knee_flexion": 0.0
+            },
+            "torso_yaw_folded": 59.999999999999986
+          },
+          {
+            "duration_s": 1.67,
+            "pose": {
+              "shoulder_abduction": 20.0,
+              "shoulder_flexion": -7.105427357601002e-15,
+              "elbow_flexion": 9.999999999999996,
+              "torso_pitch": 0.0,
+              "torso_yaw": -90.0,
+              "hip_flexion": 0.0,
+              "knee_flexion": 0.0
+            },
+            "torso_yaw_folded": 90.0
+          },
+          {
+            "duration_s": 1.67,
+            "pose": {
+              "shoulder_abduction": 20.0,
+              "shoulder_flexion": -7.105427357601002e-15,
+              "elbow_flexion": 9.999999999999996,
+              "torso_pitch": 0.0,
+              "torso_yaw": -60.0,
+              "hip_flexion": 0.0,
+              "knee_flexion": 0.0
+            },
+            "torso_yaw_folded": 60.0
+          },
+          {
+            "duration_s": 1.67,
+            "pose": {
+              "shoulder_abduction": 20.0,
+              "shoulder_flexion": -7.105427357601002e-15,
+              "elbow_flexion": 9.999999999999996,
+              "torso_pitch": 0.0,
+              "torso_yaw": -30.0,
+              "hip_flexion": 0.0,
+              "knee_flexion": 0.0
+            },
+            "torso_yaw_folded": 30.0
+          }
+        ],
+        "zone_strengths": {
+          "chest_low": 0.6,
+          "chest_high": 0.6,
+          "back_low": 1.0,
+          "back_high": 1.0,
+          "top": 1.0
+        }
+      }
+    },
+    {
+      "scenario": "pregnant",
+      "condition": "P2",
+      "energy_weight": 0.0,
+      "seed": 0,
+      "infeasible": false,
+      "score": 0.3557755545001319,
+      "total_removal": 0.11484825720564995,
+      "discomfort": 0.5436842527712328,
+      "energy": 0.7386666752497357,
+      "duration_s": 20.0,
+      "n_phases": 2,
+      "phase_durations_s": [
+        10.0,
+        10.0
+      ],
+      "plan": {
+        "duration_s": 20.0,
+        "phases": [
+          {
+            "duration_s": 10.0,
+            "pose": {
+              "shoulder_abduction": 179.82371589752066,
+              "shoulder_flexion": -4.172537619452097,
+              "elbow_flexion": 0.37692388257750453,
+              "torso_pitch": -0.13673166391038194,
+              "torso_yaw": -103.7729244424227,
+              "hip_flexion": 0.24302103215040782,
+              "knee_flexion": 11.06916366404907
+            },
+            "torso_yaw_folded": 76.2270755575773
+          },
+          {
+            "duration_s": 10.0,
+            "pose": {
+              "shoulder_abduction": 179.82371589752066,
+              "shoulder_flexion": -4.172537619452097,
+              "elbow_flexion": 0.37692388257750453,
+              "torso_pitch": -0.13673166391038194,
+              "torso_yaw": -103.7729244424227,
+              "hip_flexion": 0.24302103215040782,
+              "knee_flexion": 11.06916366404907
+            },
+            "torso_yaw_folded": 76.2270755575773
+          }
+        ],
+        "zone_strengths": {
+          "chest_low": 0.6,
+          "chest_high": 0.6,
+          "back_low": 1.0,
+          "back_high": 1.0,
+          "top": 1.0
+        }
+      }
+    },
+    {
+      "scenario": "pregnant",
+      "condition": "P3",
+      "energy_weight": 0.0,
+      "seed": 0,
+      "infeasible": false,
+      "score": 0.1512656172221661,
+      "total_removal": 0.0496564182500157,
+      "discomfort": 0.0,
+      "energy": 0.6895729462526712,
+      "duration_s": 18.67709235869596,
+      "n_phases": 2,
+      "phase_durations_s": [
+        7.06,
+        11.61
+      ],
+      "plan": {
+        "duration_s": 18.68,
+        "phases": [
+          {
+            "duration_s": 7.06,
+            "pose": {
+              "shoulder_abduction": 20.0,
+              "shoulder_flexion": -7.105427357601002e-15,
+              "elbow_flexion": 9.999999999999996,
+              "torso_pitch": 0.0,
+              "torso_yaw": 0.0,
+              "hip_flexion": 0.0,
+              "knee_flexion": 0.0
+            },
+            "torso_yaw_folded": 0.0
+          },
+          {
+            "duration_s": 11.61,
+            "pose": {
+              "shoulder_abduction": 20.0,
+              "shoulder_flexion": -7.105427357601002e-15,
+              "elbow_flexion": 9.999999999999996,
+              "torso_pitch": 0.0,
+              "torso_yaw": 0.0,
+              "hip_flexion": 0.0,
+              "knee_flexion": 0.0
+            },
+            "torso_yaw_folded": 0.0
+          }
+        ],
+        "zone_strengths": {
+          "chest_low": 0.6,
+          "chest_high": 0.6,
+          "back_low": 1.0,
+          "back_high": 1.0,
+          "top": 0.9998
+        }
+      }
+    },
+    {
+      "scenario": "pregnant",
+      "condition": "P4",
+      "energy_weight": 0.0,
+      "seed": 0,
+      "infeasible": false,
+      "score": 0.3811924616827482,
+      "total_removal": 0.11324503090601212,
+      "discomfort": 0.23227186275476502,
+      "energy": 0.31553301481924817,
+      "duration_s": 8.544366020198073,
+      "n_phases": 2,
+      "phase_durations_s": [
+        6.26,
+        2.28
+      ],
+      "plan": {
+        "duration_s": 8.54,
+        "phases": [
+          {
+            "duration_s": 6.26,
+            "pose": {
+              "shoulder_abduction": 179.82371589752066,
+              "shoulder_flexion": -4.172537619452097,
+              "elbow_flexion": 0.37692388257750453,
+              "torso_pitch": -0.13673166391038194,
+              "torso_yaw": -103.7729244424227,
+              "hip_flexion": 0.24302103215040782,
+              "knee_flexion": 11.06916366404907
+            },
+            "torso_yaw_folded": 76.2270755575773
+          },
+          {
+            "duration_s": 2.28,
+            "pose": {
+              "shoulder_abduction": 179.82371589752066,
+              "shoulder_flexion": -4.172537619452097,
+              "elbow_flexion": 0.37692388257750453,
+              "torso_pitch": -0.13673166391038194,
+              "torso_yaw": -103.7729244424227,
+              "hip_flexion": 0.24302103215040782,
+              "knee_flexion": 11.06916366404907
+            },
+            "torso_yaw_folded": 76.2270755575773
+          }
+        ],
+        "zone_strengths": {
+          "chest_low": 0.6,
+          "chest_high": 0.6,
+          "back_low": 1.0,
+          "back_high": 1.0,
+          "top": 0.9999
+        }
+      }
+    },
+    {
+      "scenario": "pregnant",
+      "condition": "P5",
+      "energy_weight": 0.0,
+      "seed": 0,
+      "infeasible": false,
+      "score": 0.5238574377039638,
+      "total_removal": 0.17595307279977856,
+      "discomfort": 0.543389071385796,
+      "energy": 0.5221776575525451,
+      "duration_s": 15.539857093021352,
+      "n_phases": 2,
+      "phase_durations_s": [
+        8.88,
+        6.66
+      ],
+      "plan": {
+        "duration_s": 15.54,
+        "phases": [
+          {
+            "duration_s": 8.88,
+            "pose": {
+              "shoulder_abduction": 176.51384990086692,
+              "shoulder_flexion": -0.2087681599009592,
+              "elbow_flexion": 22.96226793554721,
+              "torso_pitch": -0.004471995241630111,
+              "torso_yaw": 64.9103557583079,
+              "hip_flexion": 8.49567662041365,
+              "knee_flexion": 13.67868491251815
+            },
+            "torso_yaw_folded": 64.9103557583079
+          },
+          {
+            "duration_s": 6.66,
+            "pose": {
+              "shoulder_abduction": 165.53347687113896,
+              "shoulder_flexion": 12.882135578126977,
+              "elbow_flexion": 24.928043750704436,
+              "torso_pitch": 5.629195998127537,
+              "torso_yaw": 133.301863792468,
+              "hip_flexion": 7.912930210228256,
+              "knee_flexion": 1.42923413674241
+            },
+            "torso_yaw_folded": 46.698136207532
+          }
+        ],
+        "zone_strengths": {
+          "chest_low": 0.6,
+          "chest_high": 0.6,
+          "back_low": 0.9978,
+          "back_high": 0.9942,
+          "top": 0.9329
+        }
+      }
+    },
+    {
+      "scenario": "pregnant",
+      "condition": "P0",
+      "energy_weight": 0.01,
+      "seed": 0,
+      "infeasible": false,
+      "score": 0.14389213780100302,
+      "total_removal": 0.049660955929532076,
+      "discomfort": 0.0,
+      "energy": 0.7386666752497357,
+      "duration_s": 20.0,
+      "n_phases": 1,
+      "phase_durations_s": [
+        20.0
+      ],
+      "plan": {
+        "duration_s": 20.0,
+        "phases": [
+          {
+            "duration_s": 20.0,
+            "pose": {
+              "shoulder_abduction": 20.0,
+              "shoulder_flexion": -7.105427357601002e-15,
+              "elbow_flexion": 9.999999999999996,
+              "torso_pitch": 0.0,
+              "torso_yaw": 0.0,
+              "hip_flexion": 0.0,
+              "knee_flexion": 0.0
+            },
+            "torso_yaw_folded": 0.0
+          }
+        ],
+        "zone_strengths": {
+          "chest_low": 0.6,
+          "chest_high": 0.6,
+          "back_low": 1.0,
+          "back_high": 1.0,
+          "top": 1.0
+        }
+      }
+    },
+    {
+      "scenario": "pregnant",
+      "condition": "P1",
+      "energy_weight": 0.01,
+      "seed": 0,
+      "infeasible": false,
+      "score": 0.5639424382193863,
+      "total_removal": 0.1892877128595047,
+      "discomfort": 0.0,
+      "energy": 0.7386666752497358,
+      "duration_s": 20.0,
+      "n_phases": 12,
+      "phase_durations_s": [
+        1.67,
+        1.67,
+        1.67,
+        1.67,
+        1.67,
+        1.67,
+        1.67,
+        1.67,
+        1.67,
+        1.67,
+        1.67,
+        1.67
+      ],
+      "plan": {
+        "duration_s": 20.0,
+        "phases": [
+          {
+            "duration_s": 1.67,
+            "pose": {
+              "shoulder_abduction": 20.0,
+              "shoulder_flexion": -7.105427357601002e-15,
+              "elbow_flexion": 9.999999999999996,
+              "torso_pitch": 0.0,
+              "torso_yaw": 0.0,
+              "hip_flexion": 0.0,
+              "knee_flexion": 0.0
+            },
+            "torso_yaw_folded": 0.0
+          },
+          {
+            "duration_s": 1.67,
+            "pose": {
+              "shoulder_abduction": 20.0,
+              "shoulder_flexion": -7.105427357601002e-15,
+              "elbow_flexion": 9.999999999999996,
+              "torso_pitch": 0.0,
+              "torso_yaw": 30.0,
+              "hip_flexion": 0.0,
+              "knee_flexion": 0.0
+            },
+            "torso_yaw_folded": 30.0
+          },
+          {
+            "duration_s": 1.67,
+            "pose": {
+              "shoulder_abduction": 20.0,
+              "shoulder_flexion": -7.105427357601002e-15,
+              "elbow_flexion": 9.999999999999996,
+              "torso_pitch": 0.0,
+              "torso_yaw": 60.0,
+              "hip_flexion": 0.0,
+              "knee_flexion": 0.0
+            },
+            "torso_yaw_folded": 60.0
+          },
+          {
+            "duration_s": 1.67,
+            "pose": {
+              "shoulder_abduction": 20.0,
+              "shoulder_flexion": -7.105427357601002e-15,
+              "elbow_flexion": 9.999999999999996,
+              "torso_pitch": 0.0,
+              "torso_yaw": 90.0,
+              "hip_flexion": 0.0,
+              "knee_flexion": 0.0
+            },
+            "torso_yaw_folded": 90.0
+          },
+          {
+            "duration_s": 1.67,
+            "pose": {
+              "shoulder_abduction": 20.0,
+              "shoulder_flexion": -7.105427357601002e-15,
+              "elbow_flexion": 9.999999999999996,
+              "torso_pitch": 0.0,
+              "torso_yaw": 120.0,
+              "hip_flexion": 0.0,
+              "knee_flexion": 0.0
+            },
+            "torso_yaw_folded": 60.0
+          },
+          {
+            "duration_s": 1.67,
+            "pose": {
+              "shoulder_abduction": 20.0,
+              "shoulder_flexion": -7.105427357601002e-15,
+              "elbow_flexion": 9.999999999999996,
+              "torso_pitch": 0.0,
+              "torso_yaw": 150.0,
+              "hip_flexion": 0.0,
+              "knee_flexion": 0.0
+            },
+            "torso_yaw_folded": 30.0
+          },
+          {
+            "duration_s": 1.67,
+            "pose": {
+              "shoulder_abduction": 20.0,
+              "shoulder_flexion": -7.105427357601002e-15,
+              "elbow_flexion": 9.999999999999996,
+              "torso_pitch": 0.0,
+              "torso_yaw": 180.0,
+              "hip_flexion": 0.0,
+              "knee_flexion": 0.0
+            },
+            "torso_yaw_folded": 0.0
+          },
+          {
+            "duration_s": 1.67,
+            "pose": {
+              "shoulder_abduction": 20.0,
+              "shoulder_flexion": -7.105427357601002e-15,
+              "elbow_flexion": 9.999999999999996,
+              "torso_pitch": 0.0,
+              "torso_yaw": -150.0,
+              "hip_flexion": 0.0,
+              "knee_flexion": 0.0
+            },
+            "torso_yaw_folded": 30.0
+          },
+          {
+            "duration_s": 1.67,
+            "pose": {
+              "shoulder_abduction": 20.0,
+              "shoulder_flexion": -7.105427357601002e-15,
+              "elbow_flexion": 9.999999999999996,
+              "torso_pitch": 0.0,
+              "torso_yaw": -120.00000000000001,
+              "hip_flexion": 0.0,
+              "knee_flexion": 0.0
+            },
+            "torso_yaw_folded": 59.999999999999986
+          },
+          {
+            "duration_s": 1.67,
+            "pose": {
+              "shoulder_abduction": 20.0,
+              "shoulder_flexion": -7.105427357601002e-15,
+              "elbow_flexion": 9.999999999999996,
+              "torso_pitch": 0.0,
+              "torso_yaw": -90.0,
+              "hip_flexion": 0.0,
+              "knee_flexion": 0.0
+            },
+            "torso_yaw_folded": 90.0
+          },
+          {
+            "duration_s": 1.67,
+            "pose": {
+              "shoulder_abduction": 20.0,
+              "shoulder_flexion": -7.105427357601002e-15,
+              "elbow_flexion": 9.999999999999996,
+              "torso_pitch": 0.0,
+              "torso_yaw": -60.0,
+              "hip_flexion": 0.0,
+              "knee_flexion": 0.0
+            },
+            "torso_yaw_folded": 60.0
+          },
+          {
+            "duration_s": 1.67,
+            "pose": {
+              "shoulder_abduction": 20.0,
+              "shoulder_flexion": -7.105427357601002e-15,
+              "elbow_flexion": 9.999999999999996,
+              "torso_pitch": 0.0,
+              "torso_yaw": -30.0,
+              "hip_flexion": 0.0,
+              "knee_flexion": 0.0
+            },
+            "torso_yaw_folded": 30.0
+          }
+        ],
+        "zone_strengths": {
+          "chest_low": 0.6,
+          "chest_high": 0.6,
+          "back_low": 1.0,
+          "back_high": 1.0,
+          "top": 1.0
+        }
+      }
+    },
+    {
+      "scenario": "pregnant",
+      "condition": "P2",
+      "energy_weight": 0.01,
+      "seed": 0,
+      "infeasible": false,
+      "score": 0.3483888877476345,
+      "total_removal": 0.11484825720564995,
+      "discomfort": 0.5436842527712328,
+      "energy": 0.7386666752497357,
+      "duration_s": 20.0,
+      "n_phases": 2,
+      "phase_durations_s": [
+        10.0,
+        10.0
+      ],
+      "plan": {
+        "duration_s": 20.0,
+        "phases": [
+          {
+            "duration_s": 10.0,
+            "pose": {
+              "shoulder_abduction": 179.82371589752066,
+              "shoulder_flexion": -4.172537619452097,
+              "elbow_flexion": 0.37692388257750453,
+              "torso_pitch": -0.13673166391038194,
+              "torso_yaw": -103.7729244424227,
+              "hip_flexion": 0.24302103215040782,
+              "knee_flexion": 11.06916366404907
+            },
+            "torso_yaw_folded": 76.2270755575773
+          },
+          {
+            "duration_s": 10.0,
+            "pose": {
+              "shoulder_abduction": 179.82371589752066,
+              "shoulder_flexion": -4.172537619452097,
+              "elbow_flexion": 0.37692388257750453,
+              "torso_pitch": -0.13673166391038194,
+              "torso_yaw": -103.7729244424227,
+              "hip_flexion": 0.24302103215040782,
+              "knee_flexion": 11.06916366404907
+            },
+            "torso_yaw_folded": 76.2270755575773
+          }
+        ],
+        "zone_strengths": {
+          "chest_low": 0.6,
+          "chest_high": 0.6,
+          "back_low": 1.0,
+          "back_high": 1.0,
+          "top": 1.0
+        }
+      }
+    },
+    {
+      "scenario": "pregnant",
+      "condition": "P3",
+      "energy_weight": 0.01,
+      "seed": 0,
+      "infeasible": false,
+      "score": 0.14660846779730097,
+      "total_removal": 0.04942332786158733,
+      "discomfort": 0.0,
+      "energy": 0.39497852519095966,
+      "duration_s": 10.704299422117531,
+      "n_phases": 2,
+      "phase_durations_s": [
+        8.69,
+        2.01
+      ],
+      "plan": {
+        "duration_s": 10.7,
+        "phases": [
+          {
+            "duration_s": 8.69,
+            "pose": {
+              "shoulder_abduction": 20.0,
+              "shoulder_flexion": -7.105427357601002e-15,
+              "elbow_flexion": 9.999999999999996,
+              "torso_pitch": 0.0,
+              "torso_yaw": 0.0,
+              "hip_flexion": 0.0,
+              "knee_flexion": 0.0
+            },
+            "torso_yaw_folded": 0.0
+          },
+          {
+            "duration_s": 2.01,
+            "pose": {
+              "shoulder_abduction": 20.0,
+              "shoulder_flexion": -7.105427357601002e-15,
+              "elbow_flexion": 9.999999999999996,
+              "torso_pitch": 0.0,
+              "torso_yaw": 0.0,
+              "hip_flexion": 0.0,
+              "knee_flexion": 0.0
+            },
+            "torso_yaw_folded": 0.0
+          }
+        ],
+        "zone_strengths": {
+          "chest_low": 0.6,
+          "chest_high": 0.6,
+          "back_low": 1.0,
+          "back_high": 1.0,
+          "top": 0.9993
+        }
+      }
+    },
+    {
+      "scenario": "pregnant",
+      "condition": "P4",
+      "energy_weight": 0.01,
+      "seed": 0,
+      "infeasible": false,
+      "score": 0.3780228323150667,
+      "total_removal": 0.11302576019199868,
+      "discomfort": 0.22547039123135898,
+      "energy": 0.30628987641090877,
+      "duration_s": 8.29416669995887,
+      "n_phases": 2,
+      "phase_durations_s": [
+        3.45,
+        4.85
+      ],
+      "plan": {
+        "duration_s": 8.29,
+        "phases": [
+          {
+            "duration_s": 3.45,
+            "pose": {
+              "shoulder_abduction": 179.82371589752066,
+              "shoulder_flexion": -4.172537619452097,
+              "elbow_flexion": 0.37692388257750453,
+              "torso_pitch": -0.13673166391038194,
+              "torso_yaw": -103.7729244424227,
+              "hip_flexion": 0.24302103215040782,
+              "knee_flexion": 11.06916366404907
+            },
+            "torso_yaw_folded": 76.2270755575773
+          },
+          {
+            "duration_s": 4.85,
+            "pose": {
+              "shoulder_abduction": 179.82371589752066,
+              "shoulder_flexion": -4.172537619452097,
+              "elbow_flexion": 0.37692388257750453,
+              "torso_pitch": -0.13673166391038194,
+              "torso_yaw": -103.7729244424227,
+              "hip_flexion": 0.24302103215040782,
+              "knee_flexion": 11.06916366404907
+            },
+            "torso_yaw_folded": 76.2270755575773
+          }
+        ],
+        "zone_strengths": {
+          "chest_low": 0.6,
+          "chest_high": 0.6,
+          "back_low": 0.9999,
+          "back_high": 1.0,
+          "top": 1.0
+        }
+      }
+    },
+    {
+      "scenario": "pregnant",
+      "condition": "P5",
+      "energy_weight": 0.01,
+      "seed": 0,
+      "infeasible": false,
+      "score": 0.5451763014481239,
+      "total_removal": 0.17666685254798453,
+      "discomfort": 0.46848482595250845,
+      "energy": 0.4494069499051726,
+      "duration_s": 13.1436753492072,
+      "n_phases": 2,
+      "phase_durations_s": [
+        4.16,
+        8.99
+      ],
+      "plan": {
+        "duration_s": 13.14,
+        "phases": [
+          {
+            "duration_s": 4.16,
+            "pose": {
+              "shoulder_abduction": 160.37629588710212,
+              "shoulder_flexion": -5.26435949898465,
+              "elbow_flexion": 1.1997050500076323,
+              "torso_pitch": -5.491714869064576,
+              "torso_yaw": 48.76581737737479,
+              "hip_flexion": 7.04700959109325,
+              "knee_flexion": 2.588388815098932
+            },
+            "torso_yaw_folded": 48.76581737737479
+          },
+          {
+            "duration_s": 8.99,
+            "pose": {
+              "shoulder_abduction": 174.60292442364135,
+              "shoulder_flexion": -5.482904036525447,
+              "elbow_flexion": 2.49315557766006,
+              "torso_pitch": -1.345187318292135,
+              "torso_yaw": -58.63845184096856,
+              "hip_flexion": 2.9354724592093087,
+              "knee_flexion": 15.569924025103536
+            },
+            "torso_yaw_folded": 58.63845184096856
+          }
+        ],
+        "zone_strengths": {
+          "chest_low": 0.6,
+          "chest_high": 0.6,
+          "back_low": 0.9871,
+          "back_high": 0.9997,
+          "top": 0.9491
+        }
+      }
+    },
+    {
+      "scenario": "pregnant",
+      "condition": "P0",
+      "energy_weight": 0.03,
+      "seed": 0,
+      "infeasible": false,
+      "score": 0.1291188042960083,
+      "total_removal": 0.049660955929532076,
+      "discomfort": 0.0,
+      "energy": 0.7386666752497357,
+      "duration_s": 20.0,
+      "n_phases": 1,
+      "phase_durations_s": [
+        20.0
+      ],
+      "plan": {
+        "duration_s": 20.0,
+        "phases": [
+          {
+            "duration_s": 20.0,
+            "pose": {
+              "shoulder_abduction": 20.0,
+              "shoulder_flexion": -7.105427357601002e-15,
+              "elbow_flexion": 9.999999999999996,
+              "torso_pitch": 0.0,
+              "torso_yaw": 0.0,
+              "hip_flexion": 0.0,
+              "knee_flexion": 0.0
+            },
+            "torso_yaw_folded": 0.0
+          }
+        ],
+        "zone_strengths": {
+          "chest_low": 0.6,
+          "chest_high": 0.6,
+          "back_low": 1.0,
+          "back_high": 1.0,
+          "top": 1.0
+        }
+      }
+    },
+    {
+      "scenario": "pregnant",
+      "condition": "P1",
+      "energy_weight": 0.03,
+      "seed": 0,
+      "infeasible": false,
+      "score": 0.5491691047143915,
+      "total_removal": 0.1892877128595047,
+      "discomfort": 0.0,
+      "energy": 0.7386666752497358,
+      "duration_s": 20.0,
+      "n_phases": 12,
+      "phase_durations_s": [
+        1.67,
+        1.67,
+        1.67,
+        1.67,
+        1.67,
+        1.67,
+        1.67,
+        1.67,
+        1.67,
+        1.67,
+        1.67,
+        1.67
+      ],
+      "plan": {
+        "duration_s": 20.0,
+        "phases": [
+          {
+            "duration_s": 1.67,
+            "pose": {
+              "shoulder_abduction": 20.0,
+              "shoulder_flexion": -7.105427357601002e-15,
+              "elbow_flexion": 9.999999999999996,
+              "torso_pitch": 0.0,
+              "torso_yaw": 0.0,
+              "hip_flexion": 0.0,
+              "knee_flexion": 0.0
+            },
+            "torso_yaw_folded": 0.0
+          },
+          {
+            "duration_s": 1.67,
+            "pose": {
+              "shoulder_abduction": 20.0,
+              "shoulder_flexion": -7.105427357601002e-15,
+              "elbow_flexion": 9.999999999999996,
+              "torso_pitch": 0.0,
+              "torso_yaw": 30.0,
+              "hip_flexion": 0.0,
+              "knee_flexion": 0.0
+            },
+            "torso_yaw_folded": 30.0
+          },
+          {
+            "duration_s": 1.67,
+            "pose": {
+              "shoulder_abduction": 20.0,
+              "shoulder_flexion": -7.105427357601002e-15,
+              "elbow_flexion": 9.999999999999996,
+              "torso_pitch": 0.0,
+              "torso_yaw": 60.0,
+              "hip_flexion": 0.0,
+              "knee_flexion": 0.0
+            },
+            "torso_yaw_folded": 60.0
+          },
+          {
+            "duration_s": 1.67,
+            "pose": {
+              "shoulder_abduction": 20.0,
+              "shoulder_flexion": -7.105427357601002e-15,
+              "elbow_flexion": 9.999999999999996,
+              "torso_pitch": 0.0,
+              "torso_yaw": 90.0,
+              "hip_flexion": 0.0,
+              "knee_flexion": 0.0
+            },
+            "torso_yaw_folded": 90.0
+          },
+          {
+            "duration_s": 1.67,
+            "pose": {
+              "shoulder_abduction": 20.0,
+              "shoulder_flexion": -7.105427357601002e-15,
+              "elbow_flexion": 9.999999999999996,
+              "torso_pitch": 0.0,
+              "torso_yaw": 120.0,
+              "hip_flexion": 0.0,
+              "knee_flexion": 0.0
+            },
+            "torso_yaw_folded": 60.0
+          },
+          {
+            "duration_s": 1.67,
+            "pose": {
+              "shoulder_abduction": 20.0,
+              "shoulder_flexion": -7.105427357601002e-15,
+              "elbow_flexion": 9.999999999999996,
+              "torso_pitch": 0.0,
+              "torso_yaw": 150.0,
+              "hip_flexion": 0.0,
+              "knee_flexion": 0.0
+            },
+            "torso_yaw_folded": 30.0
+          },
+          {
+            "duration_s": 1.67,
+            "pose": {
+              "shoulder_abduction": 20.0,
+              "shoulder_flexion": -7.105427357601002e-15,
+              "elbow_flexion": 9.999999999999996,
+              "torso_pitch": 0.0,
+              "torso_yaw": 180.0,
+              "hip_flexion": 0.0,
+              "knee_flexion": 0.0
+            },
+            "torso_yaw_folded": 0.0
+          },
+          {
+            "duration_s": 1.67,
+            "pose": {
+              "shoulder_abduction": 20.0,
+              "shoulder_flexion": -7.105427357601002e-15,
+              "elbow_flexion": 9.999999999999996,
+              "torso_pitch": 0.0,
+              "torso_yaw": -150.0,
+              "hip_flexion": 0.0,
+              "knee_flexion": 0.0
+            },
+            "torso_yaw_folded": 30.0
+          },
+          {
+            "duration_s": 1.67,
+            "pose": {
+              "shoulder_abduction": 20.0,
+              "shoulder_flexion": -7.105427357601002e-15,
+              "elbow_flexion": 9.999999999999996,
+              "torso_pitch": 0.0,
+              "torso_yaw": -120.00000000000001,
+              "hip_flexion": 0.0,
+              "knee_flexion": 0.0
+            },
+            "torso_yaw_folded": 59.999999999999986
+          },
+          {
+            "duration_s": 1.67,
+            "pose": {
+              "shoulder_abduction": 20.0,
+              "shoulder_flexion": -7.105427357601002e-15,
+              "elbow_flexion": 9.999999999999996,
+              "torso_pitch": 0.0,
+              "torso_yaw": -90.0,
+              "hip_flexion": 0.0,
+              "knee_flexion": 0.0
+            },
+            "torso_yaw_folded": 90.0
+          },
+          {
+            "duration_s": 1.67,
+            "pose": {
+              "shoulder_abduction": 20.0,
+              "shoulder_flexion": -7.105427357601002e-15,
+              "elbow_flexion": 9.999999999999996,
+              "torso_pitch": 0.0,
+              "torso_yaw": -60.0,
+              "hip_flexion": 0.0,
+              "knee_flexion": 0.0
+            },
+            "torso_yaw_folded": 60.0
+          },
+          {
+            "duration_s": 1.67,
+            "pose": {
+              "shoulder_abduction": 20.0,
+              "shoulder_flexion": -7.105427357601002e-15,
+              "elbow_flexion": 9.999999999999996,
+              "torso_pitch": 0.0,
+              "torso_yaw": -30.0,
+              "hip_flexion": 0.0,
+              "knee_flexion": 0.0
+            },
+            "torso_yaw_folded": 30.0
+          }
+        ],
+        "zone_strengths": {
+          "chest_low": 0.6,
+          "chest_high": 0.6,
+          "back_low": 1.0,
+          "back_high": 1.0,
+          "top": 1.0
+        }
+      }
+    },
+    {
+      "scenario": "pregnant",
+      "condition": "P2",
+      "energy_weight": 0.03,
+      "seed": 0,
+      "infeasible": false,
+      "score": 0.3336155542426398,
+      "total_removal": 0.11484825720564995,
+      "discomfort": 0.5436842527712328,
+      "energy": 0.7386666752497357,
+      "duration_s": 20.0,
+      "n_phases": 2,
+      "phase_durations_s": [
+        10.0,
+        10.0
+      ],
+      "plan": {
+        "duration_s": 20.0,
+        "phases": [
+          {
+            "duration_s": 10.0,
+            "pose": {
+              "shoulder_abduction": 179.82371589752066,
+              "shoulder_flexion": -4.172537619452097,
+              "elbow_flexion": 0.37692388257750453,
+              "torso_pitch": -0.13673166391038194,
+              "torso_yaw": -103.7729244424227,
+              "hip_flexion": 0.24302103215040782,
+              "knee_flexion": 11.06916366404907
+            },
+            "torso_yaw_folded": 76.2270755575773
+          },
+          {
+            "duration_s": 10.0,
+            "pose": {
+              "shoulder_abduction": 179.82371589752066,
+              "shoulder_flexion": -4.172537619452097,
+              "elbow_flexion": 0.37692388257750453,
+              "torso_pitch": -0.13673166391038194,
+              "torso_yaw": -103.7729244424227,
+              "hip_flexion": 0.24302103215040782,
+              "knee_flexion": 11.06916366404907
+            },
+            "torso_yaw_folded": 76.2270755575773
+          }
+        ],
+        "zone_strengths": {
+          "chest_low": 0.6,
+          "chest_high": 0.6,
+          "back_low": 1.0,
+          "back_high": 1.0,
+          "top": 1.0
+        }
+      }
+    },
+    {
+      "scenario": "pregnant",
+      "condition": "P3",
+      "energy_weight": 0.03,
+      "seed": 0,
+      "infeasible": false,
+      "score": 0.13969704815149522,
+      "total_removal": 0.04887614313951972,
+      "discomfort": 0.0,
+      "energy": 0.3065324382349891,
+      "duration_s": 8.313997754911167,
+      "n_phases": 2,
+      "phase_durations_s": [
+        2.83,
+        5.49
+      ],
+      "plan": {
+        "duration_s": 8.31,
+        "phases": [
+          {
+            "duration_s": 2.83,
+            "pose": {
+              "shoulder_abduction": 20.0,
+              "shoulder_flexion": -7.105427357601002e-15,
+              "elbow_flexion": 9.999999999999996,
+              "torso_pitch": 0.0,
+              "torso_yaw": 0.0,
+              "hip_flexion": 0.0,
+              "knee_flexion": 0.0
+            },
+            "torso_yaw_folded": 0.0
+          },
+          {
+            "duration_s": 5.49,
+            "pose": {
+              "shoulder_abduction": 20.0,
+              "shoulder_flexion": -7.105427357601002e-15,
+              "elbow_flexion": 9.999999999999996,
+              "torso_pitch": 0.0,
+              "torso_yaw": 0.0,
+              "hip_flexion": 0.0,
+              "knee_flexion": 0.0
+            },
+            "torso_yaw_folded": 0.0
+          }
+        ],
+        "zone_strengths": {
+          "chest_low": 0.6,
+          "chest_high": 0.6,
+          "back_low": 1.0,
+          "back_high": 0.9999,
+          "top": 0.9988
+        }
+      }
+    },
+    {
+      "scenario": "pregnant",
+      "condition": "P4",
+      "energy_weight": 0.03,
+      "seed": 0,
+      "infeasible": false,
+      "score": 0.37201269064016446,
+      "total_removal": 0.11285672321377922,
+      "discomfort": 0.22042981287775892,
+      "energy": 0.2994245727124828,
+      "duration_s": 8.108743696518635,
+      "n_phases": 2,
+      "phase_durations_s": [
+        2.39,
+        5.72
+      ],
+      "plan": {
+        "duration_s": 8.11,
+        "phases": [
+          {
+            "duration_s": 2.39,
+            "pose": {
+              "shoulder_abduction": 179.82371589752066,
+              "shoulder_flexion": -4.172537619452097,
+              "elbow_flexion": 0.37692388257750453,
+              "torso_pitch": -0.13673166391038194,
+              "torso_yaw": -103.7729244424227,
+              "hip_flexion": 0.24302103215040782,
+              "knee_flexion": 11.06916366404907
+            },
+            "torso_yaw_folded": 76.2270755575773
+          },
+          {
+            "duration_s": 5.72,
+            "pose": {
+              "shoulder_abduction": 179.82371589752066,
+              "shoulder_flexion": -4.172537619452097,
+              "elbow_flexion": 0.37692388257750453,
+              "torso_pitch": -0.13673166391038194,
+              "torso_yaw": -103.7729244424227,
+              "hip_flexion": 0.24302103215040782,
+              "knee_flexion": 11.06916366404907
+            },
+            "torso_yaw_folded": 76.2270755575773
+          }
+        ],
+        "zone_strengths": {
+          "chest_low": 0.6,
+          "chest_high": 0.6,
+          "back_low": 1.0,
+          "back_high": 1.0,
+          "top": 0.9999
+        }
+      }
+    },
+    {
+      "scenario": "pregnant",
+      "condition": "P5",
+      "energy_weight": 0.03,
+      "seed": 0,
+      "infeasible": false,
+      "score": 0.5026890072216874,
+      "total_removal": 0.1711413575459009,
+      "discomfort": 0.44293598679547175,
+      "energy": 0.5288576297923305,
+      "duration_s": 14.540569293011588,
+      "n_phases": 2,
+      "phase_durations_s": [
+        5.29,
+        9.25
+      ],
+      "plan": {
+        "duration_s": 14.54,
+        "phases": [
+          {
+            "duration_s": 5.29,
+            "pose": {
+              "shoulder_abduction": 173.372318128366,
+              "shoulder_flexion": 19.54408754530138,
+              "elbow_flexion": 25.797486937618075,
+              "torso_pitch": -2.0997548641100474,
+              "torso_yaw": 37.83668526262295,
+              "hip_flexion": 1.37572551789932,
+              "knee_flexion": 21.25736855457093
+            },
+            "torso_yaw_folded": 37.83668526262295
+          },
+          {
+            "duration_s": 9.25,
+            "pose": {
+              "shoulder_abduction": 177.26786932534105,
+              "shoulder_flexion": 8.01931567541132,
+              "elbow_flexion": 40.02804689720905,
+              "torso_pitch": 0.5624838038878188,
+              "torso_yaw": -50.31492133789473,
+              "hip_flexion": 0.9893797867546628,
+              "knee_flexion": 3.5227349515979487
+            },
+            "torso_yaw_folded": 50.31492133789473
+          }
+        ],
+        "zone_strengths": {
+          "chest_low": 0.6,
+          "chest_high": 0.6,
+          "back_low": 0.9874,
+          "back_high": 0.9933,
+          "top": 0.9983
+        }
+      }
+    },
+    {
+      "scenario": "pregnant",
+      "condition": "P0",
+      "energy_weight": 0.1,
+      "seed": 0,
+      "infeasible": false,
+      "score": 0.0774121370285268,
+      "total_removal": 0.049660955929532076,
+      "discomfort": 0.0,
+      "energy": 0.7386666752497357,
+      "duration_s": 20.0,
+      "n_phases": 1,
+      "phase_durations_s": [
+        20.0
+      ],
+      "plan": {
+        "duration_s": 20.0,
+        "phases": [
+          {
+            "duration_s": 20.0,
+            "pose": {
+              "shoulder_abduction": 20.0,
+              "shoulder_flexion": -7.105427357601002e-15,
+              "elbow_flexion": 9.999999999999996,
+              "torso_pitch": 0.0,
+              "torso_yaw": 0.0,
+              "hip_flexion": 0.0,
+              "knee_flexion": 0.0
+            },
+            "torso_yaw_folded": 0.0
+          }
+        ],
+        "zone_strengths": {
+          "chest_low": 0.6,
+          "chest_high": 0.6,
+          "back_low": 1.0,
+          "back_high": 1.0,
+          "top": 1.0
+        }
+      }
+    },
+    {
+      "scenario": "pregnant",
+      "condition": "P1",
+      "energy_weight": 0.1,
+      "seed": 0,
+      "infeasible": false,
+      "score": 0.49746243744691,
+      "total_removal": 0.1892877128595047,
+      "discomfort": 0.0,
+      "energy": 0.7386666752497358,
+      "duration_s": 20.0,
+      "n_phases": 12,
+      "phase_durations_s": [
+        1.67,
+        1.67,
+        1.67,
+        1.67,
+        1.67,
+        1.67,
+        1.67,
+        1.67,
+        1.67,
+        1.67,
+        1.67,
+        1.67
+      ],
+      "plan": {
+        "duration_s": 20.0,
+        "phases": [
+          {
+            "duration_s": 1.67,
+            "pose": {
+              "shoulder_abduction": 20.0,
+              "shoulder_flexion": -7.105427357601002e-15,
+              "elbow_flexion": 9.999999999999996,
+              "torso_pitch": 0.0,
+              "torso_yaw": 0.0,
+              "hip_flexion": 0.0,
+              "knee_flexion": 0.0
+            },
+            "torso_yaw_folded": 0.0
+          },
+          {
+            "duration_s": 1.67,
+            "pose": {
+              "shoulder_abduction": 20.0,
+              "shoulder_flexion": -7.105427357601002e-15,
+              "elbow_flexion": 9.999999999999996,
+              "torso_pitch": 0.0,
+              "torso_yaw": 30.0,
+              "hip_flexion": 0.0,
+              "knee_flexion": 0.0
+            },
+            "torso_yaw_folded": 30.0
+          },
+          {
+            "duration_s": 1.67,
+            "pose": {
+              "shoulder_abduction": 20.0,
+              "shoulder_flexion": -7.105427357601002e-15,
+              "elbow_flexion": 9.999999999999996,
+              "torso_pitch": 0.0,
+              "torso_yaw": 60.0,
+              "hip_flexion": 0.0,
+              "knee_flexion": 0.0
+            },
+            "torso_yaw_folded": 60.0
+          },
+          {
+            "duration_s": 1.67,
+            "pose": {
+              "shoulder_abduction": 20.0,
+              "shoulder_flexion": -7.105427357601002e-15,
+              "elbow_flexion": 9.999999999999996,
+              "torso_pitch": 0.0,
+              "torso_yaw": 90.0,
+              "hip_flexion": 0.0,
+              "knee_flexion": 0.0
+            },
+            "torso_yaw_folded": 90.0
+          },
+          {
+            "duration_s": 1.67,
+            "pose": {
+              "shoulder_abduction": 20.0,
+              "shoulder_flexion": -7.105427357601002e-15,
+              "elbow_flexion": 9.999999999999996,
+              "torso_pitch": 0.0,
+              "torso_yaw": 120.0,
+              "hip_flexion": 0.0,
+              "knee_flexion": 0.0
+            },
+            "torso_yaw_folded": 60.0
+          },
+          {
+            "duration_s": 1.67,
+            "pose": {
+              "shoulder_abduction": 20.0,
+              "shoulder_flexion": -7.105427357601002e-15,
+              "elbow_flexion": 9.999999999999996,
+              "torso_pitch": 0.0,
+              "torso_yaw": 150.0,
+              "hip_flexion": 0.0,
+              "knee_flexion": 0.0
+            },
+            "torso_yaw_folded": 30.0
+          },
+          {
+            "duration_s": 1.67,
+            "pose": {
+              "shoulder_abduction": 20.0,
+              "shoulder_flexion": -7.105427357601002e-15,
+              "elbow_flexion": 9.999999999999996,
+              "torso_pitch": 0.0,
+              "torso_yaw": 180.0,
+              "hip_flexion": 0.0,
+              "knee_flexion": 0.0
+            },
+            "torso_yaw_folded": 0.0
+          },
+          {
+            "duration_s": 1.67,
+            "pose": {
+              "shoulder_abduction": 20.0,
+              "shoulder_flexion": -7.105427357601002e-15,
+              "elbow_flexion": 9.999999999999996,
+              "torso_pitch": 0.0,
+              "torso_yaw": -150.0,
+              "hip_flexion": 0.0,
+              "knee_flexion": 0.0
+            },
+            "torso_yaw_folded": 30.0
+          },
+          {
+            "duration_s": 1.67,
+            "pose": {
+              "shoulder_abduction": 20.0,
+              "shoulder_flexion": -7.105427357601002e-15,
+              "elbow_flexion": 9.999999999999996,
+              "torso_pitch": 0.0,
+              "torso_yaw": -120.00000000000001,
+              "hip_flexion": 0.0,
+              "knee_flexion": 0.0
+            },
+            "torso_yaw_folded": 59.999999999999986
+          },
+          {
+            "duration_s": 1.67,
+            "pose": {
+              "shoulder_abduction": 20.0,
+              "shoulder_flexion": -7.105427357601002e-15,
+              "elbow_flexion": 9.999999999999996,
+              "torso_pitch": 0.0,
+              "torso_yaw": -90.0,
+              "hip_flexion": 0.0,
+              "knee_flexion": 0.0
+            },
+            "torso_yaw_folded": 90.0
+          },
+          {
+            "duration_s": 1.67,
+            "pose": {
+              "shoulder_abduction": 20.0,
+              "shoulder_flexion": -7.105427357601002e-15,
+              "elbow_flexion": 9.999999999999996,
+              "torso_pitch": 0.0,
+              "torso_yaw": -60.0,
+              "hip_flexion": 0.0,
+              "knee_flexion": 0.0
+            },
+            "torso_yaw_folded": 60.0
+          },
+          {
+            "duration_s": 1.67,
+            "pose": {
+              "shoulder_abduction": 20.0,
+              "shoulder_flexion": -7.105427357601002e-15,
+              "elbow_flexion": 9.999999999999996,
+              "torso_pitch": 0.0,
+              "torso_yaw": -30.0,
+              "hip_flexion": 0.0,
+              "knee_flexion": 0.0
+            },
+            "torso_yaw_folded": 30.0
+          }
+        ],
+        "zone_strengths": {
+          "chest_low": 0.6,
+          "chest_high": 0.6,
+          "back_low": 1.0,
+          "back_high": 1.0,
+          "top": 1.0
+        }
+      }
+    },
+    {
+      "scenario": "pregnant",
+      "condition": "P2",
+      "energy_weight": 0.1,
+      "seed": 0,
+      "infeasible": false,
+      "score": 0.2819088869751583,
+      "total_removal": 0.11484825720564995,
+      "discomfort": 0.5436842527712328,
+      "energy": 0.7386666752497357,
+      "duration_s": 20.0,
+      "n_phases": 2,
+      "phase_durations_s": [
+        10.0,
+        10.0
+      ],
+      "plan": {
+        "duration_s": 20.0,
+        "phases": [
+          {
+            "duration_s": 10.0,
+            "pose": {
+              "shoulder_abduction": 179.82371589752066,
+              "shoulder_flexion": -4.172537619452097,
+              "elbow_flexion": 0.37692388257750453,
+              "torso_pitch": -0.13673166391038194,
+              "torso_yaw": -103.7729244424227,
+              "hip_flexion": 0.24302103215040782,
+              "knee_flexion": 11.06916366404907
+            },
+            "torso_yaw_folded": 76.2270755575773
+          },
+          {
+            "duration_s": 10.0,
+            "pose": {
+              "shoulder_abduction": 179.82371589752066,
+              "shoulder_flexion": -4.172537619452097,
+              "elbow_flexion": 0.37692388257750453,
+              "torso_pitch": -0.13673166391038194,
+              "torso_yaw": -103.7729244424227,
+              "hip_flexion": 0.24302103215040782,
+              "knee_flexion": 11.06916366404907
+            },
+            "torso_yaw_folded": 76.2270755575773
+          }
+        ],
+        "zone_strengths": {
+          "chest_low": 0.6,
+          "chest_high": 0.6,
+          "back_low": 1.0,
+          "back_high": 1.0,
+          "top": 1.0
+        }
+      }
+    },
+    {
+      "scenario": "pregnant",
+      "condition": "P3",
+      "energy_weight": 0.1,
+      "seed": 0,
+      "infeasible": false,
+      "score": 0.1256897336017918,
+      "total_removal": 0.04579779805464771,
+      "discomfort": 0.0,
+      "energy": 0.16058718694137175,
+      "duration_s": 6.9537571199384125,
+      "n_phases": 2,
+      "phase_durations_s": [
+        2.0,
+        4.95
+      ],
+      "plan": {
+        "duration_s": 6.95,
+        "phases": [
+          {
+            "duration_s": 2.0,
+            "pose": {
+              "shoulder_abduction": 20.0,
+              "shoulder_flexion": -7.105427357601002e-15,
+              "elbow_flexion": 9.999999999999996,
+              "torso_pitch": 0.0,
+              "torso_yaw": 0.0,
+              "hip_flexion": 0.0,
+              "knee_flexion": 0.0
+            },
+            "torso_yaw_folded": 0.0
+          },
+          {
+            "duration_s": 4.95,
+            "pose": {
+              "shoulder_abduction": 20.0,
+              "shoulder_flexion": -7.105427357601002e-15,
+              "elbow_flexion": 9.999999999999996,
+              "torso_pitch": 0.0,
+              "torso_yaw": 0.0,
+              "hip_flexion": 0.0,
+              "knee_flexion": 0.0
+            },
+            "torso_yaw_folded": 0.0
+          }
+        ],
+        "zone_strengths": {
+          "chest_low": 0.6,
+          "chest_high": 0.6,
+          "back_low": 1.0,
+          "back_high": 0.9999,
+          "top": 0.5537
+        }
+      }
+    },
+    {
+      "scenario": "pregnant",
+      "condition": "P4",
+      "energy_weight": 0.1,
+      "seed": 0,
+      "infeasible": false,
+      "score": 0.3528376441835898,
+      "total_removal": 0.11114832720163156,
+      "discomfort": 0.18772188790719566,
+      "energy": 0.2542531621290173,
+      "duration_s": 6.905548098932481,
+      "n_phases": 2,
+      "phase_durations_s": [
+        3.25,
+        3.66
+      ],
+      "plan": {
+        "duration_s": 6.91,
+        "phases": [
+          {
+            "duration_s": 3.25,
+            "pose": {
+              "shoulder_abduction": 179.82371589752066,
+              "shoulder_flexion": -4.172537619452097,
+              "elbow_flexion": 0.37692388257750453,
+              "torso_pitch": -0.13673166391038194,
+              "torso_yaw": -103.7729244424227,
+              "hip_flexion": 0.24302103215040782,
+              "knee_flexion": 11.06916366404907
+            },
+            "torso_yaw_folded": 76.2270755575773
+          },
+          {
+            "duration_s": 3.66,
+            "pose": {
+              "shoulder_abduction": 179.82371589752066,
+              "shoulder_flexion": -4.172537619452097,
+              "elbow_flexion": 0.37692388257750453,
+              "torso_pitch": -0.13673166391038194,
+              "torso_yaw": -103.7729244424227,
+              "hip_flexion": 0.24302103215040782,
+              "knee_flexion": 11.06916366404907
+            },
+            "torso_yaw_folded": 76.2270755575773
+          }
+        ],
+        "zone_strengths": {
+          "chest_low": 0.6,
+          "chest_high": 0.6,
+          "back_low": 1.0,
+          "back_high": 1.0,
+          "top": 0.9977
+        }
+      }
+    },
+    {
+      "scenario": "pregnant",
+      "condition": "P5",
+      "energy_weight": 0.1,
+      "seed": 0,
+      "infeasible": false,
+      "score": 0.4531828616976111,
+      "total_removal": 0.14571610132642693,
+      "discomfort": 0.3018653024149128,
+      "energy": 0.21412173455364814,
+      "duration_s": 9.357597548996868,
+      "n_phases": 2,
+      "phase_durations_s": [
+        4.39,
+        4.96
+      ],
+      "plan": {
+        "duration_s": 9.36,
+        "phases": [
+          {
+            "duration_s": 4.39,
+            "pose": {
+              "shoulder_abduction": 154.58190332606753,
+              "shoulder_flexion": 50.90284183661848,
+              "elbow_flexion": 106.70954456159225,
+              "torso_pitch": 3.2693727328371534,
+              "torso_yaw": 0.42568372157515455,
+              "hip_flexion": 29.52843177558915,
+              "knee_flexion": 8.531362899900875
+            },
+            "torso_yaw_folded": 0.42568372157515455
+          },
+          {
+            "duration_s": 4.96,
+            "pose": {
+              "shoulder_abduction": 177.44071047689732,
+              "shoulder_flexion": -0.8627141782217187,
+              "elbow_flexion": 0.0559364374689697,
+              "torso_pitch": 0.7853738845053968,
+              "torso_yaw": -70.482630274655,
+              "hip_flexion": 1.4904448101588186,
+              "knee_flexion": 4.325286201800852
+            },
+            "torso_yaw_folded": 70.482630274655
+          }
+        ],
+        "zone_strengths": {
+          "chest_low": 0.6,
+          "chest_high": 0.6,
+          "back_low": 0.9954,
+          "back_high": 0.9954,
+          "top": 0.5546
+        }
+      }
+    },
+    {
+      "scenario": "wheelchair",
+      "condition": "P0",
+      "energy_weight": 0.0,
+      "seed": 0,
+      "infeasible": false,
+      "score": 0.16318213036904464,
+      "total_removal": 0.05254948943765383,
+      "discomfort": 0.0,
+      "energy": 1.0,
+      "duration_s": 20.0,
+      "n_phases": 1,
+      "phase_durations_s": [
+        20.0
+      ],
+      "plan": {
+        "duration_s": 20.0,
+        "phases": [
+          {
+            "duration_s": 20.0,
+            "pose": {
+              "shoulder_abduction": 20.0,
+              "shoulder_flexion": -7.105427357601002e-15,
+              "elbow_flexion": 9.999999999999996,
+              "torso_pitch": 0.0,
+              "torso_yaw": 0.0,
+              "hip_flexion": 90.0,
+              "knee_flexion": 90.0
+            },
+            "torso_yaw_folded": 0.0
+          }
+        ],
+        "zone_strengths": {
+          "chest_low": 1.0,
+          "chest_high": 1.0,
+          "back_low": 1.0,
+          "back_high": 1.0,
+          "top": 1.0
+        }
+      }
+    },
+    {
+      "scenario": "wheelchair",
+      "condition": "P1",
+      "energy_weight": 0.0,
+      "seed": 0,
+      "infeasible": false,
+      "score": 0.6385748495272581,
+      "total_removal": 0.14321173105194746,
+      "discomfort": 0.0,
+      "energy": 1.0,
+      "duration_s": 20.0,
+      "n_phases": 12,
+      "phase_durations_s": [
+        1.67,
+        1.67,
+        1.67,
+        1.67,
+        1.67,
+        1.67,
+        1.67,
+        1.67,
+        1.67,
+        1.67,
+        1.67,
+        1.67
+      ],
+      "plan": {
+        "duration_s": 20.0,
+        "phases": [
+          {
+            "duration_s": 1.67,
+            "pose": {
+              "shoulder_abduction": 20.0,
+              "shoulder_flexion": -7.105427357601002e-15,
+              "elbow_flexion": 9.999999999999996,
+              "torso_pitch": 0.0,
+              "torso_yaw": 0.0,
+              "hip_flexion": 90.0,
+              "knee_flexion": 90.0
+            },
+            "torso_yaw_folded": 0.0
+          },
+          {
+            "duration_s": 1.67,
+            "pose": {
+              "shoulder_abduction": 20.0,
+              "shoulder_flexion": -7.105427357601002e-15,
+              "elbow_flexion": 9.999999999999996,
+              "torso_pitch": 0.0,
+              "torso_yaw": 30.0,
+              "hip_flexion": 90.0,
+              "knee_flexion": 90.0
+            },
+            "torso_yaw_folded": 30.0
+          },
+          {
+            "duration_s": 1.67,
+            "pose": {
+              "shoulder_abduction": 20.0,
+              "shoulder_flexion": -7.105427357601002e-15,
+              "elbow_flexion": 9.999999999999996,
+              "torso_pitch": 0.0,
+              "torso_yaw": 45.0,
+              "hip_flexion": 90.0,
+              "knee_flexion": 90.0
+            },
+            "torso_yaw_folded": 45.0
+          },
+          {
+            "duration_s": 1.67,
+            "pose": {
+              "shoulder_abduction": 20.0,
+              "shoulder_flexion": -7.105427357601002e-15,
+              "elbow_flexion": 9.999999999999996,
+              "torso_pitch": 0.0,
+              "torso_yaw": 45.0,
+              "hip_flexion": 90.0,
+              "knee_flexion": 90.0
+            },
+            "torso_yaw_folded": 45.0
+          },
+          {
+            "duration_s": 1.67,
+            "pose": {
+              "shoulder_abduction": 20.0,
+              "shoulder_flexion": -7.105427357601002e-15,
+              "elbow_flexion": 9.999999999999996,
+              "torso_pitch": 0.0,
+              "torso_yaw": 45.0,
+              "hip_flexion": 90.0,
+              "knee_flexion": 90.0
+            },
+            "torso_yaw_folded": 45.0
+          },
+          {
+            "duration_s": 1.67,
+            "pose": {
+              "shoulder_abduction": 20.0,
+              "shoulder_flexion": -7.105427357601002e-15,
+              "elbow_flexion": 9.999999999999996,
+              "torso_pitch": 0.0,
+              "torso_yaw": 45.0,
+              "hip_flexion": 90.0,
+              "knee_flexion": 90.0
+            },
+            "torso_yaw_folded": 45.0
+          },
+          {
+            "duration_s": 1.67,
+            "pose": {
+              "shoulder_abduction": 20.0,
+              "shoulder_flexion": -7.105427357601002e-15,
+              "elbow_flexion": 9.999999999999996,
+              "torso_pitch": 0.0,
+              "torso_yaw": 45.0,
+              "hip_flexion": 90.0,
+              "knee_flexion": 90.0
+            },
+            "torso_yaw_folded": 45.0
+          },
+          {
+            "duration_s": 1.67,
+            "pose": {
+              "shoulder_abduction": 20.0,
+              "shoulder_flexion": -7.105427357601002e-15,
+              "elbow_flexion": 9.999999999999996,
+              "torso_pitch": 0.0,
+              "torso_yaw": -45.0,
+              "hip_flexion": 90.0,
+              "knee_flexion": 90.0
+            },
+            "torso_yaw_folded": 45.0
+          },
+          {
+            "duration_s": 1.67,
+            "pose": {
+              "shoulder_abduction": 20.0,
+              "shoulder_flexion": -7.105427357601002e-15,
+              "elbow_flexion": 9.999999999999996,
+              "torso_pitch": 0.0,
+              "torso_yaw": -45.0,
+              "hip_flexion": 90.0,
+              "knee_flexion": 90.0
+            },
+            "torso_yaw_folded": 45.0
+          },
+          {
+            "duration_s": 1.67,
+            "pose": {
+              "shoulder_abduction": 20.0,
+              "shoulder_flexion": -7.105427357601002e-15,
+              "elbow_flexion": 9.999999999999996,
+              "torso_pitch": 0.0,
+              "torso_yaw": -45.0,
+              "hip_flexion": 90.0,
+              "knee_flexion": 90.0
+            },
+            "torso_yaw_folded": 45.0
+          },
+          {
+            "duration_s": 1.67,
+            "pose": {
+              "shoulder_abduction": 20.0,
+              "shoulder_flexion": -7.105427357601002e-15,
+              "elbow_flexion": 9.999999999999996,
+              "torso_pitch": 0.0,
+              "torso_yaw": -45.0,
+              "hip_flexion": 90.0,
+              "knee_flexion": 90.0
+            },
+            "torso_yaw_folded": 45.0
+          },
+          {
+            "duration_s": 1.67,
+            "pose": {
+              "shoulder_abduction": 20.0,
+              "shoulder_flexion": -7.105427357601002e-15,
+              "elbow_flexion": 9.999999999999996,
+              "torso_pitch": 0.0,
+              "torso_yaw": -30.000000000000004,
+              "hip_flexion": 90.0,
+              "knee_flexion": 90.0
+            },
+            "torso_yaw_folded": 30.0
+          }
+        ],
+        "zone_strengths": {
+          "chest_low": 1.0,
+          "chest_high": 1.0,
+          "back_low": 1.0,
+          "back_high": 1.0,
+          "top": 1.0
+        }
+      }
+    },
+    {
+      "scenario": "wheelchair",
+      "condition": "P2",
+      "energy_weight": 0.0,
+      "seed": 0,
+      "infeasible": false,
+      "score": 0.3864578653897324,
+      "total_removal": 0.08943727127801428,
+      "discomfort": 0.27434026462873395,
+      "energy": 1.0,
+      "duration_s": 20.0,
+      "n_phases": 2,
+      "phase_durations_s": [
+        10.0,
+        10.0
+      ],
+      "plan": {
+        "duration_s": 20.0,
+        "phases": [
+          {
+            "duration_s": 10.0,
+            "pose": {
+              "shoulder_abduction": 179.89910699159887,
+              "shoulder_flexion": 2.375869566619997,
+              "elbow_flexion": 8.47039799703371,
+              "torso_pitch": -0.4705051785641512,
+              "torso_yaw": 35.56157300003491,
+              "hip_flexion": 90.0,
+              "knee_flexion": 90.0
+            },
+            "torso_yaw_folded": 35.56157300003491
+          },
+          {
+            "duration_s": 10.0,
+            "pose": {
+              "shoulder_abduction": 179.89910699159887,
+              "shoulder_flexion": 2.375869566619997,
+              "elbow_flexion": 8.47039799703371,
+              "torso_pitch": -0.4705051785641512,
+              "torso_yaw": 35.56157300003491,
+              "hip_flexion": 90.0,
+              "knee_flexion": 90.0
+            },
+            "torso_yaw_folded": 35.56157300003491
+          }
+        ],
+        "zone_strengths": {
+          "chest_low": 1.0,
+          "chest_high": 1.0,
+          "back_low": 1.0,
+          "back_high": 1.0,
+          "top": 1.0
+        }
+      }
+    },
+    {
+      "scenario": "wheelchair",
+      "condition": "P3",
+      "energy_weight": 0.0,
+      "seed": 0,
+      "infeasible": false,
+      "score": 0.16316191913888403,
+      "total_removal": 0.0525442860107061,
+      "discomfort": 0.0,
+      "energy": 0.9995917287436594,
+      "duration_s": 19.99440384814659,
+      "n_phases": 2,
+      "phase_durations_s": [
+        15.1,
+        4.9
+      ],
+      "plan": {
+        "duration_s": 19.99,
+        "phases": [
+          {
+            "duration_s": 15.1,
+            "pose": {
+              "shoulder_abduction": 20.0,
+              "shoulder_flexion": -7.105427357601002e-15,
+              "elbow_flexion": 9.999999999999996,
+              "torso_pitch": 0.0,
+              "torso_yaw": 0.0,
+              "hip_flexion": 90.0,
+              "knee_flexion": 90.0
+            },
+            "torso_yaw_folded": 0.0
+          },
+          {
+            "duration_s": 4.9,
+            "pose": {
+              "shoulder_abduction": 20.0,
+              "shoulder_flexion": -7.105427357601002e-15,
+              "elbow_flexion": 9.999999999999996,
+              "torso_pitch": 0.0,
+              "torso_yaw": 0.0,
+              "hip_flexion": 90.0,
+              "knee_flexion": 90.0
+            },
+            "torso_yaw_folded": 0.0
+          }
+        ],
+        "zone_strengths": {
+          "chest_low": 0.9999,
+          "chest_high": 1.0,
+          "back_low": 1.0,
+          "back_high": 0.9999,
+          "top": 1.0
+        }
+      }
+    },
+    {
+      "scenario": "wheelchair",
+      "condition": "P4",
+      "energy_weight": 0.0,
+      "seed": 0,
+      "infeasible": false,
+      "score": 0.39724092341751643,
+      "total_removal": 0.08867947499410285,
+      "discomfort": 0.13179351096534117,
+      "energy": 0.48003523954088273,
+      "duration_s": 9.608032648338952,
+      "n_phases": 2,
+      "phase_durations_s": [
+        2.83,
+        6.78
+      ],
+      "plan": {
+        "duration_s": 9.61,
+        "phases": [
+          {
+            "duration_s": 2.83,
+            "pose": {
+              "shoulder_abduction": 179.89910699159887,
+              "shoulder_flexion": 2.375869566619997,
+              "elbow_flexion": 8.47039799703371,
+              "torso_pitch": -0.4705051785641512,
+              "torso_yaw": 35.56157300003491,
+              "hip_flexion": 90.0,
+              "knee_flexion": 90.0
+            },
+            "torso_yaw_folded": 35.56157300003491
+          },
+          {
+            "duration_s": 6.78,
+            "pose": {
+              "shoulder_abduction": 179.89910699159887,
+              "shoulder_flexion": 2.375869566619997,
+              "elbow_flexion": 8.47039799703371,
+              "torso_pitch": -0.4705051785641512,
+              "torso_yaw": 35.56157300003491,
+              "hip_flexion": 90.0,
+              "knee_flexion": 90.0
+            },
+            "torso_yaw_folded": 35.56157300003491
+          }
+        ],
+        "zone_strengths": {
+          "chest_low": 0.9998,
+          "chest_high": 1.0,
+          "back_low": 1.0,
+          "back_high": 1.0,
+          "top": 0.9993
+        }
+      }
+    },
+    {
+      "scenario": "wheelchair",
+      "condition": "P5",
+      "energy_weight": 0.0,
+      "seed": 0,
+      "infeasible": false,
+      "score": 0.6162169323608645,
+      "total_removal": 0.13556074645381797,
+      "discomfort": 0.24983952208461005,
+      "energy": 0.7297641053532686,
+      "duration_s": 15.125830522562344,
+      "n_phases": 2,
+      "phase_durations_s": [
+        7.11,
+        8.01
+      ],
+      "plan": {
+        "duration_s": 15.13,
+        "phases": [
+          {
+            "duration_s": 7.11,
+            "pose": {
+              "shoulder_abduction": 173.13881062093816,
+              "shoulder_flexion": -1.1254374205754445,
+              "elbow_flexion": 0.0006932680439819539,
+              "torso_pitch": -3.1277917739883145,
+              "torso_yaw": 40.142541865508974,
+              "hip_flexion": 90.0,
+              "knee_flexion": 90.0
+            },
+            "torso_yaw_folded": 40.142541865508974
+          },
+          {
+            "duration_s": 8.01,
+            "pose": {
+              "shoulder_abduction": 179.90941377263127,
+              "shoulder_flexion": 9.6784219142043,
+              "elbow_flexion": 15.495598012187875,
+              "torso_pitch": -5.054668802115812,
+              "torso_yaw": -44.98068741107199,
+              "hip_flexion": 90.0,
+              "knee_flexion": 90.0
+            },
+            "torso_yaw_folded": 44.98068741107199
+          }
+        ],
+        "zone_strengths": {
+          "chest_low": 1.0,
+          "chest_high": 0.9911,
+          "back_low": 0.9992,
+          "back_high": 0.9957,
+          "top": 0.9711
+        }
+      }
+    },
+    {
+      "scenario": "wheelchair",
+      "condition": "P0",
+      "energy_weight": 0.01,
+      "seed": 0,
+      "infeasible": false,
+      "score": 0.15318213036904463,
+      "total_removal": 0.05254948943765383,
+      "discomfort": 0.0,
+      "energy": 1.0,
+      "duration_s": 20.0,
+      "n_phases": 1,
+      "phase_durations_s": [
+        20.0
+      ],
+      "plan": {
+        "duration_s": 20.0,
+        "phases": [
+          {
+            "duration_s": 20.0,
+            "pose": {
+              "shoulder_abduction": 20.0,
+              "shoulder_flexion": -7.105427357601002e-15,
+              "elbow_flexion": 9.999999999999996,
+              "torso_pitch": 0.0,
+              "torso_yaw": 0.0,
+              "hip_flexion": 90.0,
+              "knee_flexion": 90.0
+            },
+            "torso_yaw_folded": 0.0
+          }
+        ],
+        "zone_strengths": {
+          "chest_low": 1.0,
+          "chest_high": 1.0,
+          "back_low": 1.0,
+          "back_high": 1.0,
+          "top": 1.0
+        }
+      }
+    },
+    {
+      "scenario": "wheelchair",
+      "condition": "P1",
+      "energy_weight": 0.01,
+      "seed": 0,
+      "infeasible": false,
+      "score": 0.6285748495272581,
+      "total_removal": 0.14321173105194746,
+      "discomfort": 0.0,
+      "energy": 1.0,
+      "duration_s": 20.0,
+      "n_phases": 12,
+      "phase_durations_s": [
+        1.67,
+        1.67,
+        1.67,
+        1.67,
+        1.67,
+        1.67,
+        1.67,
+        1.67,
+        1.67,
+        1.67,
+        1.67,
+        1.67
+      ],
+      "plan": {
+        "duration_s": 20.0,
+        "phases": [
+          {
+            "duration_s": 1.67,
+            "pose": {
+              "shoulder_abduction": 20.0,
+              "shoulder_flexion": -7.105427357601002e-15,
+              "elbow_flexion": 9.999999999999996,
+              "torso_pitch": 0.0,
+              "torso_yaw": 0.0,
+              "hip_flexion": 90.0,
+              "knee_flexion": 90.0
+            },
+            "torso_yaw_folded": 0.0
+          },
+          {
+            "duration_s": 1.67,
+            "pose": {
+              "shoulder_abduction": 20.0,
+              "shoulder_flexion": -7.105427357601002e-15,
+              "elbow_flexion": 9.999999999999996,
+              "torso_pitch": 0.0,
+              "torso_yaw": 30.0,
+              "hip_flexion": 90.0,
+              "knee_flexion": 90.0
+            },
+            "torso_yaw_folded": 30.0
+          },
+          {
+            "duration_s": 1.67,
+            "pose": {
+              "shoulder_abduction": 20.0,
+              "shoulder_flexion": -7.105427357601002e-15,
+              "elbow_flexion": 9.999999999999996,
+              "torso_pitch": 0.0,
+              "torso_yaw": 45.0,
+              "hip_flexion": 90.0,
+              "knee_flexion": 90.0
+            },
+            "torso_yaw_folded": 45.0
+          },
+          {
+            "duration_s": 1.67,
+            "pose": {
+              "shoulder_abduction": 20.0,
+              "shoulder_flexion": -7.105427357601002e-15,
+              "elbow_flexion": 9.999999999999996,
+              "torso_pitch": 0.0,
+              "torso_yaw": 45.0,
+              "hip_flexion": 90.0,
+              "knee_flexion": 90.0
+            },
+            "torso_yaw_folded": 45.0
+          },
+          {
+            "duration_s": 1.67,
+            "pose": {
+              "shoulder_abduction": 20.0,
+              "shoulder_flexion": -7.105427357601002e-15,
+              "elbow_flexion": 9.999999999999996,
+              "torso_pitch": 0.0,
+              "torso_yaw": 45.0,
+              "hip_flexion": 90.0,
+              "knee_flexion": 90.0
+            },
+            "torso_yaw_folded": 45.0
+          },
+          {
+            "duration_s": 1.67,
+            "pose": {
+              "shoulder_abduction": 20.0,
+              "shoulder_flexion": -7.105427357601002e-15,
+              "elbow_flexion": 9.999999999999996,
+              "torso_pitch": 0.0,
+              "torso_yaw": 45.0,
+              "hip_flexion": 90.0,
+              "knee_flexion": 90.0
+            },
+            "torso_yaw_folded": 45.0
+          },
+          {
+            "duration_s": 1.67,
+            "pose": {
+              "shoulder_abduction": 20.0,
+              "shoulder_flexion": -7.105427357601002e-15,
+              "elbow_flexion": 9.999999999999996,
+              "torso_pitch": 0.0,
+              "torso_yaw": 45.0,
+              "hip_flexion": 90.0,
+              "knee_flexion": 90.0
+            },
+            "torso_yaw_folded": 45.0
+          },
+          {
+            "duration_s": 1.67,
+            "pose": {
+              "shoulder_abduction": 20.0,
+              "shoulder_flexion": -7.105427357601002e-15,
+              "elbow_flexion": 9.999999999999996,
+              "torso_pitch": 0.0,
+              "torso_yaw": -45.0,
+              "hip_flexion": 90.0,
+              "knee_flexion": 90.0
+            },
+            "torso_yaw_folded": 45.0
+          },
+          {
+            "duration_s": 1.67,
+            "pose": {
+              "shoulder_abduction": 20.0,
+              "shoulder_flexion": -7.105427357601002e-15,
+              "elbow_flexion": 9.999999999999996,
+              "torso_pitch": 0.0,
+              "torso_yaw": -45.0,
+              "hip_flexion": 90.0,
+              "knee_flexion": 90.0
+            },
+            "torso_yaw_folded": 45.0
+          },
+          {
+            "duration_s": 1.67,
+            "pose": {
+              "shoulder_abduction": 20.0,
+              "shoulder_flexion": -7.105427357601002e-15,
+              "elbow_flexion": 9.999999999999996,
+              "torso_pitch": 0.0,
+              "torso_yaw": -45.0,
+              "hip_flexion": 90.0,
+              "knee_flexion": 90.0
+            },
+            "torso_yaw_folded": 45.0
+          },
+          {
+            "duration_s": 1.67,
+            "pose": {
+              "shoulder_abduction": 20.0,
+              "shoulder_flexion": -7.105427357601002e-15,
+              "elbow_flexion": 9.999999999999996,
+              "torso_pitch": 0.0,
+              "torso_yaw": -45.0,
+              "hip_flexion": 90.0,
+              "knee_flexion": 90.0
+            },
+            "torso_yaw_folded": 45.0
+          },
+          {
+            "duration_s": 1.67,
+            "pose": {
+              "shoulder_abduction": 20.0,
+              "shoulder_flexion": -7.105427357601002e-15,
+              "elbow_flexion": 9.999999999999996,
+              "torso_pitch": 0.0,
+              "torso_yaw": -30.000000000000004,
+              "hip_flexion": 90.0,
+              "knee_flexion": 90.0
+            },
+            "torso_yaw_folded": 30.0
+          }
+        ],
+        "zone_strengths": {
+          "chest_low": 1.0,
+          "chest_high": 1.0,
+          "back_low": 1.0,
+          "back_high": 1.0,
+          "top": 1.0
+        }
+      }
+    },
+    {
+      "scenario": "wheelchair",
+      "condition": "P2",
+      "energy_weight": 0.01,
+      "seed": 0,
+      "infeasible": false,
+      "score": 0.3764578653897324,
+      "total_removal": 0.08943727127801428,
+      "discomfort": 0.27434026462873395,
+      "energy": 1.0,
+      "duration_s": 20.0,
+      "n_phases": 2,
+      "phase_durations_s": [
+        10.0,
+        10.0
+      ],
+      "plan": {
+        "duration_s": 20.0,
+        "phases": [
+          {
+            "duration_s": 10.0,
+            "pose": {
+              "shoulder_abduction": 179.89910699159887,
+              "shoulder_flexion": 2.375869566619997,
+              "elbow_flexion": 8.47039799703371,
+              "torso_pitch": -0.4705051785641512,
+              "torso_yaw": 35.56157300003491,
+              "hip_flexion": 90.0,
+              "knee_flexion": 90.0
+            },
+            "torso_yaw_folded": 35.56157300003491
+          },
+          {
+            "duration_s": 10.0,
+            "pose": {
+              "shoulder_abduction": 179.89910699159887,
+              "shoulder_flexion": 2.375869566619997,
+              "elbow_flexion": 8.47039799703371,
+              "torso_pitch": -0.4705051785641512,
+              "torso_yaw": 35.56157300003491,
+              "hip_flexion": 90.0,
+              "knee_flexion": 90.0
+            },
+            "torso_yaw_folded": 35.56157300003491
+          }
+        ],
+        "zone_strengths": {
+          "chest_low": 1.0,
+          "chest_high": 1.0,
+          "back_low": 1.0,
+          "back_high": 1.0,
+          "top": 1.0
+        }
+      }
+    },
+    {
+      "scenario": "wheelchair",
+      "condition": "P3",
+      "energy_weight": 0.01,
+      "seed": 0,
+      "infeasible": false,
+      "score": 0.157016280241806,
+      "total_removal": 0.05218266963043941,
+      "discomfort": 0.0,
+      "energy": 0.5013678435880026,
+      "duration_s": 10.032653033052812,
+      "n_phases": 2,
+      "phase_durations_s": [
+        2.25,
+        7.78
+      ],
+      "plan": {
+        "duration_s": 10.03,
+        "phases": [
+          {
+            "duration_s": 2.25,
+            "pose": {
+              "shoulder_abduction": 20.0,
+              "shoulder_flexion": -7.105427357601002e-15,
+              "elbow_flexion": 9.999999999999996,
+              "torso_pitch": 0.0,
+              "torso_yaw": 0.0,
+              "hip_flexion": 90.0,
+              "knee_flexion": 90.0
+            },
+            "torso_yaw_folded": 0.0
+          },
+          {
+            "duration_s": 7.78,
+            "pose": {
+              "shoulder_abduction": 20.0,
+              "shoulder_flexion": -7.105427357601002e-15,
+              "elbow_flexion": 9.999999999999996,
+              "torso_pitch": 0.0,
+              "torso_yaw": 0.0,
+              "hip_flexion": 90.0,
+              "knee_flexion": 90.0
+            },
+            "torso_yaw_folded": 0.0
+          }
+        ],
+        "zone_strengths": {
+          "chest_low": 0.9998,
+          "chest_high": 0.9999,
+          "back_low": 0.9997,
+          "back_high": 0.9999,
+          "top": 0.9998
+        }
+      }
+    },
+    {
+      "scenario": "wheelchair",
+      "condition": "P4",
+      "energy_weight": 0.01,
+      "seed": 0,
+      "infeasible": false,
+      "score": 0.39213145573099506,
+      "total_removal": 0.08856709716452814,
+      "discomfort": 0.1303488621617251,
+      "energy": 0.4743398806498983,
+      "duration_s": 9.50271461887863,
+      "n_phases": 2,
+      "phase_durations_s": [
+        5.64,
+        3.86
+      ],
+      "plan": {
+        "duration_s": 9.5,
+        "phases": [
+          {
+            "duration_s": 5.64,
+            "pose": {
+              "shoulder_abduction": 179.89910699159887,
+              "shoulder_flexion": 2.375869566619997,
+              "elbow_flexion": 8.47039799703371,
+              "torso_pitch": -0.4705051785641512,
+              "torso_yaw": 35.56157300003491,
+              "hip_flexion": 90.0,
+              "knee_flexion": 90.0
+            },
+            "torso_yaw_folded": 35.56157300003491
+          },
+          {
+            "duration_s": 3.86,
+            "pose": {
+              "shoulder_abduction": 179.89910699159887,
+              "shoulder_flexion": 2.375869566619997,
+              "elbow_flexion": 8.47039799703371,
+              "torso_pitch": -0.4705051785641512,
+              "torso_yaw": 35.56157300003491,
+              "hip_flexion": 90.0,
+              "knee_flexion": 90.0
+            },
+            "torso_yaw_folded": 35.56157300003491
+          }
+        ],
+        "zone_strengths": {
+          "chest_low": 0.9997,
+          "chest_high": 0.9988,
+          "back_low": 1.0,
+          "back_high": 0.9999,
+          "top": 0.9991
+        }
+      }
+    },
+    {
+      "scenario": "wheelchair",
+      "condition": "P5",
+      "energy_weight": 0.01,
+      "seed": 0,
+      "infeasible": false,
+      "score": 0.5908141735945414,
+      "total_removal": 0.13297189744798665,
+      "discomfort": 0.2886558772093605,
+      "energy": 0.7091897048155835,
+      "duration_s": 17.010712579016566,
+      "n_phases": 2,
+      "phase_durations_s": [
+        7.91,
+        9.11
+      ],
+      "plan": {
+        "duration_s": 17.01,
+        "phases": [
+          {
+            "duration_s": 7.91,
+            "pose": {
+              "shoulder_abduction": 179.46209250919654,
+              "shoulder_flexion": 2.9527890749107613,
+              "elbow_flexion": 11.467433931665987,
+              "torso_pitch": -8.111760937353885,
+              "torso_yaw": 34.96599406571835,
+              "hip_flexion": 90.0,
+              "knee_flexion": 90.0
+            },
+            "torso_yaw_folded": 34.96599406571835
+          },
+          {
+            "duration_s": 9.11,
+            "pose": {
+              "shoulder_abduction": 173.80371928056485,
+              "shoulder_flexion": 8.271645028109603,
+              "elbow_flexion": 27.99137199875039,
+              "torso_pitch": -1.7741413815544007,
+              "torso_yaw": -44.99124077277751,
+              "hip_flexion": 90.0,
+              "knee_flexion": 90.0
+            },
+            "torso_yaw_folded": 44.99124077277751
+          }
+        ],
+        "zone_strengths": {
+          "chest_low": 0.9913,
+          "chest_high": 0.9742,
+          "back_low": 0.973,
+          "back_high": 0.9887,
+          "top": 0.8473
+        }
+      }
+    },
+    {
+      "scenario": "wheelchair",
+      "condition": "P0",
+      "energy_weight": 0.03,
+      "seed": 0,
+      "infeasible": false,
+      "score": 0.13318213036904464,
+      "total_removal": 0.05254948943765383,
+      "discomfort": 0.0,
+      "energy": 1.0,
+      "duration_s": 20.0,
+      "n_phases": 1,
+      "phase_durations_s": [
+        20.0
+      ],
+      "plan": {
+        "duration_s": 20.0,
+        "phases": [
+          {
+            "duration_s": 20.0,
+            "pose": {
+              "shoulder_abduction": 20.0,
+              "shoulder_flexion": -7.105427357601002e-15,
+              "elbow_flexion": 9.999999999999996,
+              "torso_pitch": 0.0,
+              "torso_yaw": 0.0,
+              "hip_flexion": 90.0,
+              "knee_flexion": 90.0
+            },
+            "torso_yaw_folded": 0.0
+          }
+        ],
+        "zone_strengths": {
+          "chest_low": 1.0,
+          "chest_high": 1.0,
+          "back_low": 1.0,
+          "back_high": 1.0,
+          "top": 1.0
+        }
+      }
+    },
+    {
+      "scenario": "wheelchair",
+      "condition": "P1",
+      "energy_weight": 0.03,
+      "seed": 0,
+      "infeasible": false,
+      "score": 0.608574849527258,
+      "total_removal": 0.14321173105194746,
+      "discomfort": 0.0,
+      "energy": 1.0,
+      "duration_s": 20.0,
+      "n_phases": 12,
+      "phase_durations_s": [
+        1.67,
+        1.67,
+        1.67,
+        1.67,
+        1.67,
+        1.67,
+        1.67,
+        1.67,
+        1.67,
+        1.67,
+        1.67,
+        1.67
+      ],
+      "plan": {
+        "duration_s": 20.0,
+        "phases": [
+          {
+            "duration_s": 1.67,
+            "pose": {
+              "shoulder_abduction": 20.0,
+              "shoulder_flexion": -7.105427357601002e-15,
+              "elbow_flexion": 9.999999999999996,
+              "torso_pitch": 0.0,
+              "torso_yaw": 0.0,
+              "hip_flexion": 90.0,
+              "knee_flexion": 90.0
+            },
+            "torso_yaw_folded": 0.0
+          },
+          {
+            "duration_s": 1.67,
+            "pose": {
+              "shoulder_abduction": 20.0,
+              "shoulder_flexion": -7.105427357601002e-15,
+              "elbow_flexion": 9.999999999999996,
+              "torso_pitch": 0.0,
+              "torso_yaw": 30.0,
+              "hip_flexion": 90.0,
+              "knee_flexion": 90.0
+            },
+            "torso_yaw_folded": 30.0
+          },
+          {
+            "duration_s": 1.67,
+            "pose": {
+              "shoulder_abduction": 20.0,
+              "shoulder_flexion": -7.105427357601002e-15,
+              "elbow_flexion": 9.999999999999996,
+              "torso_pitch": 0.0,
+              "torso_yaw": 45.0,
+              "hip_flexion": 90.0,
+              "knee_flexion": 90.0
+            },
+            "torso_yaw_folded": 45.0
+          },
+          {
+            "duration_s": 1.67,
+            "pose": {
+              "shoulder_abduction": 20.0,
+              "shoulder_flexion": -7.105427357601002e-15,
+              "elbow_flexion": 9.999999999999996,
+              "torso_pitch": 0.0,
+              "torso_yaw": 45.0,
+              "hip_flexion": 90.0,
+              "knee_flexion": 90.0
+            },
+            "torso_yaw_folded": 45.0
+          },
+          {
+            "duration_s": 1.67,
+            "pose": {
+              "shoulder_abduction": 20.0,
+              "shoulder_flexion": -7.105427357601002e-15,
+              "elbow_flexion": 9.999999999999996,
+              "torso_pitch": 0.0,
+              "torso_yaw": 45.0,
+              "hip_flexion": 90.0,
+              "knee_flexion": 90.0
+            },
+            "torso_yaw_folded": 45.0
+          },
+          {
+            "duration_s": 1.67,
+            "pose": {
+              "shoulder_abduction": 20.0,
+              "shoulder_flexion": -7.105427357601002e-15,
+              "elbow_flexion": 9.999999999999996,
+              "torso_pitch": 0.0,
+              "torso_yaw": 45.0,
+              "hip_flexion": 90.0,
+              "knee_flexion": 90.0
+            },
+            "torso_yaw_folded": 45.0
+          },
+          {
+            "duration_s": 1.67,
+            "pose": {
+              "shoulder_abduction": 20.0,
+              "shoulder_flexion": -7.105427357601002e-15,
+              "elbow_flexion": 9.999999999999996,
+              "torso_pitch": 0.0,
+              "torso_yaw": 45.0,
+              "hip_flexion": 90.0,
+              "knee_flexion": 90.0
+            },
+            "torso_yaw_folded": 45.0
+          },
+          {
+            "duration_s": 1.67,
+            "pose": {
+              "shoulder_abduction": 20.0,
+              "shoulder_flexion": -7.105427357601002e-15,
+              "elbow_flexion": 9.999999999999996,
+              "torso_pitch": 0.0,
+              "torso_yaw": -45.0,
+              "hip_flexion": 90.0,
+              "knee_flexion": 90.0
+            },
+            "torso_yaw_folded": 45.0
+          },
+          {
+            "duration_s": 1.67,
+            "pose": {
+              "shoulder_abduction": 20.0,
+              "shoulder_flexion": -7.105427357601002e-15,
+              "elbow_flexion": 9.999999999999996,
+              "torso_pitch": 0.0,
+              "torso_yaw": -45.0,
+              "hip_flexion": 90.0,
+              "knee_flexion": 90.0
+            },
+            "torso_yaw_folded": 45.0
+          },
+          {
+            "duration_s": 1.67,
+            "pose": {
+              "shoulder_abduction": 20.0,
+              "shoulder_flexion": -7.105427357601002e-15,
+              "elbow_flexion": 9.999999999999996,
+              "torso_pitch": 0.0,
+              "torso_yaw": -45.0,
+              "hip_flexion": 90.0,
+              "knee_flexion": 90.0
+            },
+            "torso_yaw_folded": 45.0
+          },
+          {
+            "duration_s": 1.67,
+            "pose": {
+              "shoulder_abduction": 20.0,
+              "shoulder_flexion": -7.105427357601002e-15,
+              "elbow_flexion": 9.999999999999996,
+              "torso_pitch": 0.0,
+              "torso_yaw": -45.0,
+              "hip_flexion": 90.0,
+              "knee_flexion": 90.0
+            },
+            "torso_yaw_folded": 45.0
+          },
+          {
+            "duration_s": 1.67,
+            "pose": {
+              "shoulder_abduction": 20.0,
+              "shoulder_flexion": -7.105427357601002e-15,
+              "elbow_flexion": 9.999999999999996,
+              "torso_pitch": 0.0,
+              "torso_yaw": -30.000000000000004,
+              "hip_flexion": 90.0,
+              "knee_flexion": 90.0
+            },
+            "torso_yaw_folded": 30.0
+          }
+        ],
+        "zone_strengths": {
+          "chest_low": 1.0,
+          "chest_high": 1.0,
+          "back_low": 1.0,
+          "back_high": 1.0,
+          "top": 1.0
+        }
+      }
+    },
+    {
+      "scenario": "wheelchair",
+      "condition": "P2",
+      "energy_weight": 0.03,
+      "seed": 0,
+      "infeasible": false,
+      "score": 0.35645786538973245,
+      "total_removal": 0.08943727127801428,
+      "discomfort": 0.27434026462873395,
+      "energy": 1.0,
+      "duration_s": 20.0,
+      "n_phases": 2,
+      "phase_durations_s": [
+        10.0,
+        10.0
+      ],
+      "plan": {
+        "duration_s": 20.0,
+        "phases": [
+          {
+            "duration_s": 10.0,
+            "pose": {
+              "shoulder_abduction": 179.89910699159887,
+              "shoulder_flexion": 2.375869566619997,
+              "elbow_flexion": 8.47039799703371,
+              "torso_pitch": -0.4705051785641512,
+              "torso_yaw": 35.56157300003491,
+              "hip_flexion": 90.0,
+              "knee_flexion": 90.0
+            },
+            "torso_yaw_folded": 35.56157300003491
+          },
+          {
+            "duration_s": 10.0,
+            "pose": {
+              "shoulder_abduction": 179.89910699159887,
+              "shoulder_flexion": 2.375869566619997,
+              "elbow_flexion": 8.47039799703371,
+              "torso_pitch": -0.4705051785641512,
+              "torso_yaw": 35.56157300003491,
+              "hip_flexion": 90.0,
+              "knee_flexion": 90.0
+            },
+            "torso_yaw_folded": 35.56157300003491
+          }
+        ],
+        "zone_strengths": {
+          "chest_low": 1.0,
+          "chest_high": 1.0,
+          "back_low": 1.0,
+          "back_high": 1.0,
+          "top": 1.0
+        }
+      }
+    },
+    {
+      "scenario": "wheelchair",
+      "condition": "P3",
+      "energy_weight": 0.03,
+      "seed": 0,
+      "infeasible": false,
+      "score": 0.14804551343104896,
+      "total_removal": 0.05158805860764496,
+      "discomfort": 0.0,
+      "energy": 0.40369413448566194,
+      "duration_s": 8.081867177917818,
+      "n_phases": 2,
+      "phase_durations_s": [
+        6.0,
+        2.08
+      ],
+      "plan": {
+        "duration_s": 8.08,
+        "phases": [
+          {
+            "duration_s": 6.0,
+            "pose": {
+              "shoulder_abduction": 20.0,
+              "shoulder_flexion": -7.105427357601002e-15,
+              "elbow_flexion": 9.999999999999996,
+              "torso_pitch": 0.0,
+              "torso_yaw": 0.0,
+              "hip_flexion": 90.0,
+              "knee_flexion": 90.0
+            },
+            "torso_yaw_folded": 0.0
+          },
+          {
+            "duration_s": 2.08,
+            "pose": {
+              "shoulder_abduction": 20.0,
+              "shoulder_flexion": -7.105427357601002e-15,
+              "elbow_flexion": 9.999999999999996,
+              "torso_pitch": 0.0,
+              "torso_yaw": 0.0,
+              "hip_flexion": 90.0,
+              "knee_flexion": 90.0
+            },
+            "torso_yaw_folded": 0.0
+          }
+        ],
+        "zone_strengths": {
+          "chest_low": 0.9999,
+          "chest_high": 0.9991,
+          "back_low": 0.9999,
+          "back_high": 0.9992,
+          "top": 1.0
+        }
+      }
+    },
+    {
+      "scenario": "wheelchair",
+      "condition": "P4",
+      "energy_weight": 0.03,
+      "seed": 0,
+      "infeasible": false,
+      "score": 0.3834809493352903,
+      "total_removal": 0.088135472868541,
+      "discomfort": 0.11688105237374875,
+      "energy": 0.4254549071132492,
+      "duration_s": 8.520882090124427,
+      "n_phases": 2,
+      "phase_durations_s": [
+        6.22,
+        2.3
+      ],
+      "plan": {
+        "duration_s": 8.52,
+        "phases": [
+          {
+            "duration_s": 6.22,
+            "pose": {
+              "shoulder_abduction": 179.89910699159887,
+              "shoulder_flexion": 2.375869566619997,
+              "elbow_flexion": 8.47039799703371,
+              "torso_pitch": -0.4705051785641512,
+              "torso_yaw": 35.56157300003491,
+              "hip_flexion": 90.0,
+              "knee_flexion": 90.0
+            },
+            "torso_yaw_folded": 35.56157300003491
+          },
+          {
+            "duration_s": 2.3,
+            "pose": {
+              "shoulder_abduction": 179.89910699159887,
+              "shoulder_flexion": 2.375869566619997,
+              "elbow_flexion": 8.47039799703371,
+              "torso_pitch": -0.4705051785641512,
+              "torso_yaw": 35.56157300003491,
+              "hip_flexion": 90.0,
+              "knee_flexion": 90.0
+            },
+            "torso_yaw_folded": 35.56157300003491
+          }
+        ],
+        "zone_strengths": {
+          "chest_low": 1.0,
+          "chest_high": 0.9998,
+          "back_low": 0.9999,
+          "back_high": 1.0,
+          "top": 0.9987
+        }
+      }
+    },
+    {
+      "scenario": "wheelchair",
+      "condition": "P5",
+      "energy_weight": 0.03,
+      "seed": 0,
+      "infeasible": false,
+      "score": 0.5807651669775776,
+      "total_removal": 0.13384171907420214,
+      "discomfort": 0.2960019526268029,
+      "energy": 0.9313525972757102,
+      "duration_s": 19.103147155421198,
+      "n_phases": 2,
+      "phase_durations_s": [
+        11.26,
+        7.84
+      ],
+      "plan": {
+        "duration_s": 19.1,
+        "phases": [
+          {
+            "duration_s": 11.26,
+            "pose": {
+              "shoulder_abduction": 178.5688832115754,
+              "shoulder_flexion": 15.561693613198052,
+              "elbow_flexion": 8.35567969965837,
+              "torso_pitch": 1.5226266579155752,
+              "torso_yaw": 44.914054071569055,
+              "hip_flexion": 90.0,
+              "knee_flexion": 90.0
+            },
+            "torso_yaw_folded": 44.914054071569055
+          },
+          {
+            "duration_s": 7.84,
+            "pose": {
+              "shoulder_abduction": 177.0810832754739,
+              "shoulder_flexion": 23.54282136862566,
+              "elbow_flexion": 19.21433004977545,
+              "torso_pitch": 4.629713312632408,
+              "torso_yaw": -43.872819399357844,
+              "hip_flexion": 90.0,
+              "knee_flexion": 90.0
+            },
+            "torso_yaw_folded": 43.872819399357844
+          }
+        ],
+        "zone_strengths": {
+          "chest_low": 0.9952,
+          "chest_high": 0.9889,
+          "back_low": 0.9964,
+          "back_high": 0.9852,
+          "top": 0.992
+        }
+      }
+    },
+    {
+      "scenario": "wheelchair",
+      "condition": "P0",
+      "energy_weight": 0.1,
+      "seed": 0,
+      "infeasible": false,
+      "score": 0.06318213036904463,
+      "total_removal": 0.05254948943765383,
+      "discomfort": 0.0,
+      "energy": 1.0,
+      "duration_s": 20.0,
+      "n_phases": 1,
+      "phase_durations_s": [
+        20.0
+      ],
+      "plan": {
+        "duration_s": 20.0,
+        "phases": [
+          {
+            "duration_s": 20.0,
+            "pose": {
+              "shoulder_abduction": 20.0,
+              "shoulder_flexion": -7.105427357601002e-15,
+              "elbow_flexion": 9.999999999999996,
+              "torso_pitch": 0.0,
+              "torso_yaw": 0.0,
+              "hip_flexion": 90.0,
+              "knee_flexion": 90.0
+            },
+            "torso_yaw_folded": 0.0
+          }
+        ],
+        "zone_strengths": {
+          "chest_low": 1.0,
+          "chest_high": 1.0,
+          "back_low": 1.0,
+          "back_high": 1.0,
+          "top": 1.0
+        }
+      }
+    },
+    {
+      "scenario": "wheelchair",
+      "condition": "P1",
+      "energy_weight": 0.1,
+      "seed": 0,
+      "infeasible": false,
+      "score": 0.5385748495272581,
+      "total_removal": 0.14321173105194746,
+      "discomfort": 0.0,
+      "energy": 1.0,
+      "duration_s": 20.0,
+      "n_phases": 12,
+      "phase_durations_s": [
+        1.67,
+        1.67,
+        1.67,
+        1.67,
+        1.67,
+        1.67,
+        1.67,
+        1.67,
+        1.67,
+        1.67,
+        1.67,
+        1.67
+      ],
+      "plan": {
+        "duration_s": 20.0,
+        "phases": [
+          {
+            "duration_s": 1.67,
+            "pose": {
+              "shoulder_abduction": 20.0,
+              "shoulder_flexion": -7.105427357601002e-15,
+              "elbow_flexion": 9.999999999999996,
+              "torso_pitch": 0.0,
+              "torso_yaw": 0.0,
+              "hip_flexion": 90.0,
+              "knee_flexion": 90.0
+            },
+            "torso_yaw_folded": 0.0
+          },
+          {
+            "duration_s": 1.67,
+            "pose": {
+              "shoulder_abduction": 20.0,
+              "shoulder_flexion": -7.105427357601002e-15,
+              "elbow_flexion": 9.999999999999996,
+              "torso_pitch": 0.0,
+              "torso_yaw": 30.0,
+              "hip_flexion": 90.0,
+              "knee_flexion": 90.0
+            },
+            "torso_yaw_folded": 30.0
+          },
+          {
+            "duration_s": 1.67,
+            "pose": {
+              "shoulder_abduction": 20.0,
+              "shoulder_flexion": -7.105427357601002e-15,
+              "elbow_flexion": 9.999999999999996,
+              "torso_pitch": 0.0,
+              "torso_yaw": 45.0,
+              "hip_flexion": 90.0,
+              "knee_flexion": 90.0
+            },
+            "torso_yaw_folded": 45.0
+          },
+          {
+            "duration_s": 1.67,
+            "pose": {
+              "shoulder_abduction": 20.0,
+              "shoulder_flexion": -7.105427357601002e-15,
+              "elbow_flexion": 9.999999999999996,
+              "torso_pitch": 0.0,
+              "torso_yaw": 45.0,
+              "hip_flexion": 90.0,
+              "knee_flexion": 90.0
+            },
+            "torso_yaw_folded": 45.0
+          },
+          {
+            "duration_s": 1.67,
+            "pose": {
+              "shoulder_abduction": 20.0,
+              "shoulder_flexion": -7.105427357601002e-15,
+              "elbow_flexion": 9.999999999999996,
+              "torso_pitch": 0.0,
+              "torso_yaw": 45.0,
+              "hip_flexion": 90.0,
+              "knee_flexion": 90.0
+            },
+            "torso_yaw_folded": 45.0
+          },
+          {
+            "duration_s": 1.67,
+            "pose": {
+              "shoulder_abduction": 20.0,
+              "shoulder_flexion": -7.105427357601002e-15,
+              "elbow_flexion": 9.999999999999996,
+              "torso_pitch": 0.0,
+              "torso_yaw": 45.0,
+              "hip_flexion": 90.0,
+              "knee_flexion": 90.0
+            },
+            "torso_yaw_folded": 45.0
+          },
+          {
+            "duration_s": 1.67,
+            "pose": {
+              "shoulder_abduction": 20.0,
+              "shoulder_flexion": -7.105427357601002e-15,
+              "elbow_flexion": 9.999999999999996,
+              "torso_pitch": 0.0,
+              "torso_yaw": 45.0,
+              "hip_flexion": 90.0,
+              "knee_flexion": 90.0
+            },
+            "torso_yaw_folded": 45.0
+          },
+          {
+            "duration_s": 1.67,
+            "pose": {
+              "shoulder_abduction": 20.0,
+              "shoulder_flexion": -7.105427357601002e-15,
+              "elbow_flexion": 9.999999999999996,
+              "torso_pitch": 0.0,
+              "torso_yaw": -45.0,
+              "hip_flexion": 90.0,
+              "knee_flexion": 90.0
+            },
+            "torso_yaw_folded": 45.0
+          },
+          {
+            "duration_s": 1.67,
+            "pose": {
+              "shoulder_abduction": 20.0,
+              "shoulder_flexion": -7.105427357601002e-15,
+              "elbow_flexion": 9.999999999999996,
+              "torso_pitch": 0.0,
+              "torso_yaw": -45.0,
+              "hip_flexion": 90.0,
+              "knee_flexion": 90.0
+            },
+            "torso_yaw_folded": 45.0
+          },
+          {
+            "duration_s": 1.67,
+            "pose": {
+              "shoulder_abduction": 20.0,
+              "shoulder_flexion": -7.105427357601002e-15,
+              "elbow_flexion": 9.999999999999996,
+              "torso_pitch": 0.0,
+              "torso_yaw": -45.0,
+              "hip_flexion": 90.0,
+              "knee_flexion": 90.0
+            },
+            "torso_yaw_folded": 45.0
+          },
+          {
+            "duration_s": 1.67,
+            "pose": {
+              "shoulder_abduction": 20.0,
+              "shoulder_flexion": -7.105427357601002e-15,
+              "elbow_flexion": 9.999999999999996,
+              "torso_pitch": 0.0,
+              "torso_yaw": -45.0,
+              "hip_flexion": 90.0,
+              "knee_flexion": 90.0
+            },
+            "torso_yaw_folded": 45.0
+          },
+          {
+            "duration_s": 1.67,
+            "pose": {
+              "shoulder_abduction": 20.0,
+              "shoulder_flexion": -7.105427357601002e-15,
+              "elbow_flexion": 9.999999999999996,
+              "torso_pitch": 0.0,
+              "torso_yaw": -30.000000000000004,
+              "hip_flexion": 90.0,
+              "knee_flexion": 90.0
+            },
+            "torso_yaw_folded": 30.0
+          }
+        ],
+        "zone_strengths": {
+          "chest_low": 1.0,
+          "chest_high": 1.0,
+          "back_low": 1.0,
+          "back_high": 1.0,
+          "top": 1.0
+        }
+      }
+    },
+    {
+      "scenario": "wheelchair",
+      "condition": "P2",
+      "energy_weight": 0.1,
+      "seed": 0,
+      "infeasible": false,
+      "score": 0.2864578653897324,
+      "total_removal": 0.08943727127801428,
+      "discomfort": 0.27434026462873395,
+      "energy": 1.0,
+      "duration_s": 20.0,
+      "n_phases": 2,
+      "phase_durations_s": [
+        10.0,
+        10.0
+      ],
+      "plan": {
+        "duration_s": 20.0,
+        "phases": [
+          {
+            "duration_s": 10.0,
+            "pose": {
+              "shoulder_abduction": 179.89910699159887,
+              "shoulder_flexion": 2.375869566619997,
+              "elbow_flexion": 8.47039799703371,
+              "torso_pitch": -0.4705051785641512,
+              "torso_yaw": 35.56157300003491,
+              "hip_flexion": 90.0,
+              "knee_flexion": 90.0
+            },
+            "torso_yaw_folded": 35.56157300003491
+          },
+          {
+            "duration_s": 10.0,
+            "pose": {
+              "shoulder_abduction": 179.89910699159887,
+              "shoulder_flexion": 2.375869566619997,
+              "elbow_flexion": 8.47039799703371,
+              "torso_pitch": -0.4705051785641512,
+              "torso_yaw": 35.56157300003491,
+              "hip_flexion": 90.0,
+              "knee_flexion": 90.0
+            },
+            "torso_yaw_folded": 35.56157300003491
+          }
+        ],
+        "zone_strengths": {
+          "chest_low": 1.0,
+          "chest_high": 1.0,
+          "back_low": 1.0,
+          "back_high": 1.0,
+          "top": 1.0
+        }
+      }
+    },
+    {
+      "scenario": "wheelchair",
+      "condition": "P3",
+      "energy_weight": 0.1,
+      "seed": 0,
+      "infeasible": false,
+      "score": 0.12520779596784054,
+      "total_removal": 0.049475731005975285,
+      "discomfort": 0.0,
+      "energy": 0.2842136721171602,
+      "duration_s": 5.686977490314199,
+      "n_phases": 2,
+      "phase_durations_s": [
+        2.17,
+        3.52
+      ],
+      "plan": {
+        "duration_s": 5.69,
+        "phases": [
+          {
+            "duration_s": 2.17,
+            "pose": {
+              "shoulder_abduction": 20.0,
+              "shoulder_flexion": -7.105427357601002e-15,
+              "elbow_flexion": 9.999999999999996,
+              "torso_pitch": 0.0,
+              "torso_yaw": 0.0,
+              "hip_flexion": 90.0,
+              "knee_flexion": 90.0
+            },
+            "torso_yaw_folded": 0.0
+          },
+          {
+            "duration_s": 3.52,
+            "pose": {
+              "shoulder_abduction": 20.0,
+              "shoulder_flexion": -7.105427357601002e-15,
+              "elbow_flexion": 9.999999999999996,
+              "torso_pitch": 0.0,
+              "torso_yaw": 0.0,
+              "hip_flexion": 90.0,
+              "knee_flexion": 90.0
+            },
+            "torso_yaw_folded": 0.0
+          }
+        ],
+        "zone_strengths": {
+          "chest_low": 0.9999,
+          "chest_high": 0.9997,
+          "back_low": 0.9999,
+          "back_high": 1.0,
+          "top": 0.9998
+        }
+      }
+    },
+    {
+      "scenario": "wheelchair",
+      "condition": "P4",
+      "energy_weight": 0.1,
+      "seed": 0,
+      "infeasible": false,
+      "score": 0.35649950841895595,
+      "total_removal": 0.08693668447097781,
+      "discomfort": 0.09870566067086321,
+      "energy": 0.3594426459370802,
+      "duration_s": 7.195856634784695,
+      "n_phases": 2,
+      "phase_durations_s": [
+        4.17,
+        3.03
+      ],
+      "plan": {
+        "duration_s": 7.2,
+        "phases": [
+          {
+            "duration_s": 4.17,
+            "pose": {
+              "shoulder_abduction": 179.89910699159887,
+              "shoulder_flexion": 2.375869566619997,
+              "elbow_flexion": 8.47039799703371,
+              "torso_pitch": -0.4705051785641512,
+              "torso_yaw": 35.56157300003491,
+              "hip_flexion": 90.0,
+              "knee_flexion": 90.0
+            },
+            "torso_yaw_folded": 35.56157300003491
+          },
+          {
+            "duration_s": 3.03,
+            "pose": {
+              "shoulder_abduction": 179.89910699159887,
+              "shoulder_flexion": 2.375869566619997,
+              "elbow_flexion": 8.47039799703371,
+              "torso_pitch": -0.4705051785641512,
+              "torso_yaw": 35.56157300003491,
+              "hip_flexion": 90.0,
+              "knee_flexion": 90.0
+            },
+            "torso_yaw_folded": 35.56157300003491
+          }
+        ],
+        "zone_strengths": {
+          "chest_low": 1.0,
+          "chest_high": 0.9995,
+          "back_low": 0.9998,
+          "back_high": 0.9997,
+          "top": 0.9996
+        }
+      }
+    },
+    {
+      "scenario": "wheelchair",
+      "condition": "P5",
+      "energy_weight": 0.1,
+      "seed": 0,
+      "infeasible": false,
+      "score": 0.5500113991677202,
+      "total_removal": 0.1320588148803335,
+      "discomfort": 0.1957983333631996,
+      "energy": 0.5074889418865404,
+      "duration_s": 11.678085092021579,
+      "n_phases": 2,
+      "phase_durations_s": [
+        5.74,
+        5.94
+      ],
+      "plan": {
+        "duration_s": 11.68,
+        "phases": [
+          {
+            "duration_s": 5.74,
+            "pose": {
+              "shoulder_abduction": 178.78815031995913,
+              "shoulder_flexion": 3.052413730425215,
+              "elbow_flexion": 22.48279066891373,
+              "torso_pitch": -3.323046253457841,
+              "torso_yaw": 42.431101343171775,
+              "hip_flexion": 90.0,
+              "knee_flexion": 90.0
+            },
+            "torso_yaw_folded": 42.431101343171775
+          },
+          {
+            "duration_s": 5.94,
+            "pose": {
+              "shoulder_abduction": 179.3808462888647,
+              "shoulder_flexion": 11.13729816851545,
+              "elbow_flexion": 10.328744608067037,
+              "torso_pitch": -5.067522808328273,
+              "torso_yaw": -36.685510698315184,
+              "hip_flexion": 90.0,
+              "knee_flexion": 90.0
+            },
+            "torso_yaw_folded": 36.685510698315184
+          }
+        ],
+        "zone_strengths": {
+          "chest_low": 0.9887,
+          "chest_high": 1.0,
+          "back_low": 0.9914,
+          "back_high": 0.9969,
+          "top": 0.8625
+        }
+      }
+    }
+  ]
+}
