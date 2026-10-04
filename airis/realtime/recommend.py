@@ -125,8 +125,30 @@ RESPONSE_BUDGET_S = 1.5
 #: 점수·출처별 통계는 그대로다 (선별 평가기는 쓰지 않는다).
 RESCORE_DEDUP_DEG = 3.0
 RESCORE_THREADS = 3
-#: 후보 출처 표시 이름
-SOURCE_LABELS = {"flow": "flow 샘플", "knn": "가까운 학습 체형", "extra": "고정 후보표(E4)"}
+#: 후보 출처 표시 이름 (화면용. 내부 식별자 "flow"·"knn"·"extra" 는 바꾸지 않는다)
+SOURCE_LABELS = {"flow": "AI 추천 후보", "knn": "비슷한 체형 참조",
+                 "extra": "기본 후보표"}
+#: 기준 자세 표시 이름 (화면용. `ScoreRow.name` 은 내부 식별자라 그대로 둔다)
+BASELINE_LABELS = {"B0 기본": "안내 없이 서 있을 때", "B1 몸 회전": "제조사 안내(몸 돌리기)",
+                   "B2 만세": "만세 자세", "추천": "제안 자세"}
+#: 좁은 자리(지표 칸·그림 제목)용 짧은 이름. 긴 이름은 잘려서 "안내 없이 서 있을 때..." 가 된다.
+#: 뜻은 바로 아래 설명 문장이 받는다.
+BASELINE_LABELS_SHORT = {"B0 기본": "그냥 서 있기", "B1 몸 회전": "몸 돌리기",
+                         "B2 만세": "만세 자세", "추천": "제안 자세"}
+
+
+def source_text(source: str) -> str:
+    """`Recommendation.source` → 화면에 읽어 줄 한 줄. 세부 표기(원문)는 접힌 영역에 따로 보여 준다."""
+    if source.startswith("model: hybrid ("):
+        kind = source[len("model: hybrid ("):-1]
+        where = {"flow": "AI 추천 후보", "knn": "비슷한 체형 참조",
+                 "extra": "기본 후보표"}.get(kind, kind)
+        return f"{where} 중에서 시뮬레이션으로 확인한 자세"
+    if source.startswith("stub"):
+        return "기본 후보표의 자세 (추천 모델 산출물이 없을 때)"
+    if source.startswith("fallback"):
+        return "기본 자세 (다른 후보가 모두 부스 밖)"
+    return source
 
 
 @dataclass(frozen=True)
@@ -334,13 +356,20 @@ def recommend_pose(body: BodyParams, scenario: Scenario) -> PoseParams:
     return recommend(body, scenario).pose
 
 
-def pose_instructions(pose: PoseParams, scenario: Scenario) -> list[str]:
-    """자세 7개 → 사람에게 읽어 줄 안내 문장. 5° 수준 차이는 모델 오차라 대략값으로 말한다."""
+def pose_instructions(pose: PoseParams, scenario: Scenario, *,
+                      include_rotation: bool = True) -> list[str]:
+    """자세 7개 → 사람에게 읽어 줄 안내 문장. 5° 수준 차이는 모델 오차라 대략값으로 말한다.
+
+    `include_rotation=False` 면 몸 방향 줄을 빼고 팔·상체만 말한다. 회전 안내(④-2)처럼 방향을
+    따로 알려 주는 화면에서 쓴다 — 자세 문장과 회전 안내가 서로 다른 각도를 말하면 안 된다.
+    """
     lines: list[str] = []
     if scenario.name == "wheelchair":
         lines.append("휠체어에 앉은 채로 멈추세요.")
     yaw = abs(pose.torso_yaw)
-    if yaw < 15:
+    if not include_rotation:
+        pass
+    elif yaw < 15:
         lines.append("진행 방향(정면)을 보고 서세요." if scenario.name != "wheelchair"
                      else "진행 방향(정면)을 보세요.")
     elif yaw < 60:
