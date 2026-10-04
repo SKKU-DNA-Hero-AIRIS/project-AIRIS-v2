@@ -63,6 +63,8 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--out-dir", default=None, help="기본값: outputs/<refresh_시각[_tag]>")
     ap.add_argument("--tag", default="")
     ap.add_argument("--steps", type=int, default=4000, help="flow 학습 스텝")
+    ap.add_argument("--device", default="auto",
+                    help="flow 학습 장치 cpu | cuda | auto (cuda 가 보이면 cuda). 실제 장치는 gate.json 에 남는다")
     ap.add_argument("--folds", type=int, default=5)
     ap.add_argument("--methods", default=METHODS, help=f"5-fold 비교 방법 (판정은 {GATE_METHOD})")
     ap.add_argument("--n-flow", type=int, default=8)
@@ -159,7 +161,7 @@ NAMES = {"hybrid": "혼합 (flow 8 + kNN 8 + 고정 2)", "knn+stub": "kNN + 고�
 def markdown_table(stats, verdict: dict, info: dict) -> str:
     """docs/experiments_model.md 에 붙일 표."""
     lines = [f"데이터 `{info['dataset']}` ({info['rows']}행, 도장 {info['stamp_text']}), 커밋 `{info['commit']}`, "
-             f"{info['folds']}-fold, 결과 `{info['out_dir']}`",
+             f"{info['folds']}-fold, 학습 장치 {info.get('device') or '기록 없음'}, 결과 `{info['out_dir']}`",
              "",
              "| 방법 | 후보 | 재채점 | 중앙값 | 하위 5% | 최솟값 | 0.95 미만 | 불가 | 평균 응답 | 95% 응답 | 경계 하위 5% |",
              "|---|---|---|---|---|---|---|---|---|---|---|"]
@@ -180,6 +182,16 @@ def markdown_table(stats, verdict: dict, info: dict) -> str:
 
 
 # ---------- 6. 설치 ----------
+
+def trained_device(path: Path) -> str | None:
+    """flow 산출물 meta 에 남은 실제 학습 장치 ("cpu" | "cuda"). 기록이 없거나 못 읽으면 None."""
+    try:
+        from airis.model.flow import PoseFlow
+
+        return PoseFlow.load(path).meta.get("device")
+    except Exception:
+        return None
+
 
 def leftover_backups(model_dir: Path, names=(FLOW_FILE, KNN_FILE)) -> list[Path]:
     """앞선 설치가 이중 실패로 남긴 옛 산출물 백업(<이름>.prev.new). 있으면 설치하지 않는다."""
@@ -336,10 +348,11 @@ def main(argv: list[str] | None = None) -> int:
     print(f"[refresh] 1/4 flow 학습 ({args.steps} 스텝)")
     t0 = time.perf_counter()
     rc = train_pose_flow.main(["--dataset", str(dataset), "--holdout-frac", "0", "--steps", str(args.steps),
-                               "--out", str(out_dir / FLOW_FILE)])
+                               "--device", args.device, "--out", str(out_dir / FLOW_FILE)])
     timings["train_s"] = time.perf_counter() - t0
     if rc:
         return rc
+    device = trained_device(out_dir / FLOW_FILE)
 
     print("[refresh] 2/4 kNN 표")
     rc = build_pose_knn.main(["--dataset", str(dataset), "--out", str(out_dir / KNN_FILE)])
@@ -366,7 +379,8 @@ def main(argv: list[str] | None = None) -> int:
         stats.to_csv(out_dir / "e5cv_overall.csv", index=False, encoding="utf-8")
         info = {"dataset": dataset.name, "rows": len(df), "commit": explog.git_commit(), "folds": args.folds,
                 "out_dir": out_dir.relative_to(ROOT).as_posix() if out_dir.is_relative_to(ROOT) else str(out_dir),
-                "stamp_text": ", ".join(f"{k}={v}" for k, v in stamp.items() if k != "commit")}
+                "stamp_text": ", ".join(f"{k}={v}" for k, v in stamp.items() if k != "commit"),
+                "device": device}
         (out_dir / "gate.md").write_text(markdown_table(stats, verdict, info), encoding="utf-8")
 
     do_install = args.install or (verdict["passed"] and not args.no_install)
@@ -393,7 +407,7 @@ def main(argv: list[str] | None = None) -> int:
               "warnings": warns, "gate": asdict(Gate()), "verdict": verdict,
               "installed": installed, "install_error": install_error, "install_state": install_state,
               "model_dir": str(model_dir), "timings": {k: round(v, 1) for k, v in timings.items()},
-              "args": vars(args)}
+              "device": device, "args": vars(args)}
     (out_dir / "gate.json").write_text(json.dumps(report, ensure_ascii=False, indent=2, default=str),
                                        encoding="utf-8")
     if interrupted is not None:

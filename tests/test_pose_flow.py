@@ -117,6 +117,17 @@ def test_save_load_reproducible(model, scenarios, tmp_path):
     assert not np.allclose(a, model.sample(BodyParams(), "default", 32, seed=8)), "시드가 다르면 다른 샘플"
 
 
+def test_training_device_is_recorded(model, scenarios, tmp_path):
+    """실제 학습 장치를 산출물에 남긴다 (auto 가 cpu·cuda 중 무엇으로 풀렸는지, 재현성 기록)."""
+    assert model.meta["device"] == "cpu"                       # SMALL_CFG 의 기본 장치
+    assert flow.PoseFlow.load(model.save(tmp_path / "m.pt")).meta["device"] == "cpu"
+    assert flow._resolve_device("auto") == ("cuda" if torch.cuda.is_available() else "cpu")
+    auto = flow.train_pose_flow(synthetic_df(n=6), scenarios,
+                                flow.FlowConfig(hidden=8, layers=1, steps=2, batch_size=8, device="auto"),
+                                meta={"device": "stale"})
+    assert auto.meta["device"] == flow._resolve_device("auto"), "넘겨받은 meta 의 옛 값을 덮어쓴다 (fold 재학습)"
+
+
 def test_predict_contract_and_rescoring(model, scenarios, tmp_path):
     path = model.save(tmp_path / "m.pt")
     sc = scenarios["default"]

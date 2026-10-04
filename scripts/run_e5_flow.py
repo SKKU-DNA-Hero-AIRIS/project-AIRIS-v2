@@ -70,6 +70,8 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--folds", type=int, default=0,
                     help="체형 K-fold 교차검증 (0 이면 산출물 meta 의 holdout 체형만). fold 마다 flow 를 다시 학습한다")
     ap.add_argument("--fold-seed", type=int, default=0)
+    ap.add_argument("--fold-rule", choices=FOLD_RULES, default="permutation",
+                    help="체형 fold 나누는 규칙. modulo 는 체형을 늘려도 fold 가 유지된다 (학습 곡선용)")
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--limit", type=int, default=None, help="holdout 행 수 상한 (빠른 점검용)")
     ap.add_argument("--out", default=None, help="기본값: outputs/e5flow_<시각>.csv")
@@ -207,11 +209,25 @@ def summarize(res):
                .reset_index())
 
 
-def fold_indices(body_idx: np.ndarray, folds: int, seed: int) -> list[np.ndarray]:
-    """체형 단위 K-fold. 같은 (체형 목록, folds, seed) 면 같은 분할."""
+FOLD_RULES = ("permutation", "modulo")
+
+
+def fold_indices(body_idx: np.ndarray, folds: int, seed: int, rule: str = "permutation") -> list[np.ndarray]:
+    """체형 단위 K-fold. 같은 (체형 목록, folds, seed, rule) 면 같은 분할.
+
+    permutation (기본)  시드 순열을 K 조각으로 자른다. docs/experiments_model.md 의 기존 수치가 이 분할이다.
+                        체형 목록이 바뀌면(체형을 더 만들면) 같은 체형이 다른 fold 로 간다.
+    modulo              fold = (body_idx + seed) % K. 체형을 늘려도 같은 체형이 같은 fold 에 남으므로
+                        데이터셋 크기를 바꿔 가며 비교하는 학습 곡선에 쓴다 (팀원 제안 3ab035e).
+    """
     ids = np.unique(body_idx)
-    shuffled = np.random.default_rng(seed).permutation(ids)
-    return [np.sort(part) for part in np.array_split(shuffled, folds)]
+    if rule == "permutation":
+        shuffled = np.random.default_rng(seed).permutation(ids)
+        return [np.sort(part) for part in np.array_split(shuffled, folds)]
+    if rule == "modulo":
+        key = (ids.astype(np.int64) + int(seed)) % int(folds)
+        return [np.sort(ids[key == f]) for f in range(int(folds))]
+    raise ValueError(f"fold 규칙은 {FOLD_RULES} 중 하나: {rule!r}")
 
 
 def train_fold_model(train, scenarios, base_model, meta: dict):
@@ -329,7 +345,7 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.folds and args.folds > 1:
         rows = []
-        folds = fold_indices(df["body_idx"].to_numpy(), args.folds, args.fold_seed)
+        folds = fold_indices(df["body_idx"].to_numpy(), args.folds, args.fold_seed, args.fold_rule)
         tmp = Path(args.out).parent if args.out else ROOT / "outputs"
         tmp.mkdir(parents=True, exist_ok=True)
         for f, ids in enumerate(folds):
