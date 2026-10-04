@@ -77,6 +77,8 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--body-noise", type=float, default=0.0,
                     help="체형 입력 오차 비율 (0.05 = ±5%%). 추천은 오차를 넣은 체형으로, 채점은 진짜 체형으로 한다")
     ap.add_argument("--body-noise-seed", type=int, default=0)
+    ap.add_argument("--feasibility-margin", type=float, default=0.0,
+                    help="부스 안 판정 여유 (0.05 = 체형을 5%% 키운 몸에서도 부스 안인 후보만 고른다). 혼합 계열에만 적용")
     ap.add_argument("--limit", type=int, default=None, help="holdout 행 수 상한 (빠른 점검용)")
     ap.add_argument("--out", default=None, help="기본값: outputs/e5flow_<시각>.csv")
     return ap
@@ -288,6 +290,7 @@ def run_split(test, train, model, methods, args, evaluator, nozzle, scenarios, *
     n = max(1, int(args.n_samples))
     noise = float(getattr(args, "body_noise", 0.0) or 0.0)
     noise_seed = int(getattr(args, "body_noise_seed", 0) or 0)
+    margin = float(getattr(args, "feasibility_margin", 0.0) or 0.0)
     rows: list[dict] = []
     t_all = _time.perf_counter()
     for i, row in test.iterrows():
@@ -302,12 +305,14 @@ def run_split(test, train, model, methods, args, evaluator, nozzle, scenarios, *
         for m in methods:
             t0 = _time.perf_counter()
             n_cands = n_screen = None
+            margin_rejected, margin_fallback = None, None
             if m == "hybrid" or m.startswith("hybrid-"):
                 p = pred.predict(est, scenario, backend="hybrid", n_flow=args.n_flow, n_knn=args.n_knn,
                                  seed=seed, path=model_path or args.model, knn_path=knn_path,
                                  evaluator=evaluator, nozzle=nozzle, extra_candidates=stub_cands,
-                                 **variant_kwargs(m, args))
-                pose, n_evals = p.pose, p.n_rescored
+                                 feasibility_margin=margin, **variant_kwargs(m, args))
+                pose, n_evals = p.pose, p.n_rescored + p.n_margin_checks
+                margin_rejected, margin_fallback = p.n_margin_rejected, p.margin_fallback
                 n_cands = len(p.candidates)
                 n_screen = len(p.candidates) if p.screen_scores is not None else 0
             elif m == "flow":
@@ -341,6 +346,7 @@ def run_split(test, train, model, methods, args, evaluator, nozzle, scenarios, *
             rows.append({
                 "body_idx": int(row["body_idx"]), "scenario": scenario.name, "method": m,
                 "body_noise": noise, "est_height_m": est.height_m,
+                "feasibility_margin": margin, "margin_rejected": margin_rejected, "margin_fallback": margin_fallback,
                 "height_m": body.height_m, "boundary": in_boundary(scenario.name, body.height_m),
                 "ref_score": ref, "score": float(score[0]),
                 "ratio": float(score[0]) / ref if ref > 0 else float("nan"),

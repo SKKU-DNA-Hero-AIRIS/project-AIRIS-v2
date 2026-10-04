@@ -71,6 +71,10 @@ class Prediction:
     n_dropped: int = 0                                 # 중복 제거로 뺀 후보 수 (candidates 에는 남은 것만)
     screen_scores: np.ndarray | None = None            # 저밀도 선별 점수 (선별을 안 했으면 None)
     n_rescored: int = 0                                # 최종 평가기로 채점한 후보 수
+    #: 부스 안 판정 여유(feasibility_margin > 0)를 썼을 때의 기록 (기본 동작에서는 0, False)
+    n_margin_checks: int = 0                           # 키운 체형으로 다시 채점한 횟수
+    n_margin_rejected: int = 0                         # 키운 체형에서 불가라 넘긴 후보 수
+    margin_fallback: bool = False                      # 전부 걸려서 여유 없이 고른 후보를 돌려줬는가
 
 
 @dataclass
@@ -386,6 +390,37 @@ def _pick(scores: np.ndarray, infeasible: np.ndarray) -> int:
     return int(np.argmax(pick))
 
 
+def enlarged_body(body: BodyParams, margin: float) -> BodyParams:
+    """체형 값 전부에 (1 + margin) 을 곱한 체형. 부스 안 판정에 여유를 둘 때 쓴다."""
+    return type(body)(**{f.name: float(getattr(body, f.name)) * (1.0 + float(margin)) for f in fields(body)})
+
+
+def margin_pick(evaluator: Evaluator, candidates: Sequence[PoseParams], scores: np.ndarray, infeasible: np.ndarray,
+                considered: Sequence[int], nozzle: NozzleConfig, body: BodyParams, scenario: Scenario,
+                margin: float) -> tuple[int, int, int, bool]:
+    """부스 안 판정에 여유를 둔 선택. (고른 자리, 다시 채점한 횟수, 넘긴 후보 수, 폴백 여부).
+
+    체형 입력에 오차가 있으면(키를 작게 추정) 추정 체형에서는 부스 안이던 자세가 실제 몸에서는 천장·벽을
+    넘을 수 있다 (docs/experiments_model.md 7절). 그래서 점수 순으로 후보를 보며 **키운 체형**
+    (체형 값 × (1 + margin))에서도 부스 안인 첫 후보를 고른다. 점수는 추정 체형의 것을 그대로 쓴다.
+    considered 는 최종 평가기로 채점한 후보의 자리다. 추정 체형에서 불가인 후보는 보지 않는다.
+    전부 걸리면 여유 없이 고른 후보로 돌아간다 (폴백, 불가 추천을 늘리지는 않는다).
+    """
+    from airis.optimize.cmaes_runner import score_batch
+
+    considered = list(considered)
+    base = considered[_pick(scores[considered], infeasible[considered])]
+    order = sorted((j for j in considered if not infeasible[j]), key=lambda j: (-float(scores[j]), j))
+    big = enlarged_body(body, margin)
+    checks = 0
+    for rejected, j in enumerate(order):
+        _, bad = score_batch(evaluator, [candidates[j]], nozzle, big, scenario)
+        checks += 1
+        if not bool(bad[0]):
+            return j, checks, rejected, False
+    return base, checks, len(order), True
+
+
 def predict(body: BodyParams, scenario: Scenario, *, backend: str = "hybrid",
             n_flow: int = N_FLOW, n_knn: int = N_KNN, n_samples: int | None = None,
             rescore: bool = True, seed: int = 0, path: Path | str | None = None,
@@ -394,7 +429,7 @@ def predict(body: BodyParams, scenario: Scenario, *, backend: str = "hybrid",
             extra_candidates: Sequence[PoseParams] = (),
             dedup_deg: float = 0.0, screen_density: float | None = None, screen_top: int = 3,
             screen_evaluator: Evaluator | None = None, screen_keep_extra: bool = False,
-            n_threads: int = 1) -> Prediction:
+            n_threads: int = 1, feasibility_margin: float = 0.0) -> Prediction:
     """후보까지 돌려주는 예측. evaluator·nozzle 을 주지 않으면 default_rescorer.
 
     backend "hybrid"(기본) = flow n_flow 개 + kNN n_knn 개 + extra_candidates, "flow"·"knn" 은 한 쪽만 쓴다.
@@ -414,6 +449,11 @@ def predict(body: BodyParams, scenario: Scenario, *, backend: str = "hybrid",
       평가기 전용이고, 재정의한 평가기(입자판)에서는 순차로 채점한다 (경고).
     - 중복 제거도 고정 후보는 남기므로 표보다 나빠지지 않지만, R0(전부 채점)보다는 나빠질 수 있다
       (3° 안에서도 점수가 크게 바뀌는 자세가 있다, docs/experiments_model.md 5절).
+
+    부스 안 판정 여유 (기본 0 이면 지금까지와 같은 동작이고 추가 채점도 없다. 총괄 2026-10-04):
+    - feasibility_margin > 0: 점수 순으로 후보를 보며, 체형 값을 (1 + 여유) 배로 키운 몸에서도 부스 안인 첫 후보를
+      고른다 (margin_pick). 체형 입력 오차로 실제 몸이 더 클 때 천장·벽을 넘는 추천을 막는다. 추가 비용은 보통
+      채점 1회다. 전부 걸리면 여유 없이 고른 후보를 돌려주고 margin_fallback 을 켠다.
     """
 
     if backend not in BACKENDS:
@@ -441,8 +481,9 @@ def predict(body: BodyParams, scenario: Scenario, *, backend: str = "hybrid",
     if not screening or len(candidates) <= max(1, int(screen_top)):
         scores, infeasible = score_candidates(evaluator, candidates, nozzle, body, scenario, n_threads=n_threads)
         i = _pick(scores, infeasible)
-        return Prediction(candidates[i], candidates, scores, infeasible, sources, sources[i],
-                          n_dropped=n_dropped, n_rescored=len(candidates))
+        out = Prediction(candidates[i], candidates, scores, infeasible, sources, sources[i],
+                         n_dropped=n_dropped, n_rescored=len(candidates))
+        return _with_margin(out, range(len(candidates)), evaluator, nozzle, body, scenario, feasibility_margin)
 
     if screen_evaluator is None:
         from airis.optimize.dataset import configured_body_model
@@ -474,8 +515,21 @@ def predict(body: BodyParams, scenario: Scenario, *, backend: str = "hybrid",
             rescored += rest
     rescored.sort()
     i = rescored[_pick(scores[rescored], infeasible[rescored])]
-    return Prediction(candidates[i], candidates, scores, infeasible, sources, sources[i],
-                      n_dropped=n_dropped, screen_scores=screen, n_rescored=len(rescored))
+    out = Prediction(candidates[i], candidates, scores, infeasible, sources, sources[i],
+                     n_dropped=n_dropped, screen_scores=screen, n_rescored=len(rescored))
+    return _with_margin(out, rescored, evaluator, nozzle, body, scenario, feasibility_margin)
+
+
+def _with_margin(p: Prediction, considered: Sequence[int], evaluator: Evaluator, nozzle: NozzleConfig,
+                 body: BodyParams, scenario: Scenario, margin: float) -> Prediction:
+    """feasibility_margin > 0 이면 margin_pick 으로 선택을 바꾼다. 0 이면 그대로 (추가 채점 없음)."""
+    if not margin or margin <= 0:
+        return p
+    i, checks, rejected, fallback = margin_pick(evaluator, p.candidates, p.scores, p.infeasible, considered,
+                                                nozzle, body, scenario, margin)
+    p.pose, p.source = p.candidates[i], p.sources[i]
+    p.n_margin_checks, p.n_margin_rejected, p.margin_fallback = checks, rejected, fallback
+    return p
 
 
 def predict_pose(body: BodyParams, scenario: Scenario, **kwargs) -> PoseParams:

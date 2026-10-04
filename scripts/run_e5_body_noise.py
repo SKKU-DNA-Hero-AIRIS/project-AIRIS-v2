@@ -54,6 +54,9 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--model", required=True, help="학습 설정을 읽을 flow 산출물 (fold 마다 같은 설정으로 다시 학습한다)")
     ap.add_argument("--levels", default=LEVELS, help="오차 비율 (0.05 = ±5%%). 0 은 기준으로 항상 넣는다")
     ap.add_argument("--noise-seed", type=int, default=0)
+    ap.add_argument("--margins", default="0",
+                    help="부스 안 판정 여유 (0.05 = 체형을 5%% 키운 몸에서도 부스 안인 후보만). 쉼표로 여러 개. "
+                         "혼합 계열에만 적용된다 (docs/experiments_model.md 7.2절)")
     ap.add_argument("--methods", default=METHODS)
     ap.add_argument("--folds", type=int, default=5)
     ap.add_argument("--fold-seed", type=int, default=e5.get_default("fold_seed"))
@@ -75,28 +78,43 @@ def parse_levels(text: str) -> list[float]:
 
 
 def summarize(rows) -> "object":
-    """오차 수준 × 방법 지표와 p = 0 대비 변화. 지표 정의는 train_pose_models.method_stats 와 같다."""
+    """(여유 ×) 오차 수준 × 방법 지표와 기준 대비 변화. 지표 정의는 train_pose_models.method_stats 와 같다.
+
+    기준은 같은 방법의 "여유 0, 오차 0" 행이다. 여유 열(feasibility_margin)이 없으면 여유 0 으로 본다.
+    """
     import pandas as pd
 
     import train_pose_models
 
+    rows = rows.copy()
+    if "feasibility_margin" not in rows.columns:
+        rows["feasibility_margin"] = 0.0
+    rows["feasibility_margin"] = rows["feasibility_margin"].fillna(0.0).astype(float)
     parts = []
-    for level, g in rows.groupby("body_noise", sort=True):
+    for (margin, level), g in rows.groupby(["feasibility_margin", "body_noise"], sort=True):
         stats = train_pose_models.method_stats(g)
         stats.insert(0, "body_noise", float(level))
+        stats.insert(0, "feasibility_margin", float(margin))
+        for col in ("margin_rejected", "margin_fallback"):      # 여유 때문에 추천이 바뀐 행 / 폴백한 행의 비율
+            if col in g.columns:
+                share = g.groupby("method", sort=False)[col].apply(
+                    lambda s: float((s.fillna(0).astype(float) > 0).mean()))
+                stats[f"{col}_rows"] = stats["method"].map(share)
         parts.append(stats)
     out = pd.concat(parts, ignore_index=True)
-    base = out[out["body_noise"] == 0.0].set_index("method")
+    is_base = (out["body_noise"] == 0.0) & (out["feasibility_margin"] == 0.0)
+    base = out[is_base].set_index("method")
     for col in ("p05", "below_095", "infeasible", "median"):
         out[f"d_{col}"] = [float(r[col] - base.at[r["method"], col]) if r["method"] in base.index else float("nan")
                            for _, r in out.iterrows()]
     # 같은 행(체형·시나리오·방법)끼리 짝지은 점수 비율 변화: 평균과 가장 크게 떨어진 값
-    zero = rows[rows["body_noise"] == 0.0].set_index(["body_idx", "scenario", "method"])["ratio"]
+    key = ["body_idx", "scenario", "method"]
+    zero = rows[(rows["body_noise"] == 0.0) & (rows["feasibility_margin"] == 0.0)].set_index(key)["ratio"]
     paired_mean, paired_min, changed = [], [], []
     for _, r in out.iterrows():
-        g = rows[(rows["body_noise"] == r["body_noise"]) & (rows["method"] == r["method"])]
-        d = g.set_index(["body_idx", "scenario", "method"])["ratio"] - zero.reindex(
-            g.set_index(["body_idx", "scenario", "method"]).index)
+        g = rows[(rows["body_noise"] == r["body_noise"]) & (rows["method"] == r["method"])
+                 & (rows["feasibility_margin"] == r["feasibility_margin"])].set_index(key)
+        d = g["ratio"] - zero.reindex(g.index)
         paired_mean.append(float(d.mean()))
         paired_min.append(float(d.min()))
         changed.append(float((d.abs() > 1e-9).mean()))
@@ -109,10 +127,11 @@ def markdown_table(summary, info: dict) -> str:
     lines = [f"데이터 `{info['dataset']}` ({info['rows']}행), {info['folds']}-fold, 커밋 `{info['commit']}`, "
              f"오차 시드 {info['noise_seed']}, 학습 장치 {info['device']}",
              "",
-             "| 방법 | 체형 오차 | 하위 5% | 0.95 미만 | 불가(진짜 체형) | 중앙값 | 짝지은 비율 변화(평균) | 가장 큰 하락 | 추천이 바뀐 행 |",
-             "|---|---|---|---|---|---|---|---|---|"]
-    for _, r in summary.sort_values(["method", "body_noise"]).iterrows():
-        lines.append(f"| {r['method']} | ±{100 * r['body_noise']:.0f}% | {r['p05']:.4f} | {100 * r['below_095']:.2f}% | "
+             "| 방법 | 판정 여유 | 체형 오차 | 하위 5% | 0.95 미만 | 불가(진짜 체형) | 중앙값 | 짝지은 비율 변화(평균) | 가장 큰 하락 | 추천이 바뀐 행 |",
+             "|---|---|---|---|---|---|---|---|---|---|"]
+    for _, r in summary.sort_values(["method", "feasibility_margin", "body_noise"]).iterrows():
+        lines.append(f"| {r['method']} | {100 * r['feasibility_margin']:.0f}% | ±{100 * r['body_noise']:.0f}% | "
+                     f"{r['p05']:.4f} | {100 * r['below_095']:.2f}% | "
                      f"{100 * r['infeasible']:.2f}% | {r['median']:.4f} | {r['paired_ratio_mean']:+.4f} | "
                      f"{r['paired_ratio_min']:+.4f} | {100 * r['rows_changed']:.1f}% |")
     return "\n".join(lines) + "\n"
@@ -138,6 +157,7 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     try:
         levels = parse_levels(args.levels)
+        margins = parse_levels(args.margins)
         dataset = Path(args.dataset).resolve()
         df = pd.read_parquet(dataset)
         stamp, warns = train_pose_models.check_dataset(df)
@@ -168,13 +188,15 @@ def main(argv: list[str] | None = None) -> int:
         devices.add(str(fold_model.meta.get("device")))
         model_path = fold_model.save(work / f"fold{f}_flow.pt")
         knn_path = PoseKNN.from_dataset(train).save(work / f"fold{f}_knn.parquet")
-        for level in levels:
-            e5_args = run_e5_flow.build_parser().parse_args(
-                ["--model", str(model_path), "--n-flow", str(args.n_flow), "--n-knn", str(args.n_knn),
-                 "--seed", str(args.seed), "--body-noise", str(level), "--body-noise-seed", str(args.noise_seed)])
-            print(f"[body-noise] fold {f} 체형 오차 ±{100 * level:g}%")
-            rows += run_e5_flow.run_split(test, train, fold_model, methods, e5_args, evaluator, nozzle, scenarios,
-                                          fold=f, knn_path=knn_path, model_path=model_path)
+        for margin in margins:
+            for level in levels:
+                e5_args = run_e5_flow.build_parser().parse_args(
+                    ["--model", str(model_path), "--n-flow", str(args.n_flow), "--n-knn", str(args.n_knn),
+                     "--seed", str(args.seed), "--body-noise", str(level), "--body-noise-seed", str(args.noise_seed),
+                     "--feasibility-margin", str(margin)])
+                print(f"[body-noise] fold {f} 판정 여유 {100 * margin:g}% 체형 오차 ±{100 * level:g}%")
+                rows += run_e5_flow.run_split(test, train, fold_model, methods, e5_args, evaluator, nozzle,
+                                              scenarios, fold=f, knn_path=knn_path, model_path=model_path)
         pd.DataFrame(rows).to_csv(out_dir / "rows.csv", index=False, encoding="utf-8")   # 끊겨도 남게
 
     res = pd.DataFrame(rows)
@@ -184,7 +206,8 @@ def main(argv: list[str] | None = None) -> int:
             "noise_seed": args.noise_seed, "device": "·".join(sorted(devices))}
     (out_dir / "summary.md").write_text(markdown_table(summary, info), encoding="utf-8")
     manifest = {"commit": info["commit"], "dataset": str(dataset), "dataset_stamp": stamp,
-                "current_stamp": pred.current_stamp(), "warnings": warns, "levels": levels,
+                "current_stamp": pred.current_stamp(), "warnings": warns, "levels": levels, "margins": margins,
+                "margin": "체형 값 전부 × (1 + 여유) 인 몸에서도 부스 안인 후보만 고른다 (혼합 계열)",
                 "noise": "체형 값마다 독립, (1 + U(−p, +p)) 를 곱한다", "noise_seed": args.noise_seed,
                 "methods": methods, "folds": args.folds, "fold_rule": "permutation", "devices": sorted(devices),
                 "limit": args.limit, "total_s": round(time.perf_counter() - t_all, 1), "args": vars(args)}

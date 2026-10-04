@@ -117,7 +117,7 @@ def test_summary_reports_change_against_zero_noise():
     assert s5["paired_ratio_mean"] == 0 and s5["rows_changed"] == 0, "방법마다 자기 기준(p = 0)과 비교한다"
     md = bn.markdown_table(s, {"dataset": "d.parquet", "rows": 300, "folds": 5, "commit": "abc",
                                "noise_seed": 0, "device": "cpu"})
-    assert "| hybrid | ±5% |" in md and "| stub | ±0% |" in md and md.count("\n| ") == 5
+    assert "| hybrid | 0% | ±5% |" in md and "| stub | 0% | ±0% |" in md and md.count("\n| ") == 5
 
 
 def test_main_runs_every_level_on_the_same_fold_models(tmp_path, monkeypatch):
@@ -177,3 +177,128 @@ def test_main_runs_every_level_on_the_same_fold_models(tmp_path, monkeypatch):
     assert m["dataset_stamp"]["physics_hash"] == "p0" and m["commit"] and (out / "summary.md").exists()
     assert bn.main(["--dataset", str(ds), "--model", "m.pt", "--levels", "1.5", "--out-dir", str(tmp_path / "x")]) == 2
     assert not (tmp_path / "x").exists()
+
+
+def test_summary_separates_margins_and_compares_to_zero_margin_zero_noise():
+    """여유 × 오차 조합마다 한 줄. 기준은 같은 방법의 여유 0 · 오차 0 이다."""
+    base = np.full(100, 1.0)
+    frames = []
+    for margin, level, ratios, bad in (
+            (0.0, 0.0, base, None),
+            (0.0, 0.05, np.r_[np.full(97, 1.0), np.full(3, -2.0)], [False] * 97 + [True] * 3),   # 불가 3행
+            (0.05, 0.0, np.r_[np.full(90, 1.0), np.full(10, 0.98)], None),                       # 여유의 비용
+            (0.05, 0.05, np.r_[np.full(90, 1.0), np.full(10, 0.98)], None)):                     # 불가가 사라진다
+        f = _rows(level, ratios, bad)
+        f["feasibility_margin"] = margin
+        f["margin_rejected"] = [1] * 10 + [0] * 90 if margin else 0
+        f["margin_fallback"] = False
+        frames.append(f)
+    s = bn.summarize(pd.concat(frames))
+    assert len(s) == 4
+
+    def row(margin, level):
+        return s[(s["feasibility_margin"] == margin) & (s["body_noise"] == level)].iloc[0]
+
+    assert row(0.0, 0.05)["infeasible"] == pytest.approx(0.03)
+    assert row(0.05, 0.05)["infeasible"] == 0 and row(0.05, 0.05)["d_infeasible"] == 0
+    cost = row(0.05, 0.0)
+    assert cost["paired_ratio_mean"] == pytest.approx(-0.002) and cost["paired_ratio_min"] == pytest.approx(-0.02)
+    assert cost["rows_changed"] == pytest.approx(0.10) and cost["margin_rejected_rows"] == pytest.approx(0.10)
+    assert row(0.0, 0.0)["margin_rejected_rows"] == 0 and row(0.0, 0.0)["paired_ratio_mean"] == 0
+    md = bn.markdown_table(s, {"dataset": "d.parquet", "rows": 300, "folds": 5, "commit": "abc",
+                               "noise_seed": 0, "device": "cpu"})
+    assert "| hybrid | 5% | ±5% |" in md and "| hybrid | 0% | ±0% |" in md
+
+
+def test_summary_treats_missing_margin_column_as_zero():
+    """여유 열이 없는 옛 결과(7.1절의 rows.csv)도 그대로 요약된다."""
+    rows = pd.concat([_rows(0.0, np.ones(10)), _rows(0.05, np.full(10, 0.9))])
+    assert "feasibility_margin" not in rows.columns
+    s = bn.summarize(rows)
+    assert (s["feasibility_margin"] == 0.0).all() and len(s) == 2
+    assert s[s["body_noise"] == 0.05]["paired_ratio_mean"].iloc[0] == pytest.approx(-0.1)
+
+
+def test_margin_reaches_run_split_and_predict(monkeypatch):
+    """--feasibility-margin 이 혼합 계열의 predict 까지 전달되고, 행에 여유와 넘긴 후보 수가 남는다."""
+    from airis.model import predict as pred
+    from airis.sim import PoseParams
+
+    seen = []
+
+    class _P:
+        pose = PoseParams()
+        candidates = [PoseParams()] * 3
+        screen_scores = None
+        n_rescored, n_margin_checks, n_margin_rejected, margin_fallback = 3, 2, 1, False
+
+    def fake_predict(body, scenario, **kw):
+        seen.append(kw["feasibility_margin"])
+        return _P()
+
+    monkeypatch.setattr(pred, "predict", fake_predict)
+    scenarios = load_scenarios()
+    for margin in (0.0, 0.05):
+        args = run_e5_flow.build_parser().parse_args(["--feasibility-margin", str(margin)])
+        rows = run_e5_flow.run_split(_test_rows(2), _test_rows(2), None, ["hybrid", "stub"], args,
+                                     _HeightEvaluator(), object(), scenarios)
+        hybrid = [r for r in rows if r["method"] == "hybrid"]
+        stub = [r for r in rows if r["method"] == "stub"]
+        assert all(r["feasibility_margin"] == margin and r["margin_rejected"] == 1 for r in hybrid)
+        assert all(r["n_evals"] == 5 for r in hybrid), "재채점 3 + 여유 확인 2"
+        assert all(r["margin_rejected"] is None for r in stub), "고정 후보표 방법에는 적용하지 않는다"
+    assert seen == [0.0, 0.0, 0.05, 0.05]
+    assert run_e5_flow.build_parser().parse_args([]).feasibility_margin == 0.0
+
+
+def test_main_loops_margins_within_each_fold(tmp_path, monkeypatch):
+    """fold 마다 학습은 한 번, 여유 × 오차 조합을 모두 평가한다."""
+    import json
+
+    import train_pose_models
+    from airis.model import knn, predict as pred
+
+    calls = {"train": 0, "combos": []}
+
+    class _Model:
+        meta = {"device": "cpu"}
+
+        def save(self, path):
+            return Path(path)
+
+    class _Knn:
+        def save(self, path):
+            return Path(path)
+
+    def fake_split(test, train, model, methods, args, evaluator, nozzle, scenarios, *, fold=None,
+                   knn_path=None, model_path=None):
+        calls["combos"].append((fold, args.feasibility_margin, args.body_noise))
+        return [{"body_idx": int(r["body_idx"]), "scenario": r["scenario"], "method": m, "body_noise": args.body_noise,
+                 "feasibility_margin": args.feasibility_margin, "margin_rejected": 0, "margin_fallback": False,
+                 "ratio": 1.0, "infeasible": False, "n_evals": 18, "ms": 500.0, "boundary": False, "fold": fold}
+                for _, r in test.iterrows() for m in methods]
+
+    def fake_train(*a, **k):
+        calls["train"] += 1
+        return _Model()
+
+    monkeypatch.setattr(run_e5_flow, "train_fold_model", fake_train)
+    monkeypatch.setattr(run_e5_flow, "run_split", fake_split)
+    monkeypatch.setattr(pred, "load_model", lambda *a, **k: _Model())
+    monkeypatch.setattr(pred, "default_rescorer", lambda m: (object(), object()))
+    monkeypatch.setattr(knn.PoseKNN, "from_dataset", classmethod(lambda cls, df: _Knn()))
+    stamp = {"nozzle_layout_hash": "n0", "physics_hash": "p0"}
+    monkeypatch.setattr(train_pose_models, "current_stamp", lambda: stamp)
+    monkeypatch.setattr(pred, "current_stamp", lambda: stamp)
+    ds = tmp_path / "ds.parquet"
+    pd.DataFrame([{"body_idx": b, "scenario": "default", "score": 0.5, "physics_hash": "p0",
+                   "nozzle_layout_hash": "n0"} for b in range(10)]).to_parquet(ds)
+    out = tmp_path / "out"
+    assert bn.main(["--dataset", str(ds), "--model", "m.pt", "--levels", "0.05", "--margins", "0.02,0.05",
+                    "--methods", "hybrid", "--out-dir", str(out)]) == 0
+    assert calls["train"] == 5
+    assert calls["combos"] == [(f, m, lv) for f in range(5) for m in (0.0, 0.02, 0.05) for lv in (0.0, 0.05)]
+    assert len(pd.read_csv(out / "summary.csv")) == 6
+    manifest = json.loads((out / "manifest.json").read_text(encoding="utf-8"))
+    assert manifest["margins"] == [0.0, 0.02, 0.05] and manifest["levels"] == [0.0, 0.05]
+    assert bn.build_parser().parse_args(["--dataset", "d", "--model", "m"]).margins == "0"
