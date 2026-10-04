@@ -103,7 +103,11 @@ k 1.4 전환(#108, wall_jet_gain 1.0 → 1.4, fabric_roughness_factor 0.25 → 0
 - k = 1(2.1절)과 같은 그림이다: 혼합이 기준을 넘고, 전체 지표는 kNN + 고정과 비슷하지만 경계 구간
   (0.9916 대 0.9617)과 0.95 미만 비율에서 혼합이 낫다. 고정 후보표만으로는 5% 가 0.95 에 못 미친다.
 - 시나리오별 혼합의 하위 5%: default 0.9967, pregnant 0.9864, wheelchair 0.9941. 가장 낮은 값 0.9346 은 pregnant.
-- 설치: 합격했으므로 대시보드를 내린 뒤 `--install-from outputs/refresh_k14` 로 설치한다(3절).
+- **설치 (2026-10-04 15:56)**: 대시보드가 내려간 것을 확인하고 `--install-from outputs/refresh_k14` 로 두 곳에
+  설치했다: 본 폴더 `project-AIRIS-v2/data/models/` 와 E 대시보드가 읽는 `airis-v2-realtime/data/models/`.
+  두 곳 모두 `pose_flow.pt` sha256 `4ddeac7c486b…`, `pose_knn.parquet` `b4a25124c826…`(결과 폴더의 원본과 같음).
+  이전 k = 1 산출물은 `.prev` 로 남겼다(`6041d49c722c…`, `9a93de59b820…`). `artifact_status` 는 두 곳 모두
+  flow·kNN `match = True`(physics_hash `c5aea26d`), 로드 경고 없음, 실제 `predict` 호출 정상(후보 16개, 불가 0).
 
 ## 3. 산출물 갱신 절차
 
