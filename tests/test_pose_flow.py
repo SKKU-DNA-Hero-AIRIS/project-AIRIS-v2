@@ -313,6 +313,87 @@ def test_predict_screening_keep_extra_and_infeasible_fallback(model, scenarios, 
     assert p.n_rescored > 3
 
 
+def test_predict_feasibility_margin_skips_poses_that_fail_on_a_larger_body(model, scenarios, tmp_path):
+    """부스 안 판정 여유: 키운 체형에서 불가인 후보를 넘기고 다음 순위를 고른다. 기본 0 이면 지금 동작 그대로."""
+    from airis.sim import EvalResult, Evaluator
+
+    path = model.save(tmp_path / "m.pt")
+    sc = scenarios["default"]
+    body = BodyParams(height_m=1.80)
+
+    class _Ceiling(Evaluator):
+        """만세(벌림 120° 이상)는 키 1.85 m 초과면 천장에 닿아 불가. 점수는 만세가 높다."""
+
+        def __init__(self):
+            self.heights: list[float] = []
+
+        def evaluate(self, pose, nozzle, b, scenario):
+            self.heights.append(b.height_m)
+            bad = pose.shoulder_abduction >= 120.0 and b.height_m > 1.85
+            return EvalResult(score=-2.0 if bad else pose.shoulder_abduction / 180.0, removal_by_part=np.zeros(5),
+                              total_removal=0.0, discomfort=0.0, extra={"infeasible": bad})
+
+    kw = dict(backend="flow", n_samples=16, path=path, nozzle=object())
+    ev0 = _Ceiling()
+    base = pred.predict(body, sc, evaluator=ev0, **kw)
+    assert base.pose.shoulder_abduction >= 120.0, "추정 체형(1.80 m)에서는 만세가 부스 안이고 점수가 가장 높다"
+    assert (base.n_margin_checks, base.n_margin_rejected, base.margin_fallback) == (0, 0, False)
+    assert len(ev0.heights) == 16 and set(ev0.heights) == {1.80}, "여유 0 이면 추가 채점이 없다"
+
+    small = pred.predict(body, sc, evaluator=_Ceiling(), feasibility_margin=0.02, **kw)     # 1.836 m: 아직 천장 아래
+    assert small.pose == base.pose and small.n_margin_checks == 1 and small.n_margin_rejected == 0
+
+    ev5 = _Ceiling()
+    safe = pred.predict(body, sc, evaluator=ev5, feasibility_margin=0.05, **kw)             # 1.89 m: 만세는 천장
+    n_up = sum(c.shoulder_abduction >= 120.0 for c in safe.candidates)
+    assert safe.pose.shoulder_abduction < 120.0, "키운 체형에서 천장에 닿는 만세를 넘기고 팔 내림을 고른다"
+    assert safe.n_margin_rejected == n_up and safe.n_margin_checks == n_up + 1 and not safe.margin_fallback
+    down = [i for i, c in enumerate(safe.candidates) if c.shoulder_abduction < 120.0]
+    assert safe.pose is safe.candidates[max(down, key=lambda i: (safe.scores[i], -i))], "남은 후보 중 점수가 가장 높은 것"
+    assert np.array_equal(safe.scores, base.scores), "점수와 불가 판정은 추정 체형의 것을 그대로 둔다"
+    assert sorted(set(ev5.heights)) == pytest.approx([1.80, 1.89]) and ev5.heights.count(1.80) == 16
+    assert safe.source == safe.sources[safe.candidates.index(safe.pose)]
+
+    class _AllFail(_Ceiling):                    # 키운 체형에서는 모든 자세가 불가 → 여유 없이 고른 것으로 돌아간다
+        def evaluate(self, pose, nozzle, b, scenario):
+            r = super().evaluate(pose, nozzle, b, scenario)
+            if b.height_m > 1.85:
+                return EvalResult(score=-2.0, removal_by_part=np.zeros(5), total_removal=0.0, discomfort=0.0,
+                                  extra={"infeasible": True})
+            return r
+
+    fb = pred.predict(body, sc, evaluator=_AllFail(), feasibility_margin=0.05, **kw)
+    assert fb.margin_fallback and fb.pose == base.pose and fb.n_margin_rejected == 16
+
+    big = pred.enlarged_body(body, 0.05)
+    assert big.height_m == pytest.approx(1.89) and big.shoulder_width_m == pytest.approx(body.shoulder_width_m * 1.05)
+
+    # 여유 방식 reach: 세로 방향 값(키·팔 길이·다리 길이)만 키운다. 어깨 너비·몸통 두께는 그대로
+    reach = pred.enlarged_body(body, 0.05, "reach")
+    assert reach.height_m == pytest.approx(1.89) and reach.arm_length_m == pytest.approx(body.arm_length_m * 1.05)
+    assert reach.leg_length_m == pytest.approx(body.leg_length_m * 1.05)
+    assert reach.shoulder_width_m == body.shoulder_width_m and reach.torso_depth_m == body.torso_depth_m
+    r = pred.predict(body, sc, evaluator=_Ceiling(), feasibility_margin=0.05, feasibility_margin_mode="reach", **kw)
+    assert r.pose == safe.pose, "천장 기준 평가기에서는 두 방식이 같은 자세를 고른다"
+
+    class _Wall(Evaluator):                      # 어깨 너비 0.35 m 초과면 벽에 닿아 불가 (키와 무관)
+        def evaluate(self, pose, nozzle, b, scenario):
+            bad = b.shoulder_width_m > 0.35
+            return EvalResult(score=-2.0 if bad else pose.shoulder_abduction / 180.0, removal_by_part=np.zeros(5),
+                              total_removal=0.0, discomfort=0.0, extra={"infeasible": bad})
+
+    assert body.shoulder_width_m <= 0.35 < body.shoulder_width_m * 1.05
+    wall_all = pred.predict(body, sc, evaluator=_Wall(), feasibility_margin=0.05, **kw)
+    wall_reach = pred.predict(body, sc, evaluator=_Wall(), feasibility_margin=0.05, feasibility_margin_mode="reach",
+                              **kw)
+    assert wall_all.margin_fallback, "전부 키우면 벽에도 보수적이라 모든 후보가 걸린다"
+    assert not wall_reach.margin_fallback and wall_reach.n_margin_rejected == 0, "reach 는 벽 쪽을 건드리지 않는다"
+    with pytest.raises(ValueError, match="여유 방식"):
+        pred.predict(body, sc, evaluator=_Ceiling(), feasibility_margin=0.05, feasibility_margin_mode="tall", **kw)
+    with pytest.raises(ValueError, match="여유 방식"):
+        pred.enlarged_body(body, 0.05, "tall")
+
+
 def test_extra_candidates_are_rescored_with_samples(model, scenarios, tmp_path):
     """고정 후보(E 의 후보표 등)를 함께 재채점하면 결과가 그 후보보다 나빠지지 않는다."""
     path = model.save(tmp_path / "m.pt")
