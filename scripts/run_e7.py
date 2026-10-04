@@ -159,9 +159,15 @@ def main(argv: list[str] | None = None) -> int:
         lo, hi = limits.duration_bounds_s
         need = limits.n_phases * limits.min_phase_s
         if need > lo:
-            if need > hi:
+            # need == hi 면 총 시간 범위의 폭이 0 이 되어 PlanEncoder 가 정규화하지 못한다.
+            # 그래서 "같거나 길면" 막는다 (N × min_phase_s < 상한 이어야 한다).
+            if need >= hi:
                 print(f"단계 {limits.n_phases}개 × 최소 {limits.min_phase_s:g} s = {need:g} s 가 "
-                      f"총 시간 상한 {hi:g} s 보다 길다", file=sys.stderr)
+                      f"총 시간 상한 {hi:g} s 이상이다. 총 시간 범위의 폭이 0 이면 계획을 정규화할 수 "
+                      f"없으므로 N × min_phase_s < 상한 이어야 한다 — 단계 수를 "
+                      f"{int((hi - 1e-9) // limits.min_phase_s)} 이하로 줄이거나 "
+                      f"configs/physics.yaml 의 plan.duration_bounds_s 상한을 올려야 한다",
+                      file=sys.stderr)
                 return 2
             print(f"  총 시간 하한을 {lo:g} → {need:g} s 로 올린다 "
                   f"(단계 {limits.n_phases}개 × 최소 {limits.min_phase_s:g} s)")

@@ -524,3 +524,45 @@ def test_plan_dim_grows_with_phases(scenarios):
     too_many = dataclasses.replace(PlanLimits(), n_phases=12, duration_bounds_s=(24.0, 20.0))
     with pytest.raises(ValueError):
         PlanEncoder(scen, too_many)
+
+
+def test_run_e7_cli_phase_and_rotation_options(tmp_path):
+    """run_e7 의 --n-phases·--rotation-pose·P1_N 조건 처리 (통합 2026-10-04 요청).
+
+    상한을 넘는 단계 수를 조용히 넘기면 PlanEncoder 가 죽는다 — 실제로 N=10 실행이 그렇게 죽었다.
+    """
+    import json
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[1]
+
+    def run(args):
+        return subprocess.run([sys.executable, str(root / "scripts" / "run_e7.py"),
+                               "--evaluator", "dummy", "--scenarios", "default", "--seeds", "0",
+                               "--energy-weights", "0.1", "--max-evals", "60", "--pose-max-evals", "60",
+                               "--popsize", "10", "--log-dir", str(tmp_path), *args],
+                              cwd=root, capture_output=True, text=True, encoding="utf-8")
+
+    # N × min_phase_s 가 총 시간 상한 이상이면 돌기 전에 멈추고 길을 알려 준다.
+    out = run(["--conditions", "P5", "--n-phases", "10", "--tag", "cap"])
+    assert out.returncode == 2
+    assert "N × min_phase_s < 상한" in out.stderr and "9 이하" in out.stderr
+
+    # 단계 수를 덮어쓰면 그 단계 수로 돈다 (configs 는 그대로).
+    out = run(["--conditions", "P5", "--n-phases", "3", "--tag", "np3"])
+    assert out.returncode == 0, out.stderr
+    assert "n_phases=3" in out.stdout
+    plans = json.loads(next(tmp_path.glob("np3_*/e7_plans.json")).read_text(encoding="utf-8"))
+    assert plans["args"]["n_phases"] == 3
+    assert len(plans["scenarios"]["default"]["w0.1"]["P5_s0"]["phases"]) == 3
+
+    # P1_N 조건을 받고, P1down 은 자세가 없으면 돌기 전에 멈춘다.
+    out = run(["--conditions", "P1_8,P1opt_10", "--tag", "p1n"])
+    assert out.returncode == 0, out.stderr
+    assert "P1_8" in out.stdout and "P1opt_10" in out.stdout
+    out = run(["--conditions", "P1down", "--tag", "nopose"])
+    assert out.returncode == 2 and "--rotation-pose" in out.stderr
+    out = run(["--conditions", "P1_x", "--tag", "bad"])
+    assert out.returncode == 2 and "알 수 없는 조건" in out.stderr
