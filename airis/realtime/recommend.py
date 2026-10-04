@@ -356,13 +356,20 @@ def recommend_pose(body: BodyParams, scenario: Scenario) -> PoseParams:
     return recommend(body, scenario).pose
 
 
-def pose_instructions(pose: PoseParams, scenario: Scenario) -> list[str]:
-    """자세 7개 → 사람에게 읽어 줄 안내 문장. 5° 수준 차이는 모델 오차라 대략값으로 말한다."""
+def pose_instructions(pose: PoseParams, scenario: Scenario, *,
+                      include_rotation: bool = True) -> list[str]:
+    """자세 7개 → 사람에게 읽어 줄 안내 문장. 5° 수준 차이는 모델 오차라 대략값으로 말한다.
+
+    `include_rotation=False` 면 몸 방향 줄을 빼고 팔·상체만 말한다. 회전 안내(④-2)처럼 방향을
+    따로 알려 주는 화면에서 쓴다 — 자세 문장과 회전 안내가 서로 다른 각도를 말하면 안 된다.
+    """
     lines: list[str] = []
     if scenario.name == "wheelchair":
         lines.append("휠체어에 앉은 채로 멈추세요.")
     yaw = abs(pose.torso_yaw)
-    if yaw < 15:
+    if not include_rotation:
+        pass
+    elif yaw < 15:
         lines.append("진행 방향(정면)을 보고 서세요." if scenario.name != "wheelchair"
                      else "진행 방향(정면)을 보세요.")
     elif yaw < 60:

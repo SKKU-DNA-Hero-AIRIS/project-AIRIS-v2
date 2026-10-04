@@ -259,6 +259,91 @@ def test_draw_pose_and_read_image(tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# ④-2 회전 안내 (확장 5단계, docs/e_plan_screen_draft.md)
+# ---------------------------------------------------------------------------
+def test_rotation_plan_covers_a_full_turn():
+    """제안 자세를 **유지한 채** 한 바퀴를 N칸으로 나눈다. 자세는 몸 방향만 달라진다."""
+    from dataclasses import replace as _replace
+
+    from airis.realtime import plan_guide as pg
+
+    pose = STUB_TABLE["default"][0].pose
+    plan = pg.rotation_plan(pose)
+    assert len(plan.phases) == pg.ROTATION_STEPS == 10
+    assert plan.duration_s == pytest.approx(pg.ROTATION_STEPS * pg.STEP_SECONDS) == 20.0
+    assert all(ph.duration_s == pg.STEP_SECONDS for ph in plan.phases)
+    # 몸 방향만 다르고 나머지 여섯 값은 그대로다 (자세를 바꾸지 않는 것이 이 모드의 핵심)
+    for ph in plan.phases:
+        assert _replace(ph.pose, torso_yaw=pose.torso_yaw) == pose
+    # 한 바퀴를 고르게 나눈다 (접힌 각도라 차가 ±360 로 보일 수 있다)
+    yaws = [ph.pose.torso_yaw for ph in plan.phases]
+    steps = sorted(round((b - a) % 360.0, 6) for a, b in zip(yaws, yaws[1:]))
+    assert steps == [pytest.approx(36.0)] * (len(yaws) - 1)
+    assert (np.asarray(plan.zone_strengths) == 1.0).all(), "모드 A 는 바람 세기를 바꾸지 않는다"
+
+
+def test_rotation_instructions_say_the_pose_once():
+    """자세는 한 번만 말하고 방향은 칸으로 말한다 — 단계마다 자세를 되풀이하지 않는다."""
+    from airis.realtime import plan_guide as pg
+
+    sc = SCENARIOS["default"]
+    lines = pg.rotation_instructions(STUB_TABLE["default"][0].pose, sc)
+    assert any("만세" in t for t in lines)
+    assert sum("만세" in t for t in lines) == 1
+    assert any("10칸" in t and "36°" in t and "2초" in t for t in lines)
+    assert any("왼쪽·오른쪽 어느 쪽이든" in t for t in lines), "좌우는 대칭이라 고르게 둔다"
+    # 자세 문장에는 몸 방향이 들어가지 않는다 (회전 안내와 각도가 어긋나면 안 된다)
+    assert not any("돌려 한쪽 벽" in t for t in lines)
+
+    seated = pg.rotation_instructions(STUB_TABLE["wheelchair"][0].pose, SCENARIOS["wheelchair"])
+    assert seated[0].startswith("휠체어") and any("돌아앉으세요" in t for t in seated)
+
+
+@pytest.mark.parametrize("scenario", ["default", "pregnant", "wheelchair"])
+def test_rotation_reference_reads_experiment_file(scenario):
+    """화면 수치는 C 의 실험 파일에서 읽는다 (E 가 다시 계산하지 않는다)."""
+    from airis.realtime import plan_guide as pg
+
+    ref = pg.rotation_reference(scenario)
+    by = {r.key: r for r in ref}
+    assert {"P0", "P1_10", "P1opt_10"} <= set(by), f"없는 조건: {sorted(by)}"
+    assert by["P1opt_10"].n_phases == 10 and by["P1opt_10"].duration_s == 20.0
+    # 제안 자세로 도는 쪽이 제조사 안내보다, 그쪽이 안내 없이 통과보다 낫다
+    assert by["P0"].total_removal < by["P1_10"].total_removal < by["P1opt_10"].total_removal
+    for r in ref:
+        assert "P1" not in r.label and "P0" not in r.label, f"화면 문구에 약어: {r.label}"
+
+
+def test_control_json_fans_come_from_zone_helper():
+    """제어 JSON 의 노즐 세기는 E 가 지어내지 않고 B 의 apply_zone_strengths 결과 그대로다."""
+    import numpy as _np
+
+    from airis.realtime import plan_guide as pg
+    from airis.sim.scenario import apply_zone_strengths, load_nozzles
+
+    sc = SCENARIOS["default"]
+    plan = pg.rotation_plan(STUB_TABLE["default"][0].pose)
+    doc = pg.control_json(plan, MESH_DEFAULT_BODY, sc, source="test")
+
+    assert doc["schema"] == "airis.plan.v1" and doc["scenario"] == "default"
+    assert doc["duration_s"] == 20.0 and len(doc["phases"]) == len(plan.phases)
+    assert set(doc["zones"]) == set(__import__("airis.sim.types", fromlist=["ZONE_NAMES"]).ZONE_NAMES)
+    nozzle = load_nozzles()
+    for ph_doc, ph in zip(doc["phases"], plan.phases):
+        want = apply_zone_strengths(nozzle, plan.zone_strengths, ph.pose.torso_yaw).strengths
+        assert ph_doc["fans"] == pytest.approx(_np.asarray(want).reshape(-1), abs=1e-4)
+        assert len(ph_doc["fans"]) == len(_np.asarray(nozzle.strengths).reshape(-1))
+
+
+def test_rotation_plan_rejects_bad_arguments():
+    from airis.realtime import plan_guide as pg
+    with pytest.raises(ValueError):
+        pg.rotation_plan(PoseParams(), steps=0)
+    with pytest.raises(ValueError):
+        pg.rotation_plan(PoseParams(), step_s=0.0)
+
+
+# ---------------------------------------------------------------------------
 # 개인정보: 화면에 원본 영상을 띄우지 않는다 (팀원 제안 3ab035e 를 받은 것)
 # ---------------------------------------------------------------------------
 def _edge_path():
