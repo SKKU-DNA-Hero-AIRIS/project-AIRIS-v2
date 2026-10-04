@@ -840,6 +840,22 @@ def _mannequin_probe(pose: PoseParams, scenario, cfg):
     return x.astype(np.float32), n.astype(np.float32)
 
 
+def test_stagnation_factor_is_monotone_in_m(scenario):
+    """m이 커질수록 충돌 영역 보정이 커진다 (m = 1 < 3 < 6). 영역 밖은 거의 그대로다."""
+    nozzle = load_nozzles()
+    x, n = _mannequin_probe(PoseParams(torso_yaw=30.0), scenario, load_physics())
+    mags = []
+    for m in (1.0, 3.0, 6.0):
+        cfg = _with_stagnation(m)
+        ev = ParticleEvaluator(cfg, max_candidates=1, particles_per_candidate=1, duration_s=0.0)
+        try:
+            u = ev.probe_surface_velocity(x, n, nozzle).astype(np.float64)
+        finally:
+            ev.destroy()
+        mags.append(np.linalg.norm(u - _jet_velocity_numpy(x, nozzle, cfg), axis=1).mean())
+    assert mags[0] < mags[1] < mags[2], mags
+
+
 @pytest.mark.parametrize("kind", ["round", "slot", "mixed"])
 @pytest.mark.parametrize("pulse_t", [None, 0.37], ids=["steady", "pulse"])
 def test_impingement_matches_references(kind, pulse_t, scenario):
@@ -1352,7 +1368,10 @@ def test_stagnation_factor_one_changes_nothing_and_validates(scenario):
         ev_one.destroy()
 
     for bad, match in ((_with_stagnation(-0.5), "stagnation_shear_factor"),
-                       (_with_stagnation(3.0, xi_z=0.0), "stagnation_zone_xi")):
+                       (_with_stagnation(float("inf")), "stagnation_shear_factor"),
+                       (_with_stagnation(float("nan")), "stagnation_shear_factor"),
+                       (_with_stagnation(3.0, xi_z=0.0), "stagnation_zone_xi"),
+                       (_with_stagnation(3.0, xi_z=float("inf")), "stagnation_zone_xi")):
         with pytest.raises(ValueError, match=match):
             ParticleEvaluator(bad, max_candidates=1, particles_per_candidate=1, duration_s=0.0)
 
@@ -1392,6 +1411,14 @@ def test_stagnation_factor_matches_patch_evaluator(m, scenario):
             / np.linalg.norm(u_one.astype(np.float64) - free, axis=1).mean())
     assert grew > 1.1, (m, grew)
     assert grew < np.sqrt(m), (m, grew)                 # 상한은 sqrt(m) (충돌점 둘레 최대 배율)
+
+    # 영역에서 멀면(xi >> xi_z) g -> 1이라 m = 1과 사실상 같아야 한다. 충돌점에서 아주 멀리
+    # 떨어진 점만 골라 본다 (보정 크기가 m = 1 대비 0.1% 안).
+    far = np.linalg.norm(u_one.astype(np.float64) - free, axis=1) > 0.0
+    corr_m = np.linalg.norm(u_ti - free, axis=1)[far]
+    corr_1 = np.linalg.norm(u_one.astype(np.float64) - free, axis=1)[far]
+    ratio = corr_m / corr_1
+    assert ratio.min() < 1.001, (m, float(ratio.min()))
 
 
 # ------------------------------------------ 계획 평가 (plan_extension.md, 4단계)

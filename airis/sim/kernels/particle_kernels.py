@@ -320,14 +320,16 @@ class ParticleFields:
                 f_shape = core / xi
                 if is_slot:
                     f_shape = core / ti.sqrt(xi)
+                w = self.cst[C_IMP_K] * cos_t * u_h * f_shape * end * gate
                 # 4.2b 충돌 영역 전단 배율 g(xi) = 1 + (sqrt(m) - 1)·T(xi),
-                # T = 1 (xi <= xi_z), exp(-(xi - xi_z)²/2) (xi > xi_z). m = 1이면 g = 1이다
-                # (B의 `jet.stagnation_weight`와 같은 식).
-                g_stag = 1.0
+                # T = 1 (xi <= xi_z), exp(-(xi - xi_z)²/2) (xi > xi_z). B의
+                # `jet.stagnation_weight`와 같은 식이다. m = 1이면 g = 1이라 **곱셈 자체를
+                # 건너뛴다** — `w * g_stag`를 늘 실행하면 코드 생성이 달라져 m = 1에서도
+                # ulp 수준(최대 상대 2.2e-6)으로 값이 흔들렸다 (통합 검토 실측).
                 if self.cst[C_IMP_M] != 1.0:
                     over = ti.max(xi - self.cst[C_IMP_XI_Z], 0.0)
-                    g_stag = 1.0 + (ti.sqrt(self.cst[C_IMP_M]) - 1.0) * ti.exp(-0.5 * over * over)
-                w = self.cst[C_IMP_K] * cos_t * u_h * f_shape * end * gate * g_stag
+                    w = w * (1.0 + (ti.sqrt(self.cst[C_IMP_M]) - 1.0)
+                             * ti.exp(-0.5 * over * over))
                 corr = (w / rho) * r                                 # w · e_r
         return corr
 
@@ -598,12 +600,12 @@ def pack_constants(cfg: dict, booth: dict) -> np.ndarray:
     # 4.2b 충돌 영역 전단 배율. 패치판 `jet.jet_params`와 같은 범위 검사를 한다.
     c[C_IMP_M] = float(imp.get("stagnation_shear_factor", 1.0))
     c[C_IMP_XI_Z] = float(imp.get("stagnation_zone_xi", 3.0))
-    if c[C_IMP_M] < 0.0:
+    if not (np.isfinite(c[C_IMP_M]) and c[C_IMP_M] >= 0.0):
         raise ValueError(
-            f"jet.impingement.stagnation_shear_factor 는 0 이상이어야 한다: {c[C_IMP_M]}")
-    if not c[C_IMP_XI_Z] > 0.0:
+            f"jet.impingement.stagnation_shear_factor 는 0 이상의 유한값이어야 한다: {c[C_IMP_M]}")
+    if not (np.isfinite(c[C_IMP_XI_Z]) and c[C_IMP_XI_Z] > 0.0):
         raise ValueError(
-            f"jet.impingement.stagnation_zone_xi 는 양수여야 한다: {c[C_IMP_XI_Z]}")
+            f"jet.impingement.stagnation_zone_xi 는 양수인 유한값이어야 한다: {c[C_IMP_XI_Z]}")
     kinetics = (cfg["adhesion"].get("kinetics") or {})
     c[C_KIN_ON] = 1.0 if kinetics.get("enabled", False) else 0.0
     c[C_KIN_TR] = 1.0
