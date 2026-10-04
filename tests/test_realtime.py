@@ -605,6 +605,10 @@ def test_recommend_passes_stub_candidates_to_model(monkeypatch):
     monkeypatch.setattr(P, "predict", fake_predict)
     rec = recommend(CAPSULE_BODY, sc, model="capsule")
     assert [p for p in seen["extra_candidates"]] == [e.pose for e in STUB_TABLE["default"]]
+    # 재채점 구성 D (F 측정 뒤 총괄 확정): 거의 같은 후보를 묶고 채점을 스레드로 나눈다
+    from airis.realtime.recommend import RESCORE_DEDUP_DEG, RESCORE_THREADS
+    assert seen["dedup_deg"] == RESCORE_DEDUP_DEG == 3.0
+    assert seen["n_threads"] == RESCORE_THREADS == 3
     assert seen["evaluator"] is rmod.patch_evaluator("capsule") and seen["nozzle"] is rmod._nozzles()
     # 표 후보가 이겼으면 표의 이름을 쓰되 출처는 모델이다 (풀 전체에서 고른 것이라)
     assert rec.source == "model: hybrid (extra)"
@@ -726,16 +730,21 @@ def test_recommend_with_artifact_keeps_table_candidate_when_it_wins(monkeypatch,
 
 
 @pytest.mark.parametrize("scenario", ["default", "pregnant", "wheelchair"])
-def test_recommend_with_artifact_uses_model_candidate_on_tie(monkeypatch, tmp_path, scenario):
-    """모델 후보가 표와 동점이면 앞선 후보(kNN)를 쓴다 — 표만 보는 게 아니라 풀에서 고른다는 뜻."""
+def test_recommend_merges_model_candidate_that_duplicates_the_table(monkeypatch, tmp_path, scenario):
+    """모델 후보가 표 후보와 사실상 같으면 하나로 묶고, **표 후보 쪽**을 남긴다.
+
+    재채점 구성 D(`RESCORE_DEDUP_DEG` 3°)가 관절 각도 차 3° 안의 후보를 묶는다. 고정 후보(표)는
+    남기는 쪽이라, 모델이 표와 같은 자세를 내면 화면에는 표 후보로 보인다 — 같은 자세를 두 번 채점하지
+    않으면서, 사용자에게는 이름이 붙은 쪽(표의 '만세 + 옆으로 회전')을 보여 주는 것이다.
+    """
     _install_knn(monkeypatch, tmp_path, lambda name: STUB_TABLE[name][0].pose)   # 표와 같은 자세
     sc = SCENARIOS[scenario]
     rec = recommend(MESH_DEFAULT_BODY, sc, model="mesh")
-    assert rec.source == "model: hybrid (knn)"
-    assert rec.label == "모델 추천"
-    stats = {s.source: s for s in rec.stats}
-    assert stats["knn"].best == pytest.approx(stats["extra"].best)
+    assert rec.source == "model: hybrid (extra)"
     assert rec.pose == PoseEncoder(sc).clip_pose(STUB_TABLE[scenario][0].pose)
+    assert STUB_TABLE[scenario][0].label in rec.label
+    stats = {s.source: s for s in rec.stats}
+    assert "extra" in stats, "표 후보는 묶인 뒤에도 남아야 한다"
 
 
 def test_recommend_prefers_model_candidate_that_beats_the_table(monkeypatch, tmp_path):

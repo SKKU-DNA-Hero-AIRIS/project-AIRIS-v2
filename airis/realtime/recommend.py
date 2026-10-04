@@ -11,6 +11,9 @@
    키가 커서 만세가 천장에 닿는 체형이면 D의 `outside_booth`로 거르고, 남은 후보는 이 체형으로 패치판
    점수를 재서 고른다 (표는 기본 체형 결과라 체형이 다르면 순위가 바뀔 수 있다).
 
+재채점은 구성 D(중복 제거 `RESCORE_DEDUP_DEG`, 스레드 `RESCORE_THREADS`)로 부른다. 후보 수가 같아도
+거의 같은 자세를 묶고 채점을 나눠 응답 시간을 줄인다 (F 측정 평균 1.04 s → 0.55 s).
+
 `Recommendation.source` 는 `"model: hybrid (flow|knn|extra)"`(고른 후보의 출처) 또는 `"stub: …"`,
 `"fallback: B0"` 이다. `stats` 에 출처별 후보 수·가능 수·최고 점수, `elapsed_s` 에 응답 시간(목표 1.5 s)이
 들어간다. 산출물 경로·학습 커밋·설정 해시 일치는 `model_artifacts()`(= C의 `predict.artifact_status()`)로 읽기만 한다.
@@ -117,6 +120,11 @@ MESH_E4_BASELINES: dict[str, tuple[float, float, float]] = {
 
 #: 응답 시간 목표 (총괄 확정. 넘으면 대시보드가 알린다)
 RESPONSE_BUDGET_S = 1.5
+#: 재채점 구성 (F 측정 뒤 총괄 확정 2026-10-04, "구성 D"). 후보를 관절 각도 차 3° 안에서 묶고
+#: 채점을 스레드 3개로 나눈다. F 측정: 평균 0.55 s · 95% 0.78 s (안 쓰면 1.04 / 1.45 s).
+#: 점수·출처별 통계는 그대로다 (선별 평가기는 쓰지 않는다).
+RESCORE_DEDUP_DEG = 3.0
+RESCORE_THREADS = 3
 #: 후보 출처 표시 이름
 SOURCE_LABELS = {"flow": "flow 샘플", "knn": "가까운 학습 체형", "extra": "고정 후보표(E4)"}
 
@@ -190,7 +198,8 @@ def _model_predict(body: BodyParams, scenario: Scenario, model: str,
         return None
     try:
         return predict(body, scenario, evaluator=patch_evaluator(model), nozzle=_nozzles(),
-                       extra_candidates=extra_candidates)
+                       extra_candidates=extra_candidates,
+                       dedup_deg=RESCORE_DEDUP_DEG, n_threads=RESCORE_THREADS)
     except FileNotFoundError:
         note("학습 산출물(data/models/pose_flow.pt · pose_knn.parquet)이 없어 표(E4)로 안내합니다")
     except ImportError as exc:
