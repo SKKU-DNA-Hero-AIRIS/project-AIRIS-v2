@@ -475,3 +475,56 @@ def test_knn_table_accepts_mixed_commit(tmp_path, capsys):
     df.assign(physics_hash=["p0"] * 5 + ["p1"]).to_parquet(ds)
     assert build_pose_knn.main(["--dataset", str(ds), "--out", str(tmp_path / "bad.parquet")]) == 2
     assert not (tmp_path / "bad.parquet").exists(), "설정 해시가 섞이면 여전히 거부한다"
+
+
+def _finished_run(tmp_path, passed=True):
+    """--no-install 로 끝난 실행의 결과 폴더."""
+    run = tmp_path / "run"
+    run.mkdir(parents=True)
+    for name in (tpm.FLOW_FILE, tpm.KNN_FILE):
+        (run / name).write_text("new")
+    (run / "gate.json").write_text(json.dumps({"verdict": {"method": "hybrid", "passed": passed, "checks": {}},
+                                               "installed": [], "device": "cpu"}), encoding="utf-8")
+    return run
+
+
+def test_install_from_installs_finished_run_only_when_gate_passed(tmp_path, capsys):
+    """5-fold 뒤 따로 설치: 합격한 실행만 설치하고 결과를 gate.json 에 덧붙인다. 데이터셋·학습은 필요 없다."""
+    run, models = _finished_run(tmp_path), tmp_path / "models"
+    models.mkdir()
+    (models / tpm.FLOW_FILE).write_text("old")
+    assert tpm.main(["--install-from", str(run), "--model-dir", str(models)]) == 0
+    assert _state(models) == {tpm.FLOW_FILE: "new", tpm.FLOW_FILE + ".prev": "old", tpm.KNN_FILE: "new"}
+    report = json.loads((run / "gate.json").read_text(encoding="utf-8"))
+    assert len(report["installed"]) == 2 and report["install_error"] is None and report["installed_at"]
+    assert report["install_forced"] is False and report["verdict"]["passed"] and report["device"] == "cpu"
+
+    failed = _finished_run(tmp_path / "f", passed=False)
+    before = _state(models)
+    assert tpm.main(["--install-from", str(failed), "--model-dir", str(models)]) == 1
+    assert _state(models) == before and "합격이 아니라" in capsys.readouterr().err
+    assert tpm.main(["--install-from", str(failed), "--model-dir", str(models), "--install"]) == 0
+    assert json.loads((failed / "gate.json").read_text(encoding="utf-8"))["install_forced"] is True
+
+
+def test_install_from_rejects_bad_inputs(tmp_path, capsys):
+    run, models = _finished_run(tmp_path), tmp_path / "models"
+    models.mkdir()
+    (models / (tpm.KNN_FILE + ".prev.new")).write_text("old")          # 앞선 설치의 남은 백업
+    assert tpm.main(["--install-from", str(run), "--model-dir", str(models)]) == 2
+    assert "prev.new" in capsys.readouterr().err and not (models / tpm.FLOW_FILE).exists()
+    (run / tpm.KNN_FILE).unlink()
+    assert tpm.main(["--install-from", str(run), "--model-dir", str(tmp_path / "m2")]) == 2
+    assert tpm.KNN_FILE in capsys.readouterr().err
+    assert tpm.main(["--model-dir", str(tmp_path / "m3")]) == 2, "--dataset 도 --install-from 도 없으면 거부"
+
+
+def test_refresh_records_commit_taken_at_start(fake_steps, tmp_path, monkeypatch):
+    """실행 중에 HEAD 가 바뀌어도(같은 작업 폴더에서 커밋·병합) 시작할 때의 커밋을 기록한다."""
+    _, _, ds = fake_steps
+    heads = iter(["start111", "later222", "later333"])
+    monkeypatch.setattr(tpm.explog, "git_commit", lambda: next(heads))
+    out = tmp_path / "o"
+    assert tpm.main(["--dataset", str(ds), "--out-dir", str(out), "--no-install"]) == 0
+    assert json.loads((out / "gate.json").read_text(encoding="utf-8"))["commit"] == "start111"
+    assert "커밋 `start111`" in (out / "gate.md").read_text(encoding="utf-8")

@@ -183,6 +183,7 @@ def summarize(rows, run: dict, design: str, extra: dict) -> "object":
 def main(argv: list[str] | None = None) -> int:
     cli.enable_utf8_stdout()
     args = build_parser().parse_args(argv)
+    start_commit = explog.git_commit()      # 실행 코드의 커밋은 시작할 때 잡는다 (도중에 HEAD 가 바뀔 수 있다)
 
     import pandas as pd
 
@@ -250,7 +251,7 @@ def main(argv: list[str] | None = None) -> int:
     summary = pd.concat(summaries, ignore_index=True)
     test_ids = runs[0]["test_ids"]
     manifest = {
-        "source": SOURCE, "commit": explog.git_commit(), "dataset": str(dataset), "dataset_rows": int(len(df)),
+        "source": SOURCE, "commit": start_commit, "dataset": str(dataset), "dataset_rows": int(len(df)),
         "dataset_bodies": int(df["body_idx"].nunique()), "dataset_stamp": stamp,
         "current_stamp": pred.current_stamp(), "warnings": warns,
         "design": args.design, "fold_rule": "modulo" if args.design == "cv" else None,

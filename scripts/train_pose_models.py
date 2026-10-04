@@ -58,7 +58,10 @@ class Gate:
 
 def build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(description="자세 추천 산출물 갱신 (flow + kNN + 5-fold 판정)")
-    ap.add_argument("--dataset", required=True)
+    ap.add_argument("--dataset", default=None, help="학습 데이터셋 (--install-from 이 아니면 필요)")
+    ap.add_argument("--install-from", default=None,
+                    help="이미 끝난 실행의 결과 폴더(out-dir). 학습·5-fold 없이 그 산출물을 설치만 한다. "
+                         "그 폴더 gate.json 의 판정이 합격이어야 한다 (--install 이면 판정과 무관)")
     ap.add_argument("--model-dir", default=None, help="설치 폴더. 기본값: AIRIS_MODEL_DIR 또는 data/models")
     ap.add_argument("--out-dir", default=None, help="기본값: outputs/<refresh_시각[_tag]>")
     ap.add_argument("--tag", default="")
@@ -164,7 +167,8 @@ NAMES = {"hybrid": "혼합 (flow 8 + kNN 8 + 고정 2)", "knn+stub": "kNN + 고�
          "hybrid-c": "혼합 C (중복 제거 + 선별 c)", "hybrid-d": "혼합 D (중복 제거 + 스레드)",
          "hybrid-e": "혼합 B + D (선별 b + 스레드)",
          "hybrid-a1": "혼합 A (중복 제거 1°)", "hybrid-a2": "혼합 A (중복 제거 2°)",
-         "hybrid-bx": "혼합 B + 표 유지 (선별 b, 고정 후보는 항상 최종 채점)"}
+         "hybrid-bx": "혼합 B + 표 유지 (선별 b, 고정 후보는 항상 최종 채점)",
+         "hybrid-f": "혼합 B + 표 유지 + 스레드"}
 
 
 def markdown_table(stats, verdict: dict, info: dict) -> str:
@@ -316,12 +320,61 @@ def default_model_dir() -> Path:
     return predict.MODEL_DIR
 
 
+def install_only(run_dir: Path, model_dir: Path, *, force: bool = False) -> int:
+    """이미 끝난 실행(--no-install 로 돌린 결과 폴더)의 산출물을 설치만 한다.
+
+    5-fold 가 끝난 뒤 대시보드를 내리고 설치하는 절차를 위한 것이다 (docs/experiments_model.md 3절).
+    그 폴더 gate.json 의 판정이 합격일 때만 설치한다 (force 면 판정과 무관). 설치 결과는 gate.json 에 덧붙인다.
+    종료 코드: 0 설치함, 1 불합격이거나 설치 실패, 2 입력이 잘못됨(폴더·파일 없음, 남은 백업).
+    """
+    gate_path = run_dir / "gate.json"
+    missing = [n for n in (FLOW_FILE, KNN_FILE) if not (run_dir / n).is_file()]
+    if missing or not gate_path.is_file():
+        what = missing + ([] if gate_path.is_file() else ["gate.json"])
+        print(f"{run_dir} 에 설치할 것이 없다 (없는 파일: {', '.join(what)})", file=sys.stderr)
+        return 2
+    report = json.loads(gate_path.read_text(encoding="utf-8"))
+    verdict = report.get("verdict") or {}
+    if not verdict.get("passed") and not force:
+        print(f"판정이 합격이 아니라 설치하지 않는다 ({verdict.get('reason') or verdict.get('checks')}). "
+              "그래도 설치하려면 --install.", file=sys.stderr)
+        return 1
+    left = leftover_backups(model_dir)
+    if left:
+        print(f"설치 폴더에 앞선 설치가 남긴 옛 산출물 백업이 있다: {', '.join(p.name for p in left)}. "
+              "각 <이름>.prev.new 를 <이름> 으로 되돌려(또는 지금 파일이 맞으면 지워) 쌍을 맞춘 뒤 다시 돌린다.",
+              file=sys.stderr)
+        return 2
+    try:
+        installed, error = [str(p) for p in install(run_dir, model_dir)], None
+    except Exception as exc:
+        installed, error = [], f"{type(exc).__name__}: {exc}"
+    report.update(installed=installed, install_error=error, model_dir=str(model_dir),
+                  installed_at=time.strftime("%Y-%m-%d %H:%M:%S"), install_forced=bool(force and not
+                                                                                     verdict.get("passed")))
+    gate_path.write_text(json.dumps(report, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
+    if error:
+        print(f"설치 실패 {error}", file=sys.stderr)
+        return 1
+    print(f"설치: {', '.join(installed)}  (판정 {'합격' if verdict.get('passed') else '불합격, 강제 설치'})")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     cli.enable_utf8_stdout()
     args = build_parser().parse_args(argv)
+    if args.install_from:
+        return install_only(Path(args.install_from),
+                            Path(args.model_dir) if args.model_dir else default_model_dir(), force=args.install)
+    if not args.dataset:
+        print("--dataset 이 필요하다 (설치만 하려면 --install-from <결과 폴더>)", file=sys.stderr)
+        return 2
     if args.skip_cv and not (args.install or args.no_install):
         print("--skip-cv 는 판정이 없으므로 --install 또는 --no-install 을 함께 준다", file=sys.stderr)
         return 2
+    # 실행 코드의 커밋은 시작할 때 잡는다. 실행 중에 같은 작업 폴더에서 커밋·병합을 하면 HEAD 가 바뀌는데,
+    # 돌고 있는 코드는 시작할 때 읽은 것이다 (k 1.4 실행에서 종료 시점 HEAD 가 잘못 기록됐다).
+    start_commit = explog.git_commit()
 
     import pandas as pd
 
@@ -386,7 +439,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.limit:
             verdict = {**verdict, "passed": False, "reason": f"--limit {args.limit} 빠른 점검 (판정 무효)"}
         stats.to_csv(out_dir / "e5cv_overall.csv", index=False, encoding="utf-8")
-        info = {"dataset": dataset.name, "rows": len(df), "commit": explog.git_commit(), "folds": args.folds,
+        info = {"dataset": dataset.name, "rows": len(df), "commit": start_commit, "folds": args.folds,
                 "out_dir": out_dir.relative_to(ROOT).as_posix() if out_dir.is_relative_to(ROOT) else str(out_dir),
                 "stamp_text": ", ".join(f"{k}={v}" for k, v in stamp.items() if k != "commit"),
                 "device": device}
@@ -412,7 +465,8 @@ def main(argv: list[str] | None = None) -> int:
                      if install_error else None)
 
     timings["total_s"] = time.perf_counter() - t_all
-    report = {"dataset": str(dataset), "dataset_stamp": stamp, "current_stamp": current_stamp(),
+    report = {"commit": start_commit, "dataset": str(dataset), "dataset_stamp": stamp,
+              "current_stamp": current_stamp(),
               "warnings": warns, "gate": asdict(Gate()), "verdict": verdict,
               "installed": installed, "install_error": install_error, "install_state": install_state,
               "model_dir": str(model_dir), "timings": {k: round(v, 1) for k, v in timings.items()},

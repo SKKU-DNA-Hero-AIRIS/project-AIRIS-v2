@@ -90,8 +90,11 @@ def test_run_e5_variant_kwargs():
     assert run_e5_flow.variant_kwargs("hybrid-a2", args) == {"dedup_deg": 2.0}
     assert run_e5_flow.variant_kwargs("hybrid-bx", args) == {"dedup_deg": 2.0, "screen_density": 500.0,
                                                              "screen_top": 5, "screen_keep_extra": True}
+    assert run_e5_flow.variant_kwargs("hybrid-f", args) == {"dedup_deg": 2.0, "screen_density": 500.0,
+                                                            "screen_top": 5, "screen_keep_extra": True,
+                                                            "n_threads": 2}
     assert {"hybrid-a", "hybrid-a1", "hybrid-a2", "hybrid-b", "hybrid-bx", "hybrid-c", "hybrid-d",
-            "hybrid-e"} <= set(run_e5_flow.METHODS)
+            "hybrid-e", "hybrid-f"} <= set(run_e5_flow.METHODS)
 
 
 def test_threads_fall_back_to_sequential_for_batch_evaluators():
