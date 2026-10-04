@@ -50,9 +50,10 @@ def build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(description="E3: 설정 스윕에 대한 최적 자세 민감도")
     which = ap.add_mutually_exclusive_group(required=True)
     which.add_argument("--preset", choices=["core"], help="기본 스윕 묶음")
-    which.add_argument("--param", help="바꿀 설정 키 (physics 점 경로 또는 scenario.<필드>.<키>)")
+    which.add_argument("--param", help="바꿀 설정 키 (physics 점 경로 또는 scenario.<필드>.<키>). "
+                                       "'a+b' 로 여러 키를 한 점으로 묶는다 (값은 '1/0.45')")
     how = ap.add_mutually_exclusive_group()
-    how.add_argument("--factors", nargs="+", type=float, help="기준값에 곱할 배율")
+    how.add_argument("--factors", nargs="+", help="기준값에 곱할 배율 (여러 키면 '2/0.5')")
     how.add_argument("--values", nargs="+", help="그대로 넣을 값 (true/false 는 bool, 숫자는 float)")
     ap.add_argument("--evaluator", choices=cli.EVALUATOR_CHOICES, default="patch")
     ap.add_argument("--scenarios", nargs="*", default=None)
@@ -80,12 +81,23 @@ def _parse_value(raw: str):
 
 
 def _settings(args) -> list[tuple[str, str, list]]:
+    """스윕 축 목록. --param 에 "a+b" 를 주면 값도 "1/0.45" 처럼 "/" 로 나눠 한 점으로 묶는다."""
     if args.preset == "core":
         return list(sensitivity.CORE_PRESET)
+    n_keys = len(sensitivity.axis_keys(args.param)) if args.param else 1
+
+    def parse_point(raw: str):
+        parts = raw.split("/")
+        if len(parts) != n_keys:
+            raise SystemExit(f"--param 키 {n_keys}개인데 값은 {len(parts)}개다: {raw!r} "
+                             f"(여러 키는 '1/0.45' 처럼 / 로 나눈다)")
+        point = tuple(_parse_value(p) for p in parts)
+        return point[0] if n_keys == 1 else point
+
     if args.factors:
-        return [(args.param, "factor", list(args.factors))]
+        return [(args.param, "factor", [parse_point(str(f)) for f in args.factors])]
     if args.values:
-        return [(args.param, "value", [_parse_value(v) for v in args.values])]
+        return [(args.param, "value", [parse_point(v) for v in args.values])]
     raise SystemExit("--param 에는 --factors 나 --values 가 필요하다")
 
 
@@ -114,7 +126,8 @@ def main(argv: list[str] | None = None) -> int:
     for key, _, _ in settings:                         # 오타는 돌리기 전에 잡는다
         try:
             for n in names:
-                sensitivity.get_setting(base_cfg, all_scenarios[n], key)
+                for one in sensitivity.axis_keys(key):
+                    sensitivity.get_setting(base_cfg, all_scenarios[n], one)
         except KeyError as exc:
             print(str(exc), file=sys.stderr)
             return 2
@@ -181,12 +194,13 @@ def main(argv: list[str] | None = None) -> int:
 
         combos = [(REF, "", base_cfg, scen0, ev0, ref_runs)]
         for key, mode, vals in settings:
+            name_ = sensitivity.axis_name(key)          # 키가 여럿이면 "a+b"
             for v in vals:
-                value = sensitivity.resolve_value(base_cfg, scen0, key, mode, v)
-                cfg1, scen1 = sensitivity.apply_setting(base_cfg, scen0, key, value)
-                label = f"x{v:g}" if mode == "factor" else str(value)
-                ev1, runs1 = run_setting(scen1, cfg1, key, value, False)
-                combos.append((key, label, cfg1, scen1, ev1, runs1))
+                values = sensitivity.resolve_point(base_cfg, scen0, key, mode, v)
+                cfg1, scen1 = sensitivity.apply_point(base_cfg, scen0, key, values)
+                label = sensitivity.point_label(key, mode, v, values)
+                ev1, runs1 = run_setting(scen1, cfg1, name_, label, False)
+                combos.append((name_, label, cfg1, scen1, ev1, runs1))
 
         for key, label, _cfg, scen, ev, runs in combos:
             results = [r for _, _, r in runs]
