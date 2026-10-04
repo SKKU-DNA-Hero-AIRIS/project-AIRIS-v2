@@ -406,14 +406,104 @@ def test_mesh_baselines_match_mesh_e4_rescoring(scenario):
     assert got == pytest.approx(MESH_E4_BASELINES[scenario], abs=5e-5)
 
 
-def test_mesh_e4_baselines_match_reported_four_digits():
-    """C의 k14 E4 보고값(소수 4자리)과 교차 검증. 상수를 슬쩍 고치면 여기서 걸린다."""
-    from airis.realtime.recommend import MESH_E4_BASELINES
-    reported = {"default": (0.2340, 0.3807, 0.2489), "pregnant": (0.2454, 0.3794, 0.2325),
-                "wheelchair": (0.1591, 0.2344, 0.2938)}
-    assert MESH_E4_BASELINES.keys() == reported.keys()
-    for name, want in reported.items():
-        assert tuple(round(v, 4) for v in MESH_E4_BASELINES[name]) == want
+# ---------------------------------------------------------------------------
+# docs/e4_reference.json 교차 검증
+#
+# E의 상수(MESH_E4_BASELINES·STUB_TABLE)는 C의 E4 결과를 손으로 옮겨 적은 값이었다. 그 전달 경로에서
+# 실수가 세 번 났다(자세·점수 짝이 어긋남, 밀도 라벨 오기). 이제 C가 결과를 저장소 파일로 커밋하므로
+# **파일과 상수가 같은지 테스트가 확인한다**. 어긋나면 어느 쪽이 틀렸는지 사람이 보고 고친다.
+# ---------------------------------------------------------------------------
+E4_REFERENCE = "docs/e4_reference.json"
+
+
+def _e4_reference() -> dict:
+    import json
+    from pathlib import Path as P
+    path = P(__file__).resolve().parents[1] / E4_REFERENCE
+    if not path.exists():
+        pytest.skip(f"{E4_REFERENCE} 가 없다 (C 산출물)")
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _bundle_of(source: str, ref: dict) -> str:
+    """스텁 출처 문자열에 적힌 묶음 ID (파일에 그 묶음이 있어야 한다)."""
+    ids = [b["group_id"] for b in ref["bundles"]]
+    found = [g for g in ids if g in source]
+    assert len(found) == 1, f"출처 '{source}' 에서 파일의 묶음 ID 를 찾지 못했다 (파일: {ids})"
+    return found[0]
+
+
+def _best_peak(ref: dict, scenario: str, arm_class: str) -> dict:
+    peaks = [q for q in ref["scenarios"][scenario]["peaks"] if q["arm_class"] == arm_class]
+    assert peaks, f"{scenario} 에 {arm_class} 봉우리가 없다"
+    return max(peaks, key=lambda q: q["score"])
+
+
+def _folded(peak: dict, ref: dict) -> PoseParams:
+    """봉우리의 접은 자세를 스텁 표와 같은 0.1° 단위로 반올림."""
+    return PoseParams(*(round(peak["pose_folded"][k], 1) for k in ref["pose_keys"]))
+
+
+@pytest.mark.parametrize("scenario", ["default", "pregnant", "wheelchair"])
+def test_mesh_e4_baselines_match_reference_file(scenario):
+    """기준선 상수가 docs/e4_reference.json 의 재채점(2,000/m²) 값과 같다."""
+    from airis.realtime.recommend import MESH_E4_BASELINES, MESH_PATCHES_PER_M2
+    ref = _e4_reference()
+    group = _bundle_of(f"{STUB_TABLE[scenario][0].source}", ref)
+    entry = ref["scenarios"][scenario]["baselines"][group]["rescored"]
+    assert entry["patches_per_m2"] == MESH_PATCHES_PER_M2
+    want = tuple(entry["scores"][b] for b in ("B0", "B1", "B2"))
+    assert MESH_E4_BASELINES[scenario] == pytest.approx(want, abs=5e-6)
+
+
+@pytest.mark.parametrize("scenario", ["default", "pregnant", "wheelchair"])
+def test_stub_hands_up_matches_reference_peak(scenario):
+    """스텁 첫 후보(만세)가 파일의 hands_up 최고 봉우리와 같다 (0.1° 단위)."""
+    ref = _e4_reference()
+    entry = STUB_TABLE[scenario][0]
+    peak = _best_peak(ref, scenario, "hands_up")
+    assert peak["bundle"] == _bundle_of(entry.source, ref)
+    assert entry.pose == _folded(peak, ref)
+
+
+@pytest.mark.parametrize("scenario", ["pregnant", "wheelchair"])
+def test_stub_arms_down_matches_reference_peak(scenario):
+    """둘째 후보(팔 내림)가 파일의 arms_down 최고와 같다. default 는 일부러 다르다(아래 테스트)."""
+    ref = _e4_reference()
+    entry = STUB_TABLE[scenario][1]
+    peak = _best_peak(ref, scenario, "arms_down")
+    assert peak["bundle"] == _bundle_of(entry.source, ref)
+    assert entry.pose == _folded(peak, ref)
+
+
+def test_default_arms_down_is_deliberately_not_the_search_optimum():
+    """default 둘째 후보만 탐색 최적과 **일부러** 다르다 — 같다고 단언하면 안 된다.
+
+    탐색 최적은 어깨 굽힘을 −20° 쯤 뒤로 보낸 자세다. 그런데 `pose_instructions` 는 그 구간을
+    "팔은 자연스럽게 내리세요"로 읽어 준다. 그 자세를 표에 넣으면 화면이 약속하는 점수와 안내대로 선
+    사람이 얻는 점수가 달라지므로, 굽힘 0 자세를 쓰고 점수도 그 자세를 직접 잰 값을 적는다.
+    대신 **너무 낮지는 않은지**(≤ 1%) 와 안내 문장이 실제로 그렇게 읽히는지를 확인한다.
+    """
+    from airis.realtime.recommend import _nozzles, patch_evaluator, pose_instructions
+    ref = _e4_reference()
+    sc = SCENARIOS["default"]
+    entry = STUB_TABLE["default"][1]
+    peak = _best_peak(ref, "default", "arms_down")
+
+    assert entry.pose != _folded(peak, ref), "같아지면 이 테스트의 전제가 깨진다 (주석도 고칠 것)"
+    assert abs(peak["pose_folded"]["shoulder_flexion"]) > 10.0, "탐색 최적은 팔을 뒤로 보낸 자세다"
+    assert abs(entry.pose.shoulder_flexion) < 5.0, "표의 자세는 굽힘 0 근처여야 한다"
+
+    ev, nz = patch_evaluator("mesh"), _nozzles()
+    enc = PoseEncoder(sc)
+    ours = ev.evaluate(enc.clip_pose(entry.pose), nz, MESH_DEFAULT_BODY, sc).score
+    assert ours < peak["score"], "표가 탐색 최적보다 높을 수는 없다"
+    assert (peak["score"] - ours) / peak["score"] <= 0.01, "탐색 최적과 1% 넘게 벌어지면 다시 고른다"
+
+    # 두 자세가 같은 문장으로 읽히는지 — 이것이 굽힘 0 을 쓰는 이유다
+    lines = pose_instructions(_folded(peak, ref), sc)
+    assert any("자연스럽게 내리세요" in t for t in lines)
+    assert pose_instructions(entry.pose, sc)[-1] == lines[-1]
 
 
 def test_tall_body_falls_back_to_arms_down_peak():
