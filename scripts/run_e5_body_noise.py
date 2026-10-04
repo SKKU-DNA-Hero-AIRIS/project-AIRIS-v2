@@ -57,6 +57,8 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--margins", default="0",
                     help="부스 안 판정 여유 (0.05 = 체형을 5%% 키운 몸에서도 부스 안인 후보만). 쉼표로 여러 개. "
                          "혼합 계열에만 적용된다 (docs/experiments_model.md 7.2절)")
+    ap.add_argument("--margin-mode", choices=("all", "reach"), default="all",
+                    help="여유로 키울 체형 값: all 전부, reach 키·팔 길이·다리 길이만 (천장에만 보수적)")
     ap.add_argument("--methods", default=METHODS)
     ap.add_argument("--folds", type=int, default=5)
     ap.add_argument("--fold-seed", type=int, default=e5.get_default("fold_seed"))
@@ -193,7 +195,7 @@ def main(argv: list[str] | None = None) -> int:
                 e5_args = run_e5_flow.build_parser().parse_args(
                     ["--model", str(model_path), "--n-flow", str(args.n_flow), "--n-knn", str(args.n_knn),
                      "--seed", str(args.seed), "--body-noise", str(level), "--body-noise-seed", str(args.noise_seed),
-                     "--feasibility-margin", str(margin)])
+                     "--feasibility-margin", str(margin), "--feasibility-margin-mode", args.margin_mode])
                 print(f"[body-noise] fold {f} 판정 여유 {100 * margin:g}% 체형 오차 ±{100 * level:g}%")
                 rows += run_e5_flow.run_split(test, train, fold_model, methods, e5_args, evaluator, nozzle,
                                               scenarios, fold=f, knn_path=knn_path, model_path=model_path)
@@ -207,7 +209,9 @@ def main(argv: list[str] | None = None) -> int:
     (out_dir / "summary.md").write_text(markdown_table(summary, info), encoding="utf-8")
     manifest = {"commit": info["commit"], "dataset": str(dataset), "dataset_stamp": stamp,
                 "current_stamp": pred.current_stamp(), "warnings": warns, "levels": levels, "margins": margins,
-                "margin": "체형 값 전부 × (1 + 여유) 인 몸에서도 부스 안인 후보만 고른다 (혼합 계열)",
+                "margin_mode": args.margin_mode,
+                "margin": "키운 몸(여유 방식 all = 체형 값 전부, reach = 키·팔 길이·다리 길이만 × (1 + 여유))에서도 "
+                          "부스 안인 후보만 고른다 (혼합 계열)",
                 "noise": "체형 값마다 독립, (1 + U(−p, +p)) 를 곱한다", "noise_seed": args.noise_seed,
                 "methods": methods, "folds": args.folds, "fold_rule": "permutation", "devices": sorted(devices),
                 "limit": args.limit, "total_s": round(time.perf_counter() - t_all, 1), "args": vars(args)}

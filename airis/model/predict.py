@@ -390,14 +390,27 @@ def _pick(scores: np.ndarray, infeasible: np.ndarray) -> int:
     return int(np.argmax(pick))
 
 
-def enlarged_body(body: BodyParams, margin: float) -> BodyParams:
-    """체형 값 전부에 (1 + margin) 을 곱한 체형. 부스 안 판정에 여유를 둘 때 쓴다."""
-    return type(body)(**{f.name: float(getattr(body, f.name)) * (1.0 + float(margin)) for f in fields(body)})
+#: 부스 안 판정 여유로 키울 체형 값. "all" 은 전부(천장과 벽 모두에 보수적), "reach" 는 세로 방향 값만
+#: (키·팔 길이·다리 길이: 손이 천장에 닿는지를 정하는 값. 어깨 너비·몸통 두께는 그대로 둔다).
+MARGIN_MODES: dict[str, tuple[str, ...] | None] = {
+    "all": None,
+    "reach": ("height_m", "arm_length_m", "leg_length_m"),
+}
+
+
+def enlarged_body(body: BodyParams, margin: float, mode: str = "all") -> BodyParams:
+    """체형 값에 (1 + margin) 을 곱한 체형. 부스 안 판정에 여유를 둘 때 쓴다. mode 는 MARGIN_MODES."""
+    if mode not in MARGIN_MODES:
+        raise ValueError(f"여유 방식은 {tuple(MARGIN_MODES)} 중 하나: {mode!r}")
+    keys = MARGIN_MODES[mode]
+    return type(body)(**{f.name: float(getattr(body, f.name)) * ((1.0 + float(margin))
+                                                                   if keys is None or f.name in keys else 1.0)
+                         for f in fields(body)})
 
 
 def margin_pick(evaluator: Evaluator, candidates: Sequence[PoseParams], scores: np.ndarray, infeasible: np.ndarray,
                 considered: Sequence[int], nozzle: NozzleConfig, body: BodyParams, scenario: Scenario,
-                margin: float) -> tuple[int, int, int, bool]:
+                margin: float, mode: str = "all") -> tuple[int, int, int, bool]:
     """부스 안 판정에 여유를 둔 선택. (고른 자리, 다시 채점한 횟수, 넘긴 후보 수, 폴백 여부).
 
     체형 입력에 오차가 있으면(키를 작게 추정) 추정 체형에서는 부스 안이던 자세가 실제 몸에서는 천장·벽을
@@ -411,7 +424,7 @@ def margin_pick(evaluator: Evaluator, candidates: Sequence[PoseParams], scores: 
     considered = list(considered)
     base = considered[_pick(scores[considered], infeasible[considered])]
     order = sorted((j for j in considered if not infeasible[j]), key=lambda j: (-float(scores[j]), j))
-    big = enlarged_body(body, margin)
+    big = enlarged_body(body, margin, mode)
     checks = 0
     for rejected, j in enumerate(order):
         _, bad = score_batch(evaluator, [candidates[j]], nozzle, big, scenario)
@@ -429,7 +442,8 @@ def predict(body: BodyParams, scenario: Scenario, *, backend: str = "hybrid",
             extra_candidates: Sequence[PoseParams] = (),
             dedup_deg: float = 0.0, screen_density: float | None = None, screen_top: int = 3,
             screen_evaluator: Evaluator | None = None, screen_keep_extra: bool = False,
-            n_threads: int = 1, feasibility_margin: float = 0.0) -> Prediction:
+            n_threads: int = 1, feasibility_margin: float = 0.0,
+            feasibility_margin_mode: str = "all") -> Prediction:
     """후보까지 돌려주는 예측. evaluator·nozzle 을 주지 않으면 default_rescorer.
 
     backend "hybrid"(기본) = flow n_flow 개 + kNN n_knn 개 + extra_candidates, "flow"·"knn" 은 한 쪽만 쓴다.
@@ -454,6 +468,8 @@ def predict(body: BodyParams, scenario: Scenario, *, backend: str = "hybrid",
     - feasibility_margin > 0: 점수 순으로 후보를 보며, 체형 값을 (1 + 여유) 배로 키운 몸에서도 부스 안인 첫 후보를
       고른다 (margin_pick). 체형 입력 오차로 실제 몸이 더 클 때 천장·벽을 넘는 추천을 막는다. 추가 비용은 보통
       채점 1회다. 전부 걸리면 여유 없이 고른 후보를 돌려주고 margin_fallback 을 켠다.
+      feasibility_margin_mode: "all"(기본, 체형 값 전부를 키운다) | "reach"(키·팔 길이·다리 길이만 키운다.
+      천장에만 보수적이고 벽 쪽은 그대로다).
     """
 
     if backend not in BACKENDS:
@@ -483,7 +499,8 @@ def predict(body: BodyParams, scenario: Scenario, *, backend: str = "hybrid",
         i = _pick(scores, infeasible)
         out = Prediction(candidates[i], candidates, scores, infeasible, sources, sources[i],
                          n_dropped=n_dropped, n_rescored=len(candidates))
-        return _with_margin(out, range(len(candidates)), evaluator, nozzle, body, scenario, feasibility_margin)
+        return _with_margin(out, range(len(candidates)), evaluator, nozzle, body, scenario, feasibility_margin,
+                            feasibility_margin_mode)
 
     if screen_evaluator is None:
         from airis.optimize.dataset import configured_body_model
@@ -517,16 +534,19 @@ def predict(body: BodyParams, scenario: Scenario, *, backend: str = "hybrid",
     i = rescored[_pick(scores[rescored], infeasible[rescored])]
     out = Prediction(candidates[i], candidates, scores, infeasible, sources, sources[i],
                      n_dropped=n_dropped, screen_scores=screen, n_rescored=len(rescored))
-    return _with_margin(out, rescored, evaluator, nozzle, body, scenario, feasibility_margin)
+    return _with_margin(out, rescored, evaluator, nozzle, body, scenario, feasibility_margin,
+                        feasibility_margin_mode)
 
 
 def _with_margin(p: Prediction, considered: Sequence[int], evaluator: Evaluator, nozzle: NozzleConfig,
-                 body: BodyParams, scenario: Scenario, margin: float) -> Prediction:
+                 body: BodyParams, scenario: Scenario, margin: float, mode: str = "all") -> Prediction:
     """feasibility_margin > 0 이면 margin_pick 으로 선택을 바꾼다. 0 이면 그대로 (추가 채점 없음)."""
+    if mode not in MARGIN_MODES:
+        raise ValueError(f"여유 방식은 {tuple(MARGIN_MODES)} 중 하나: {mode!r}")
     if not margin or margin <= 0:
         return p
     i, checks, rejected, fallback = margin_pick(evaluator, p.candidates, p.scores, p.infeasible, considered,
-                                                nozzle, body, scenario, margin)
+                                                nozzle, body, scenario, margin, mode)
     p.pose, p.source = p.candidates[i], p.sources[i]
     p.n_margin_checks, p.n_margin_rejected, p.margin_fallback = checks, rejected, fallback
     return p

@@ -224,7 +224,7 @@ def test_margin_reaches_run_split_and_predict(monkeypatch):
     from airis.model import predict as pred
     from airis.sim import PoseParams
 
-    seen = []
+    seen, modes = [], []
 
     class _P:
         pose = PoseParams()
@@ -234,6 +234,7 @@ def test_margin_reaches_run_split_and_predict(monkeypatch):
 
     def fake_predict(body, scenario, **kw):
         seen.append(kw["feasibility_margin"])
+        modes.append(kw["feasibility_margin_mode"])
         return _P()
 
     monkeypatch.setattr(pred, "predict", fake_predict)
@@ -249,6 +250,12 @@ def test_margin_reaches_run_split_and_predict(monkeypatch):
         assert all(r["margin_rejected"] is None for r in stub), "고정 후보표 방법에는 적용하지 않는다"
     assert seen == [0.0, 0.0, 0.05, 0.05]
     assert run_e5_flow.build_parser().parse_args([]).feasibility_margin == 0.0
+    assert set(modes) == {"all"} and run_e5_flow.build_parser().parse_args([]).feasibility_margin_mode == "all"
+    args = run_e5_flow.build_parser().parse_args(["--feasibility-margin", "0.05", "--feasibility-margin-mode",
+                                                  "reach"])
+    rows = run_e5_flow.run_split(_test_rows(1), _test_rows(1), None, ["hybrid"], args, _HeightEvaluator(), object(),
+                                 scenarios)
+    assert modes[-1] == "reach" and rows[0]["margin_mode"] == "reach"
 
 
 def test_main_loops_margins_within_each_fold(tmp_path, monkeypatch):
@@ -273,6 +280,7 @@ def test_main_loops_margins_within_each_fold(tmp_path, monkeypatch):
     def fake_split(test, train, model, methods, args, evaluator, nozzle, scenarios, *, fold=None,
                    knn_path=None, model_path=None):
         calls["combos"].append((fold, args.feasibility_margin, args.body_noise))
+        calls.setdefault("modes", set()).add(args.feasibility_margin_mode)
         return [{"body_idx": int(r["body_idx"]), "scenario": r["scenario"], "method": m, "body_noise": args.body_noise,
                  "feasibility_margin": args.feasibility_margin, "margin_rejected": 0, "margin_fallback": False,
                  "ratio": 1.0, "infeasible": False, "n_evals": 18, "ms": 500.0, "boundary": False, "fold": fold}
@@ -295,10 +303,11 @@ def test_main_loops_margins_within_each_fold(tmp_path, monkeypatch):
                    "nozzle_layout_hash": "n0"} for b in range(10)]).to_parquet(ds)
     out = tmp_path / "out"
     assert bn.main(["--dataset", str(ds), "--model", "m.pt", "--levels", "0.05", "--margins", "0.02,0.05",
-                    "--methods", "hybrid", "--out-dir", str(out)]) == 0
+                    "--margin-mode", "reach", "--methods", "hybrid", "--out-dir", str(out)]) == 0
     assert calls["train"] == 5
     assert calls["combos"] == [(f, m, lv) for f in range(5) for m in (0.0, 0.02, 0.05) for lv in (0.0, 0.05)]
     assert len(pd.read_csv(out / "summary.csv")) == 6
     manifest = json.loads((out / "manifest.json").read_text(encoding="utf-8"))
     assert manifest["margins"] == [0.0, 0.02, 0.05] and manifest["levels"] == [0.0, 0.05]
+    assert calls["modes"] == {"reach"} and manifest["margin_mode"] == "reach"
     assert bn.build_parser().parse_args(["--dataset", "d", "--model", "m"]).margins == "0"
