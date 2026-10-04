@@ -61,8 +61,12 @@ def test_core_preset_keys_exist(scenarios):
     cfg = load_physics()
     for key, mode, vals in sensitivity.CORE_PRESET:
         assert mode in ("factor", "value") and vals
+        keys = sensitivity.axis_keys(key)               # 쌍 축이면 키가 둘이다
         for scen in scenarios.values():
-            sensitivity.get_setting(cfg, scen, key)
+            for one in keys:
+                sensitivity.get_setting(cfg, scen, one)
+        for v in vals:                                  # 점마다 값 수가 키 수와 맞아야 한다
+            assert len(sensitivity.axis_values(v)) == len(keys), (key, v)
 
 
 def test_patch_shear_equivalences(scenarios):
@@ -165,3 +169,64 @@ def test_run_e3_rejects_unknown_key(tmp_path):
 
     assert main(["--evaluator", "dummy", "--param", "jet.nope", "--factors", "2",
                  "--log-dir", str(tmp_path)]) == 2
+
+
+# ---------- 여러 키를 한 점으로 (충돌 배율 m 과 거칠기 f 쌍, 총괄 2026-10-03) ----------
+
+def test_axis_keys_and_point_label(scenarios):
+    """축 키는 문자열 하나·"a+b"·튜플을 모두 받고, 라벨은 사람이 읽는 형태다."""
+    from airis.optimize import sensitivity
+
+    single = "jet.impingement.wall_jet_gain"
+    pair = ("jet.impingement.stagnation_shear_factor", "adhesion.fabric_roughness_factor")
+    assert sensitivity.axis_keys(single) == (single,)
+    assert sensitivity.axis_keys("a.b+c.d") == ("a.b", "c.d")
+    assert sensitivity.axis_keys(pair) == pair
+    assert sensitivity.axis_name(pair) == "+".join(pair)
+    assert sensitivity.axis_values(3.0) == (3.0,) and sensitivity.axis_values((3.0, 0.57)) == (3.0, 0.57)
+    assert sensitivity.point_label(single, "value", 1.4, (1.4,)) == "1.4"
+    assert sensitivity.point_label(single, "factor", 0.5, (0.225,)) == "x0.5"
+    assert sensitivity.point_label(pair, "value", (3.0, 0.57), (3.0, 0.57)) == "3,0.57"
+    assert sensitivity.point_label(pair, "factor", (2.0, 0.5), (2.0, 0.225)) == "x2,x0.5"
+
+
+def test_apply_point_sets_all_keys(scenarios):
+    """쌍 축은 두 설정을 함께 바꾸고 원본은 건드리지 않는다."""
+    from airis.optimize import sensitivity
+    from airis.sim.scenario import load_physics
+
+    cfg = load_physics()
+    scen = scenarios["default"]
+    before_m = cfg["jet"]["impingement"]["stagnation_shear_factor"]
+    before_f = cfg["adhesion"]["fabric_roughness_factor"]
+    pair = ("jet.impingement.stagnation_shear_factor", "adhesion.fabric_roughness_factor")
+
+    values = sensitivity.resolve_point(cfg, scen, pair, "value", (3.0, 0.57))
+    new_cfg, new_scen = sensitivity.apply_point(cfg, scen, pair, values)
+    assert new_cfg["jet"]["impingement"]["stagnation_shear_factor"] == 3.0
+    assert new_cfg["adhesion"]["fabric_roughness_factor"] == 0.57
+    assert cfg["jet"]["impingement"]["stagnation_shear_factor"] == before_m, "원본 불변"
+    assert cfg["adhesion"]["fabric_roughness_factor"] == before_f
+    assert new_scen is scen                                  # 시나리오 키가 아니면 그대로
+
+    # 배율 방식도 키마다 따로 곱한다.
+    factored = sensitivity.resolve_point(cfg, scen, pair, "factor", (2.0, 0.5))
+    assert factored == (before_m * 2.0, before_f * 0.5)
+
+    # 키 수와 값 수가 다르면 거부한다 (조용히 한쪽만 바꾸지 않는다).
+    with pytest.raises(ValueError, match="키 2개에 값 1개"):
+        sensitivity.resolve_point(cfg, scen, pair, "value", 3.0)
+
+
+def test_core_preset_has_recalibrated_pair_axis():
+    """CORE_PRESET 의 (m, f) 쌍은 B 가 계산한 재보정 값이다 (기준 자세 R ≈ 8.0%)."""
+    from airis.optimize import sensitivity
+
+    pairs = [(sensitivity.axis_keys(k), mode, vals) for k, mode, vals in sensitivity.CORE_PRESET
+             if len(sensitivity.axis_keys(k)) > 1]
+    assert len(pairs) == 1, "쌍 축은 하나뿐이다"
+    keys, mode, vals = pairs[0]
+    assert keys == ("jet.impingement.stagnation_shear_factor", "adhesion.fabric_roughness_factor")
+    assert mode == "value" and vals == [(3.0, 0.57), (6.0, 0.72)]
+    # 보조 대조점: f 를 0.45 로 둔 채 m 만 6 배.
+    assert ("jet.impingement.stagnation_shear_factor", "value", [6.0]) in sensitivity.CORE_PRESET
