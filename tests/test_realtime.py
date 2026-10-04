@@ -324,6 +324,40 @@ def test_dashboard_warms_up_model_before_first_user():
         "예열은 추천을 그리기 전에 끝나야 한다"
 
 
+def test_display_wording_is_plain_but_identifiers_are_not():
+    """화면 문구만 쉬운 말로 바꾼다. 내부 식별자(source 값·ScoreRow.name)는 그대로 둔다.
+
+    식별자를 함께 바꾸면 C·F 와 주고받는 값이 깨지고, 문구만 바꾸면 발표에서 그대로 읽을 수 있다.
+    """
+    from airis.realtime.recommend import BASELINE_LABELS, SOURCE_LABELS, baseline_poses, source_text
+
+    # 내부 식별자는 그대로
+    assert set(baseline_poses()) == {"B0 기본", "B1 몸 회전", "B2 만세"}
+    assert set(BASELINE_LABELS) >= set(baseline_poses()) | {"추천"}
+    for name, shown in BASELINE_LABELS.items():
+        assert not shown.startswith(("B0", "B1", "B2")), f"{name} 표시 문구에 약어가 남았다: {shown}"
+
+    # 출처 문구: 사람이 읽을 수 있고, 원문 식별자는 들어가지 않는다
+    assert source_text("model: hybrid (flow)") == "AI 추천 후보 중에서 시뮬레이션으로 확인한 자세"
+    assert source_text("model: hybrid (knn)").startswith("비슷한 체형 참조")
+    assert source_text("model: hybrid (extra)").startswith("기본 후보표")
+    assert "stub" not in source_text("stub: 메시판 k14 E4 …")
+    for shown in SOURCE_LABELS.values():
+        assert "flow" not in shown and "kNN" not in shown and "E4" not in shown
+
+    # 모르는 값은 그대로 돌려준다 (새 출처가 생겨도 화면이 비지 않는다)
+    assert source_text("model: 새 방식") == "model: 새 방식"
+
+
+def test_pose_label_uses_plain_joint_names():
+    from airis.viz.pose_view import pose_label
+    text = pose_label(PoseParams(177.4, -4.6, 0.7, 0.4, 70.5, 0.6, 10.3))
+    for plain in ("팔 벌림(옆으로) 177°", "팔 올림(앞으로) -5°", "팔꿈치 굽힘 1°",
+                  "상체 숙임 0°", "몸 방향 70°", "고관절 굽힘 1°", "무릎 굽힘 10°"):
+        assert plain in text, f"없다: {plain}"
+    assert not text.startswith("벌림"), "옛 표기(벌림 … · 굽힘 … · 회전 …)가 남았다"
+
+
 def test_skeleton_only_has_no_input_pixels():
     """뼈대 그림에는 입력 프레임의 픽셀이 섞일 수 없다 (프레임을 인자로 받지 않는다)."""
     import inspect
@@ -884,8 +918,11 @@ def test_dashboard_runs_to_recommendation(mode, scenario):
     assert not at.exception, [e.value for e in at.exception]
     scen_radio = next(r for r in at.radio if r.key == "scenario")
     assert scen_radio.value == scenario
+    # 화면에는 일반인 표현을 쓴다 (내부 식별자는 ScoreRow.name 으로 따로 둔다)
+    from airis.realtime.recommend import BASELINE_LABELS
     labels = [m.label for m in at.metric]
-    assert labels == ["B0 기본 대비", "B1 몸 회전 대비", "B2 만세 대비"]
+    assert labels == [f"{BASELINE_LABELS[n]} 대비" for n in ("B0 기본", "B1 몸 회전", "B2 만세")]
+    assert not any("B0" in t or "hybrid" in t for t in labels)
     at.selectbox[0].set_value("합성 프레임 미리보기 (가짜 궤적)").run()
     assert not at.exception, [e.value for e in at.exception]
 

@@ -189,7 +189,7 @@ def nozzle_traces(nozzle: NozzleConfig, jet_arrow_m: float = 0.15) -> list[go.Sc
 # ---------------------------------------------------------------------------
 def body_traces(state: BodyState, values: np.ndarray | None = None, *,
                 cmin: float | None = None, cmax: float | None = None,
-                colorbar_title: str = "제거율", showscale: bool = True,
+                colorbar_title: str = "먼지 제거 효과", showscale: bool = True,
                 opacity: float = 1.0, n_theta: int = 24, n_cap: int = 6) -> list[go.Mesh3d]:
     """몸을 그린다. `values (N,)`(패치 값, 예: 제거율)가 없으면 부위 색, 있으면 그 값의 색.
 
@@ -475,10 +475,12 @@ def figure_from_pose(body: BodyParams | None, pose: PoseParams, scenario: Scenar
 
 
 def pose_label(pose: PoseParams) -> str:
-    """자세 7개를 짧은 한 줄로 (도 단위, 반올림)."""
-    return (f"벌림 {pose.shoulder_abduction:.0f}° · 굽힘 {pose.shoulder_flexion:.0f}° · "
-            f"팔꿈치 {pose.elbow_flexion:.0f}° · 숙임 {pose.torso_pitch:.0f}° · "
-            f"회전 {pose.torso_yaw:.0f}° · 고관절 {pose.hip_flexion:.0f}° · 무릎 {pose.knee_flexion:.0f}°")
+    """자세 7개를 짧은 한 줄로 (도 단위, 반올림). 관절 이름은 처음 보는 사람이 읽을 수 있는 말로 쓴다."""
+    return (f"팔 벌림(옆으로) {pose.shoulder_abduction:.0f}° · "
+            f"팔 올림(앞으로) {pose.shoulder_flexion:.0f}° · "
+            f"팔꿈치 굽힘 {pose.elbow_flexion:.0f}° · 상체 숙임 {pose.torso_pitch:.0f}° · "
+            f"몸 방향 {pose.torso_yaw:.0f}° · 고관절 굽힘 {pose.hip_flexion:.0f}° · "
+            f"무릎 굽힘 {pose.knee_flexion:.0f}°")
 
 
 def figure_compare(body: BodyParams | None, poses: Mapping[str, PoseParams], scenario: Scenario, *,
