@@ -150,7 +150,10 @@ def collect_frames(mode: str) -> tuple[list[np.ndarray], str | None]:
         taken = bool(st.session_state.get("browser_shot_taken"))
         with st.expander("브라우저 카메라로 촬영", expanded=not taken):
             shot = st.camera_input("게이트 앞에서 전신이 보이게 정면으로 서서 촬영하세요")
-        st.session_state["browser_shot_taken"] = shot is not None
+        if (shot is not None) != taken:
+            # 상태만 바꾸면 이번 그리기에는 반영되지 않아 사진이 한 번 더 보인다. 바로 다시 그린다.
+            st.session_state["browser_shot_taken"] = shot is not None
+            st.rerun()
         return ([camera.read_image(shot.getvalue())], "브라우저 카메라") if shot else ([], None)
     if mode == "영상 파일":
         up = st.file_uploader("영상 파일", type=["mp4", "mov", "avi", "mkv"])
