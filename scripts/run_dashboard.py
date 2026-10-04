@@ -41,7 +41,8 @@ import numpy as np                                                    # noqa: E4
 import streamlit as st                                                # noqa: E402
 
 from airis.realtime import camera, pose_estimate as pe               # noqa: E402
-from airis.realtime.recommend import (BASELINE_LABELS, MESH_E4_BASELINES,  # noqa: E402
+from airis.realtime.recommend import (BASELINE_LABELS, BASELINE_LABELS_SHORT,  # noqa: E402
+                                      MESH_E4_BASELINES,
                                       MESH_E4_HANDS_UP_SEEDS, RESPONSE_BUDGET_S,
                                       compare_with_baselines, default_body, improvement,
                                       model_artifacts, pose_instructions, recommend,
@@ -431,10 +432,12 @@ def main() -> None:
         cols = st.columns(3)
         for col, name in zip(cols, ("B0 기본", "B1 몸 회전", "B2 만세")):
             imp = improvement(rec_row, by[name])
-            col.metric(f"{BASELINE_LABELS[name]} 대비", "불가" if imp is None else f"{imp:+.0%}",
+            # 지표 칸이 좁아 긴 이름은 잘린다. 짧은 이름을 쓰고 뜻은 아래 문장과 도움말이 받는다.
+            col.metric(f"{BASELINE_LABELS_SHORT[name]} 대비",
+                       "불가" if imp is None else f"{imp:+.0%}",
                        help=f"{BASELINE_LABELS[name]} {by[name].score:.2f} → "
                             f"제안 자세 {rec_row.score:.2f} (시뮬레이션 점수, 상대 비교값)")
-        st.caption("'안내 없이 서 있을 때' = 그냥 통과, '제조사 안내(몸 돌리기)' = 제자리에서 12방향으로 "
+        st.caption("'그냥 서 있기' = 안내 없이 통과, '몸 돌리기' = 제조사 안내대로 제자리에서 12방향 "
                    "돌기(평균), '만세 자세' = 두 팔 들기. 숫자는 제안 자세가 몇 % 더 나은지입니다.")
 
     booth = load_nozzle_layout()["booth"]
@@ -445,18 +448,18 @@ def main() -> None:
     with f1:
         b0 = by["B0 기본"]
         fig = figure_from_pose(body, PoseParams(), scenario, result=b0.result, booth=booth,
-                               title=f"안내 없이 서 있을 때 · 시뮬레이션 점수 {b0.score:.2f}"
-                                     f" (상대 비교값)", cmin=0.0, cmax=cmax,
+                               title=f"{BASELINE_LABELS_SHORT['B0 기본']} · 점수 {b0.score:.2f}",
+                               cmin=0.0, cmax=cmax,
                                height=560, model=body_model, patches_per_m2=density)
         st.plotly_chart(fig, **WIDE)
     with f2:
         fig = figure_from_pose(body, rec.pose, scenario, result=rec_row.result, booth=booth,
-                               title=f"제안 자세 · 시뮬레이션 점수 {rec_row.score:.2f}"
-                                     f" (상대 비교값)", cmin=0.0,
+                               title=f"제안 자세 · 점수 {rec_row.score:.2f}", cmin=0.0,
                                cmax=cmax, height=560, model=body_model, patches_per_m2=density)
         st.plotly_chart(fig, **WIDE)
     st.caption("색이 밝을수록 먼지가 많이 떨어지는 자리입니다 (두 그림 같은 색 범위). "
-               "파란 선 = 퓨리움 분사구 12개, 점선 = 바람 방향.")
+               "파란 선 = 퓨리움 분사구 12개, 점선 = 바람 방향. "
+               "점수는 시뮬레이션 값이라 다른 자세와 견준 **상대 비교값**입니다.")
 
     table = []
     for r in rows:
