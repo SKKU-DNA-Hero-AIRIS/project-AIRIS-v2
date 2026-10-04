@@ -34,6 +34,8 @@ def stamp_value(series) -> str:
     """도장 열 → 기록할 값. 한 값이면 그 값, 여러 값이면 많은 순으로 '+' 로 잇는다 (예: '55681cc+8af76a9')."""
     counts = series.astype(str).value_counts()
     return "+".join(counts.index.tolist())
+
+
 TABLE_COLS = (["body_idx", "scenario"] + [f"body_{k}" for k in BODY_KEYS]
               + [f"pose_{k}" for k in POSE_KEYS] + ["score", "arm_class"] + list(STAMP_COLS))
 

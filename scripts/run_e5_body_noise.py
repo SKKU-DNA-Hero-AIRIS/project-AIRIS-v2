@@ -121,6 +121,7 @@ def markdown_table(summary, info: dict) -> str:
 def main(argv: list[str] | None = None) -> int:
     cli.enable_utf8_stdout()
     args = build_parser().parse_args(argv)
+    start_commit = explog.git_commit()      # 실행 코드의 커밋은 시작할 때 잡는다 (도중에 HEAD 가 바뀔 수 있다)
 
     import pandas as pd
 
@@ -179,7 +180,7 @@ def main(argv: list[str] | None = None) -> int:
     res = pd.DataFrame(rows)
     summary = summarize(res)
     summary.to_csv(out_dir / "summary.csv", index=False, encoding="utf-8")
-    info = {"dataset": dataset.name, "rows": int(len(df)), "folds": args.folds, "commit": explog.git_commit(),
+    info = {"dataset": dataset.name, "rows": int(len(df)), "folds": args.folds, "commit": start_commit,
             "noise_seed": args.noise_seed, "device": "·".join(sorted(devices))}
     (out_dir / "summary.md").write_text(markdown_table(summary, info), encoding="utf-8")
     manifest = {"commit": info["commit"], "dataset": str(dataset), "dataset_stamp": stamp,

@@ -119,7 +119,7 @@ def test_save_load_reproducible(model, scenarios, tmp_path):
 
 def test_training_device_is_recorded(model, scenarios, tmp_path):
     """실제 학습 장치를 산출물에 남긴다 (auto 가 cpu·cuda 중 무엇으로 풀렸는지, 재현성 기록)."""
-    assert model.meta["device"] == "cpu"                       # SMALL_CFG 의 기본 장치
+    assert model.meta["device"] == "cpu"                       # FlowConfig 기본 장치는 cpu (CLI 기본은 auto)
     assert flow.PoseFlow.load(model.save(tmp_path / "m.pt")).meta["device"] == "cpu"
     assert flow._resolve_device("auto") == ("cuda" if torch.cuda.is_available() else "cpu")
     auto = flow.train_pose_flow(synthetic_df(n=6), scenarios,
