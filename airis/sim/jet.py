@@ -132,10 +132,12 @@ def jet_params(cfg: dict) -> JetParams:
         pulse_period_s=float(pulse["period_s"]),
         pulse_duty=float(pulse["duty"]),
     )
-    if not params.stagnation_shear_factor >= 0.0:
-        raise ValueError(f"jet.impingement.stagnation_shear_factor 는 0 이상이어야 한다: {params.stagnation_shear_factor}")
-    if not params.stagnation_zone_xi > 0.0:
-        raise ValueError(f"jet.impingement.stagnation_zone_xi 는 양수여야 한다: {params.stagnation_zone_xi}")
+    # m = 0 은 충돌 영역(ξ ≤ ξ_z) 안의 벽면 제트 항 w 를 0 으로 만든다 (전단은 자유 제트 접선 성분만 남는다).
+    if not (np.isfinite(params.stagnation_shear_factor) and params.stagnation_shear_factor >= 0.0):
+        raise ValueError("jet.impingement.stagnation_shear_factor 는 0 이상의 유한값이어야 한다: "
+                         f"{params.stagnation_shear_factor}")
+    if not (np.isfinite(params.stagnation_zone_xi) and params.stagnation_zone_xi > 0.0):
+        raise ValueError(f"jet.impingement.stagnation_zone_xi 는 유한한 양수여야 한다: {params.stagnation_zone_xi}")
     return params
 
 
