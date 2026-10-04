@@ -125,8 +125,26 @@ RESPONSE_BUDGET_S = 1.5
 #: 점수·출처별 통계는 그대로다 (선별 평가기는 쓰지 않는다).
 RESCORE_DEDUP_DEG = 3.0
 RESCORE_THREADS = 3
-#: 후보 출처 표시 이름
-SOURCE_LABELS = {"flow": "flow 샘플", "knn": "가까운 학습 체형", "extra": "고정 후보표(E4)"}
+#: 후보 출처 표시 이름 (화면용. 내부 식별자 "flow"·"knn"·"extra" 는 바꾸지 않는다)
+SOURCE_LABELS = {"flow": "AI 추천 후보", "knn": "비슷한 체형 참조",
+                 "extra": "기본 후보표"}
+#: 기준 자세 표시 이름 (화면용. `ScoreRow.name` 은 내부 식별자라 그대로 둔다)
+BASELINE_LABELS = {"B0 기본": "안내 없이 서 있을 때", "B1 몸 회전": "제조사 안내(몸 돌리기)",
+                   "B2 만세": "만세 자세", "추천": "제안 자세"}
+
+
+def source_text(source: str) -> str:
+    """`Recommendation.source` → 화면에 읽어 줄 한 줄. 세부 표기(원문)는 접힌 영역에 따로 보여 준다."""
+    if source.startswith("model: hybrid ("):
+        kind = source[len("model: hybrid ("):-1]
+        where = {"flow": "AI 추천 후보", "knn": "비슷한 체형 참조",
+                 "extra": "기본 후보표"}.get(kind, kind)
+        return f"{where} 중에서 시뮬레이션으로 확인한 자세"
+    if source.startswith("stub"):
+        return "기본 후보표의 자세 (추천 모델 산출물이 없을 때)"
+    if source.startswith("fallback"):
+        return "기본 자세 (다른 후보가 모두 부스 밖)"
+    return source
 
 
 @dataclass(frozen=True)

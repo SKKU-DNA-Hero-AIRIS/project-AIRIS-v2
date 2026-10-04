@@ -41,10 +41,11 @@ import numpy as np                                                    # noqa: E4
 import streamlit as st                                                # noqa: E402
 
 from airis.realtime import camera, pose_estimate as pe               # noqa: E402
-from airis.realtime.recommend import (MESH_E4_BASELINES, MESH_E4_HANDS_UP_SEEDS,  # noqa: E402
-                                      RESPONSE_BUDGET_S, compare_with_baselines, default_body,
-                                      improvement, model_artifacts, pose_instructions, recommend,
-                                      scoring_patches_per_m2)
+from airis.realtime.recommend import (BASELINE_LABELS, MESH_E4_BASELINES,  # noqa: E402
+                                      MESH_E4_HANDS_UP_SEEDS, RESPONSE_BUDGET_S,
+                                      compare_with_baselines, default_body, improvement,
+                                      model_artifacts, pose_instructions, recommend,
+                                      scoring_patches_per_m2, source_text)
 from airis.sim.body import build_body                                 # noqa: E402
 from airis.sim.scenario import load_nozzle_layout, load_scenarios     # noqa: E402
 from airis.sim.types import PART_NAMES, BodyParams, PoseParams       # noqa: E402
@@ -265,8 +266,8 @@ def main() -> None:
     scenarios = get_scenarios()
 
     st.title("AIRIS v2 · 에어샤워 자세 안내")
-    st.caption("퓨리움 PURIUM-10000-P 기준 부스(슬롯 바 12개). 점수는 미보정 패치판 시뮬레이터 값이라 "
-               "절대 제거율이 아니라 기준 자세 대비 **상대 개선율**로만 봅니다.")
+    st.caption("퓨리움 PURIUM-10000-P 기준 부스(분사구 12개). 점수는 보정 전 시뮬레이터 값이라 "
+               "'먼지가 몇 % 제거된다'가 아니라 **다른 자세와 견준 상대값**으로만 봅니다.")
 
     # ---------------- 사이드바 ----------------
     with st.sidebar:
@@ -404,14 +405,14 @@ def main() -> None:
         for line in pose_instructions(rec.pose, scenario):
             st.markdown(f"- {line}")
         st.caption(f"자세 값: {pose_label(rec.pose)}")
-        st.caption(f"출처: {rec.source}" + (" (추천 모델 산출물이 없을 때 쓰는 고정 후보표)"
-                                              if rec.source.startswith("stub") else ""))
+        st.caption(f"출처: {source_text(rec.source)}")
         # 수치는 recommend 의 상수에서 만든다 (물리가 바뀌어 기준선을 다시 재면 문구도 따라 바뀐다).
         b0_p, _, b2_p = MESH_E4_BASELINES["pregnant"]
-        st.caption(f"메시판에서는 세 시나리오 모두 **옆으로 돌아선 만세**가 최적입니다"
-                   f"(임산부 포함, {MESH_E4_HANDS_UP_SEEDS[0]}/{MESH_E4_HANDS_UP_SEEDS[1]} 시드). "
-                   f"휠체어는 약 36° 회전. 다만 임산부는 *정면* 만세라면 기본 자세보다 낮습니다"
-                   f"(기준선 {b2_p:.3f} < {b0_p:.3f}) — 이득은 만세 자체가 아니라 몸을 옆으로 돌리는 데서 옵니다.")
+        st.caption(f"세 유형 모두 **옆으로 돌아선 만세**가 가장 좋았습니다"
+                   f"(임산부 포함, 반복 {MESH_E4_HANDS_UP_SEEDS[1]}번 중 {MESH_E4_HANDS_UP_SEEDS[0]}번). "
+                   f"휠체어 사용자는 약 36° 돌아앉기. 다만 임산부가 *정면*으로 만세를 하면 그냥 서 있는 "
+                   f"것보다 낮습니다({b2_p:.2f} < {b0_p:.2f}) — 이득은 만세 자체가 아니라 "
+                   f"몸을 옆으로 돌리는 데서 옵니다.")
         for note in rec.notes:
             st.info(note)
         over = rec.elapsed_s > RESPONSE_BUDGET_S
@@ -423,16 +424,18 @@ def main() -> None:
                 st.dataframe([{"출처": s.label, "후보 수": s.n, "부스 안": s.n_feasible,
                                "최고 점수": None if s.best is None else round(s.best, 4)}
                               for s in rec.stats], **WIDE, hide_index=True)
-                st.caption("모든 후보를 이 체형·몸 모델의 패치판으로 다시 채점해 가장 높은 것을 고릅니다. "
-                           "고정 후보표(E4)도 같은 풀에 있어 추천이 표보다 나빠지지 않습니다.")
+                st.caption(f"후보를 모두 이 체형으로 다시 계산해 가장 높은 것을 고릅니다. "
+                           f"기본 후보표도 같은 후보군에 들어가므로 제안이 그보다 나빠지지 않습니다. "
+                           f"내부 표기: `{rec.source}`")
     with metrics:
         cols = st.columns(3)
         for col, name in zip(cols, ("B0 기본", "B1 몸 회전", "B2 만세")):
             imp = improvement(rec_row, by[name])
-            col.metric(f"{name} 대비", "불가" if imp is None else f"{imp:+.0%}",
-                       help=f"{name} 점수 {by[name].score:.3f} → 추천 {rec_row.score:.3f}")
-        st.caption("B0 = 안내 없이 통과, B1 = 제조사 안내 '몸 회전'(yaw 0~330° 평균), B2 = 만세. "
-                   "개선율 = 추천 점수 / 기준 점수 − 1.")
+            col.metric(f"{BASELINE_LABELS[name]} 대비", "불가" if imp is None else f"{imp:+.0%}",
+                       help=f"{BASELINE_LABELS[name]} {by[name].score:.2f} → "
+                            f"제안 자세 {rec_row.score:.2f} (시뮬레이션 점수, 상대 비교값)")
+        st.caption("'안내 없이 서 있을 때' = 그냥 통과, '제조사 안내(몸 돌리기)' = 제자리에서 12방향으로 "
+                   "돌기(평균), '만세 자세' = 두 팔 들기. 숫자는 제안 자세가 몇 % 더 나은지입니다.")
 
     booth = load_nozzle_layout()["booth"]
     density = scoring_patches_per_m2(body_model)            # 채점과 같은 밀도로 그려야 패치 색이 맞는다
@@ -442,28 +445,31 @@ def main() -> None:
     with f1:
         b0 = by["B0 기본"]
         fig = figure_from_pose(body, PoseParams(), scenario, result=b0.result, booth=booth,
-                               title=f"B0 기본 자세 · 점수 {b0.score:.3f}", cmin=0.0, cmax=cmax,
+                               title=f"안내 없이 서 있을 때 · 시뮬레이션 점수 {b0.score:.2f}"
+                                     f" (상대 비교값)", cmin=0.0, cmax=cmax,
                                height=560, model=body_model, patches_per_m2=density)
         st.plotly_chart(fig, **WIDE)
     with f2:
         fig = figure_from_pose(body, rec.pose, scenario, result=rec_row.result, booth=booth,
-                               title=f"추천: {rec.label} · 점수 {rec_row.score:.3f}", cmin=0.0,
+                               title=f"제안 자세 · 시뮬레이션 점수 {rec_row.score:.2f}"
+                                     f" (상대 비교값)", cmin=0.0,
                                cmax=cmax, height=560, model=body_model, patches_per_m2=density)
         st.plotly_chart(fig, **WIDE)
-    st.caption("색 = 패치별 제거율 (두 그림 같은 색 범위). 파란 선 = 퓨리움 슬롯 바 12개, 점선 = 분사 방향.")
+    st.caption("색이 밝을수록 먼지가 많이 떨어지는 자리입니다 (두 그림 같은 색 범위). "
+               "파란 선 = 퓨리움 분사구 12개, 점선 = 바람 방향.")
 
     table = []
     for r in rows:
         imp = improvement(rec_row, r) if r.name != "추천" else None
         table.append({
-            "조건": r.name,
-            "점수": None if r.infeasible else round(r.score, 4),
-            "추천의 개선율": "" if r.name == "추천" else ("불가" if imp is None else f"{imp:+.0%}"),
-            "불편도": round(r.discomfort, 3),
+            "자세": BASELINE_LABELS.get(r.name, r.name),
+            "시뮬레이션 점수": None if r.infeasible else round(r.score, 3),
+            "제안 자세가 나은 정도": "" if r.name == "추천" else ("불가" if imp is None else f"{imp:+.0%}"),
+            "자세 불편도": round(r.discomfort, 3),
             **{PART_LABELS[p]: round(float(v), 3) for p, v in zip(PART_NAMES, r.removal_by_part)},
-            "평가 자세 수": f"{r.n_feasible}/{r.n_poses}",
+            "계산한 자세 수": f"{r.n_feasible}/{r.n_poses}",
         })
-    with st.expander("점수 표 (부위별 값은 시뮬레이터 내부 값, 순위 비교용)"):
+    with st.expander("자세별 점수 표 (부위별 값은 시뮬레이터 내부 값, 순위 비교용)"):
         st.dataframe(table, **WIDE, hide_index=True)
 
     # ---------------- ⑤ 입자 애니메이션 ----------------
