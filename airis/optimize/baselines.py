@@ -17,6 +17,8 @@ scripts/run_baselines.py 와 scripts/run_e4.py 가 함께 쓴다.
 """
 from __future__ import annotations
 
+from dataclasses import replace
+
 import numpy as np
 
 from airis.sim import PART_NAMES, ZONE_NAMES, BodyParams, Evaluator, NozzleConfig, PoseParams, Scenario
@@ -102,14 +104,13 @@ def evaluate_all(
 P1_PHASES = 12
 
 
-def plan_baseline(name: str, scenario: Scenario, limits, best_pose: PoseParams | None = None) -> "Plan":
-    """계획 기준선.
+def rotation_plan(pose: PoseParams, scenario: Scenario, limits, n_steps: int = P1_PHASES) -> "Plan":
+    """`pose` 를 유지한 채 몸을 n_steps 방향으로 돌리는 계획 (세기·시간은 P0 과 같다).
 
-        P0  기본 자세 1단계, 전 구역 최대 세기, 총 시간 상한 (현행 운전)
-        P1  기본 자세로 몸을 12단계 회전 (제품 안내), 세기·시간은 P0 과 같다
-        P2  단일 자세 최적(best_pose)을 K 단계 모두에, 세기·시간은 P0 과 같다
-
-    시나리오 yaw 범위를 넘는 회전 단계는 범위 안으로 투영된다(휠체어 ±45°).
+    P1 계열 기준선의 공통 부분이다. 시나리오 yaw 범위를 넘는 단계는 범위 안으로 투영된다
+    (휠체어 ±45°). E7 에서 P1(기본 자세)이 단계 2개 최적해를 이긴 이유가 "12방향" 때문인지
+    "기본 자세라 불편도 0" 때문인지 가르려면 같은 회전을 다른 자세로도 재야 한다
+    (통합 2026-10-01 제안).
     """
     from airis.sim import Phase, Plan
 
@@ -118,18 +119,69 @@ def plan_baseline(name: str, scenario: Scenario, limits, best_pose: PoseParams |
     enc = PlanEncoder(scenario, limits)
     total = enc.limits.duration_bounds_s[1]
     zones = np.full(len(ZONE_NAMES), enc.limits.s_max, dtype=np.float64)
+    step = total / n_steps
+    phases = []
+    for i in range(n_steps):
+        yaw = 360 * i / n_steps
+        turned = replace(pose, torso_yaw=yaw if yaw <= 180 else yaw - 360)
+        phases.append(Phase(enc.pose_encoder.clip_pose(turned), step))
+    return Plan(phases, enc.clip_zone_strengths(zones))
+
+
+def parse_baseline_name(name: str) -> tuple[str, int | None]:
+    """'P1' → ('P1', None), 'P1_10' → ('P1', 10). 회전 단계 수를 이름에 붙여 쓴다.
+
+    P1 계열은 "천천히 연속 회전"의 이산 근사라 단계 수가 많을수록 연속에 가깝다. 단계 수에 따라
+    단계 시간이 20/N 초로 줄어 `plan.min_phase_s`(2 s)를 밑돌 수 있어 비교가 필요하다
+    (총괄 결정 2026-10-03: P1_12 · P1_10 · P1_8 을 모두 재서 본다).
+    """
+    base, _, suffix = name.partition("_")
+    if not suffix:
+        return name, None
+    if not suffix.isdigit() or int(suffix) < 1:
+        raise ValueError(f"회전 단계 수가 자연수가 아니다: {name!r}")
+    return base, int(suffix)
+
+
+def plan_baseline(name: str, scenario: Scenario, limits, best_pose: PoseParams | None = None,
+                  rotation_pose: PoseParams | None = None) -> "Plan":
+    """계획 기준선.
+
+        P0      기본 자세 1단계, 전 구역 최대 세기, 총 시간 상한 (현행 운전)
+        P1      기본 자세로 몸을 12단계 회전 (제품 안내), 세기·시간은 P0 과 같다
+        P2      단일 자세 최적(best_pose)을 K 단계 모두에, 세기·시간은 P0 과 같다
+        P1opt   12단계 회전을 **단일 자세 최적**으로 (best_pose)
+        P1down  12단계 회전을 **주어진 자세**로 (rotation_pose, 예: 팔 내림 봉우리)
+
+    시나리오 yaw 범위를 넘는 회전 단계는 범위 안으로 투영된다(휠체어 ±45°).
+    """
+    from airis.sim import Phase, Plan
+
+    from .plan_encoding import PlanEncoder
+
+    name, n_steps = parse_baseline_name(name)
+    steps = n_steps or P1_PHASES
+    enc = PlanEncoder(scenario, limits)
+    total = enc.limits.duration_bounds_s[1]
+    zones = np.full(len(ZONE_NAMES), enc.limits.s_max, dtype=np.float64)
     if name == "P0":
         plan = Plan([Phase(enc.pose_encoder.clip_pose(PoseParams()), total)], zones)
     elif name == "P1":
-        step = total / P1_PHASES
-        plan = Plan([Phase(enc.pose_encoder.clip_pose(PoseParams(torso_yaw=y if y <= 180 else y - 360)), step)
-                     for y in (360 * i / P1_PHASES for i in range(P1_PHASES))], zones)
+        return rotation_plan(PoseParams(), scenario, limits, steps)
+    elif name == "P1opt":
+        if best_pose is None:
+            raise ValueError("P1opt 는 단일 자세 최적(best_pose)이 필요하다")
+        return rotation_plan(best_pose, scenario, limits, steps)
+    elif name == "P1down":
+        if rotation_pose is None:
+            raise ValueError("P1down 은 회전시킬 자세(rotation_pose)가 필요하다")
+        return rotation_plan(rotation_pose, scenario, limits, steps)
     elif name == "P2":
         if best_pose is None:
             raise ValueError("P2 는 단일 자세 최적(best_pose)이 필요하다")
         plan = enc.plan_from_pose(best_pose, duration_s=total)
     else:
-        raise ValueError(f"계획 기준선 이름은 P0 | P1 | P2: {name!r}")
+        raise ValueError(f"계획 기준선 이름은 P0 | P1 | P2 | P1opt | P1down: {name!r}")
     return Plan(plan.phases, enc.clip_zone_strengths(plan.zone_strengths))
 
 

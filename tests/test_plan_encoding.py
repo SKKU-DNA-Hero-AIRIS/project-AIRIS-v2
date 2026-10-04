@@ -445,3 +445,124 @@ def test_export_e7_reference(tmp_path):
     assert row["plan"]["phases"][0]["torso_yaw_folded"] == pytest.approx(80.0)
     assert row["plan"]["zone_strengths"] == dict(zip(ZONE_NAMES, plan["zone_strengths"]))
     json.dumps(data, allow_nan=False)
+
+
+# ---------- E7 회전 기준선과 단계 수 덮어쓰기 (총괄 2026-10-03) ----------
+
+def test_parse_baseline_name():
+    """'P1_10' 처럼 회전 단계 수를 이름에 붙인다."""
+    from airis.optimize.baselines import parse_baseline_name
+
+    assert parse_baseline_name("P1") == ("P1", None)
+    assert parse_baseline_name("P1_10") == ("P1", 10)
+    assert parse_baseline_name("P1opt_8") == ("P1opt", 8)
+    assert parse_baseline_name("P1down") == ("P1down", None)
+    for bad in ("P1_0", "P1_x", "P1_-3"):
+        with pytest.raises(ValueError):
+            parse_baseline_name(bad)
+
+
+def test_rotation_baselines(scenarios):
+    """P1 계열은 자세를 유지한 채 n 방향으로 돌린다. 세기·시간은 P0 과 같다."""
+    from airis.optimize import baselines
+    from airis.optimize.plan_encoding import PlanEncoder, PlanLimits
+    from airis.sim import PoseParams
+
+    scen = scenarios["default"]
+    limits = PlanLimits()
+    enc = PlanEncoder(scen, limits)
+    total = limits.duration_bounds_s[1]
+    best = PoseParams(shoulder_abduction=177.0, torso_yaw=70.0)
+    down = PoseParams(shoulder_abduction=19.6, torso_yaw=-77.0)
+
+    p1 = baselines.plan_baseline("P1", scen, limits)
+    assert len(p1.phases) == baselines.P1_PHASES
+    assert sum(ph.duration_s for ph in p1.phases) == pytest.approx(total)
+    base_abd = PoseParams().shoulder_abduction          # 기본 자세(20°)를 그대로 유지한다
+    assert all(ph.pose.shoulder_abduction == pytest.approx(base_abd) for ph in p1.phases)
+
+    # 단계 수를 바꾸면 단계 시간이 그만큼 길어진다 (20/8 = 2.5 s).
+    p1_8 = baselines.plan_baseline("P1_8", scen, limits)
+    assert len(p1_8.phases) == 8
+    assert p1_8.phases[0].duration_s == pytest.approx(total / 8)
+
+    # 회전 자세만 다르고 나머지는 같다.
+    p1opt = baselines.plan_baseline("P1opt", scen, limits, best_pose=best)
+    assert [ph.pose.shoulder_abduction for ph in p1opt.phases] == [pytest.approx(177.0)] * 12
+    p1down = baselines.plan_baseline("P1down_10", scen, limits, rotation_pose=down)
+    assert len(p1down.phases) == 10
+    assert all(ph.pose.shoulder_abduction == pytest.approx(19.6) for ph in p1down.phases)
+
+    # yaw 는 0°부터 균등하게 돌고 시나리오 범위 안으로 투영된다 (휠체어 ±45°).
+    seated = baselines.plan_baseline("P1_12", scenarios["wheelchair"], limits)
+    lo, hi = scenarios["wheelchair"].pose_bounds["torso_yaw"]
+    assert all(lo - 1e-9 <= ph.pose.torso_yaw <= hi + 1e-9 for ph in seated.phases)
+
+    # 자세가 없으면 거부한다 (조용히 기본 자세로 돌리지 않는다).
+    with pytest.raises(ValueError, match="best_pose"):
+        baselines.plan_baseline("P1opt", scen, limits)
+    with pytest.raises(ValueError, match="rotation_pose"):
+        baselines.plan_baseline("P1down", scen, limits)
+    # 세기는 P0 과 같다 (쾌적 상한만 적용).
+    assert np.allclose(p1.zone_strengths, enc.clip_zone_strengths(
+        np.full(len(ZONE_NAMES), limits.s_max)))
+
+
+def test_plan_dim_grows_with_phases(scenarios):
+    """단계 수 N 의 계획 차원은 8N + 5 다 (자세 7 + 단계 시간 몫 1, 총 시간 1 + 구역 5)."""
+    import dataclasses
+
+    from airis.optimize.plan_encoding import PlanEncoder, PlanLimits
+
+    scen = scenarios["default"]
+    for n in (2, 3, 6):
+        limits = dataclasses.replace(PlanLimits(), n_phases=n,
+                                     duration_bounds_s=(max(5.0, n * 2.0), 20.0))
+        assert PlanEncoder(scen, limits).dim == 8 * n + 5
+
+    # 단계가 많아지면 총 시간 상한(20 s)에 막힌다: N × min_phase_s ≤ 20 → N ≤ 10.
+    too_many = dataclasses.replace(PlanLimits(), n_phases=12, duration_bounds_s=(24.0, 20.0))
+    with pytest.raises(ValueError):
+        PlanEncoder(scen, too_many)
+
+
+def test_run_e7_cli_phase_and_rotation_options(tmp_path):
+    """run_e7 의 --n-phases·--rotation-pose·P1_N 조건 처리 (통합 2026-10-04 요청).
+
+    상한을 넘는 단계 수를 조용히 넘기면 PlanEncoder 가 죽는다 — 실제로 N=10 실행이 그렇게 죽었다.
+    """
+    import json
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[1]
+
+    def run(args):
+        return subprocess.run([sys.executable, str(root / "scripts" / "run_e7.py"),
+                               "--evaluator", "dummy", "--scenarios", "default", "--seeds", "0",
+                               "--energy-weights", "0.1", "--max-evals", "60", "--pose-max-evals", "60",
+                               "--popsize", "10", "--log-dir", str(tmp_path), *args],
+                              cwd=root, capture_output=True, text=True, encoding="utf-8")
+
+    # N × min_phase_s 가 총 시간 상한 이상이면 돌기 전에 멈추고 길을 알려 준다.
+    out = run(["--conditions", "P5", "--n-phases", "10", "--tag", "cap"])
+    assert out.returncode == 2
+    assert "N × min_phase_s < 상한" in out.stderr and "9 이하" in out.stderr
+
+    # 단계 수를 덮어쓰면 그 단계 수로 돈다 (configs 는 그대로).
+    out = run(["--conditions", "P5", "--n-phases", "3", "--tag", "np3"])
+    assert out.returncode == 0, out.stderr
+    assert "n_phases=3" in out.stdout
+    plans = json.loads(next(tmp_path.glob("np3_*/e7_plans.json")).read_text(encoding="utf-8"))
+    assert plans["args"]["n_phases"] == 3
+    assert len(plans["scenarios"]["default"]["w0.1"]["P5_s0"]["phases"]) == 3
+
+    # P1_N 조건을 받고, P1down 은 자세가 없으면 돌기 전에 멈춘다.
+    out = run(["--conditions", "P1_8,P1opt_10", "--tag", "p1n"])
+    assert out.returncode == 0, out.stderr
+    assert "P1_8" in out.stdout and "P1opt_10" in out.stdout
+    out = run(["--conditions", "P1down", "--tag", "nopose"])
+    assert out.returncode == 2 and "--rotation-pose" in out.stderr
+    out = run(["--conditions", "P1_x", "--tag", "bad"])
+    assert out.returncode == 2 and "알 수 없는 조건" in out.stderr
