@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import dataclasses
 import json
 import sys
 from pathlib import Path
@@ -42,6 +43,8 @@ from airis.sim import PART_NAMES, BodyParams, PoseParams      # noqa: E402
 from airis.sim.scenario import load_physics, load_scenarios   # noqa: E402
 
 CONDITIONS = ("P0", "P1", "P2", "P3", "P4", "P5")
+#: 최적화 없이 한 번 평가하는 기준선. P1opt·P1down 은 기본 조건이 아니고 --conditions 로 켠다.
+BASELINE_CONDITIONS = {"P0", "P1", "P2", "P1opt", "P1down"}
 OPTIMIZED = {"P3", "P4", "P5"}
 
 
@@ -53,6 +56,11 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--seeds", nargs="*", type=int, default=[0])
     ap.add_argument("--energy-weights", nargs="*", type=float, default=[0.0, 0.01, 0.03, 0.1],
                     help="scoring.energy_weight 스윕 (통합·D 검토 2026-09-30). 0 이면 에너지 항 없음")
+    ap.add_argument("--n-phases", type=int, default=None,
+                    help="plan.n_phases 덮어쓰기 (configs 는 건드리지 않는다). E7 본 실행은 2 였고, "
+                         "단계 수가 병목인지 보는 스윕에 쓴다")
+    ap.add_argument("--rotation-pose", default=None,
+                    help="P1down 기준선이 돌릴 자세 JSON (예: 팔 내림 봉우리). 없으면 P1down 을 건너뛴다")
     ap.add_argument("--max-evals", type=int, default=6000, help="계획 최적화 예산 (21차원)")
     ap.add_argument("--pose-max-evals", type=int, default=3000, help="단일 자세 최적(P2·P4·시작점) 예산")
     ap.add_argument("--popsize", type=int, default=100)
@@ -104,9 +112,17 @@ def main(argv: list[str] | None = None) -> int:
     cli.enable_utf8_stdout()
     args = build_parser().parse_args(argv)
     conditions = [c.strip() for c in args.conditions.split(",") if c.strip()]
-    bad = [c for c in conditions if c not in CONDITIONS]
+    known = set(CONDITIONS) | BASELINE_CONDITIONS
+    bad = []
+    for c in conditions:                    # P1_10 처럼 회전 단계 수를 붙인 이름도 받는다
+        try:
+            if baselines.parse_baseline_name(c)[0] not in known:
+                bad.append(c)
+        except ValueError:
+            bad.append(c)
     if bad:
-        print(f"알 수 없는 조건 {bad} (가능: {', '.join(CONDITIONS)})", file=sys.stderr)
+        print(f"알 수 없는 조건 {bad} (가능: {', '.join(sorted(known))}, 회전 기준선은 P1_10 처럼 "
+              f"단계 수를 붙일 수 있다)", file=sys.stderr)
         return 2
 
     all_scenarios = load_scenarios()
@@ -123,12 +139,33 @@ def main(argv: list[str] | None = None) -> int:
     body = cli.dataclass_from_json(BodyParams, args.body)
     dummy_target = cli.dataclass_from_json(PoseParams, args.dummy_target) if args.dummy_target else None
     pose_starts = cli.parse_starts(args.starts)
+    rotation_pose = cli.dataclass_from_json(PoseParams, args.rotation_pose) if args.rotation_pose else None
+    if any(c.startswith("P1down") for c in conditions) and rotation_pose is None:
+        print("P1down 에는 --rotation-pose 가 필요하다", file=sys.stderr)
+        return 2
     nozzle, nozzle_source = cli.resolve_nozzles()
     nozzle_hash, commit = cli.nozzle_hash(nozzle), explog.git_commit()
     physics_hash = explog.file_hash(ROOT / "configs" / "physics.yaml")
     group_id = explog.new_exp_id(args.tag)
     group_dir = Path(args.log_dir) / group_id
     limits = PlanLimits.from_config(base_cfg)
+    if args.n_phases is not None:                    # configs 는 건드리지 않고 이번 실행만
+        if args.n_phases < 1:
+            print("--n-phases 는 1 이상이어야 한다", file=sys.stderr)
+            return 2
+        limits = dataclasses.replace(limits, n_phases=int(args.n_phases))
+        # 단계를 늘리면 총 시간 하한이 단계 수 × 최소 단계 시간보다 짧아질 수 있다.
+        # 설정을 건드리지 않고 이번 실행의 하한만 끌어올린다 (상한을 넘으면 멈춘다).
+        lo, hi = limits.duration_bounds_s
+        need = limits.n_phases * limits.min_phase_s
+        if need > lo:
+            if need > hi:
+                print(f"단계 {limits.n_phases}개 × 최소 {limits.min_phase_s:g} s = {need:g} s 가 "
+                      f"총 시간 상한 {hi:g} s 보다 길다", file=sys.stderr)
+                return 2
+            print(f"  총 시간 하한을 {lo:g} → {need:g} s 로 올린다 "
+                  f"(단계 {limits.n_phases}개 × 최소 {limits.min_phase_s:g} s)")
+            limits = dataclasses.replace(limits, duration_bounds_s=(need, hi))
     print(f"[{group_id}] evaluator={args.evaluator} scenarios={names} seeds={args.seeds} "
           f"conditions={conditions} energy_weights={weights} n_phases={limits.n_phases} "
           f"nozzles={nozzle.count}({nozzle_source}) "
@@ -144,7 +181,9 @@ def main(argv: list[str] | None = None) -> int:
         scenario = all_scenarios[name]
         plans_out["scenarios"][name] = {}
         best_pose = None
-        if {"P2", "P4", "P5"} & set(conditions):
+        # P1opt·P1opt_10 처럼 회전 기준선도 단일 자세 최적을 쓴다 (단계 수 접미사를 떼고 본다).
+        needs_pose = {"P2", "P4", "P5", "P1opt"}
+        if any(baselines.parse_baseline_name(c)[0] in needs_pose for c in conditions):
             try:
                 evaluator = cli.make_evaluator(args.evaluator, scenario, body=body, nozzle=nozzle,
                                                dummy_target=dummy_target,
@@ -173,8 +212,9 @@ def main(argv: list[str] | None = None) -> int:
             for cond in conditions:
                 seeds = args.seeds if cond in OPTIMIZED else [args.seeds[0]]
                 for seed in seeds:
-                    if cond in ("P0", "P1", "P2"):
-                        plan = baselines.plan_baseline(cond, scen, limits, best_pose=best_pose)
+                    if baselines.parse_baseline_name(cond)[0] in BASELINE_CONDITIONS:
+                        plan = baselines.plan_baseline(cond, scen, limits, best_pose=best_pose,
+                                                       rotation_pose=rotation_pose)
                         row = baselines.evaluate_plan_row(ev, plan, nozzle, body, scen)
                         n_evals, elapsed = 1, 0.0
                     else:
