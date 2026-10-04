@@ -432,10 +432,13 @@ def test_export_e7_reference(tmp_path):
     assert mod.main(["--bundle", str(bundle), "--out", str(out), "--note", "설명"]) == 0
 
     data = json.loads(out.read_text(encoding="utf-8"))
-    assert data["bundle"]["kinetics_enabled"] is True and data["bundle"]["note"] == "설명"
-    assert data["bundle"]["zone_nozzle_counts"]["top"] == 4
-    assert not Path(data["bundle"]["path"]).is_absolute()
+    assert len(data["bundles"]) == 1                 # --bundle 을 여러 번 주면 한 파일로 모은다
+    meta = data["bundles"][0]
+    assert meta["kinetics_enabled"] is True and meta["note"] == "설명"
+    assert meta["zone_nozzle_counts"]["top"] == 4 and meta["max_evals"] == 10
+    assert not Path(meta["path"]).is_absolute()
     row = data["rows"][0]
+    assert row["bundle"] == meta["group_id"]
     assert (row["scenario"], row["condition"], row["energy_weight"]) == ("default", "P5", 0.1)
     assert row["total_removal"] == 0.27 and row["energy"] == 0.59 and row["n_phases"] == 2
     assert row["phase_durations_s"] == [7.0, 5.0] and row["infeasible"] is False
@@ -445,6 +448,19 @@ def test_export_e7_reference(tmp_path):
     assert row["plan"]["phases"][0]["torso_yaw_folded"] == pytest.approx(80.0)
     assert row["plan"]["zone_strengths"] == dict(zip(ZONE_NAMES, plan["zone_strengths"]))
     json.dumps(data, allow_nan=False)
+
+    # 묶음 여러 개를 한 파일로 (단계 수 스윕처럼 묶음이 쪼개진 실험).
+    import shutil
+    second = tmp_path / "e7y"
+    shutil.copytree(bundle, second)
+    out2 = tmp_path / "merged.json"
+    assert mod.main(["--bundle", str(bundle), "--bundle", str(second), "--out", str(out2)]) == 0
+    merged = json.loads(out2.read_text(encoding="utf-8"))
+    assert len(merged["bundles"]) == 2 and len(merged["rows"]) == 2
+    assert {b["group_id"] for b in merged["bundles"]} == {"e7x"}      # group_id 는 파일 안 값
+    assert "bundle" not in merged, "묶음이 여럿이면 단수 키를 쓰지 않는다"
+    # 묶음이 하나면 예전 모양(bundle)도 남긴다 — A 의 verify_e7_plans.py 가 그 키를 읽는다.
+    assert data["bundle"] == data["bundles"][0]
 
 
 # ---------- E7 회전 기준선과 단계 수 덮어쓰기 (총괄 2026-10-03) ----------
