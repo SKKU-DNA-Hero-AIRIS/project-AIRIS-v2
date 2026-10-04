@@ -37,7 +37,9 @@ METRIC_COLS = ("score", "total_removal", "discomfort", "energy", "duration_s", "
 
 def build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(description="E7 묶음 → docs/e7_reference.json")
-    ap.add_argument("--bundle", required=True, help="E7 묶음 폴더 (e7_summary.csv 가 있는 곳)")
+    ap.add_argument("--bundle", action="append", required=True, metavar="경로",
+                    help="E7 묶음 폴더 (e7_summary.csv 가 있는 곳). 여러 번 쓰면 한 파일로 모은다 "
+                         "— 단계 수 스윕처럼 묶음이 여럿인 실험용")
     ap.add_argument("--out", default=str(ROOT / "docs" / "e7_reference.json"))
     ap.add_argument("--note", default=None, help="묶음에 붙일 한 줄 설명")
     return ap
@@ -75,21 +77,31 @@ def plan_block(plan: dict | None) -> dict | None:
 def main(argv: list[str] | None = None) -> int:
     cli.enable_utf8_stdout()
     args = build_parser().parse_args(argv)
-    bundle = Path(args.bundle)
-    summary_path, plans_path = bundle / "e7_summary.csv", bundle / "e7_plans.json"
-    for path in (summary_path, plans_path):
-        if not path.exists():
-            print(f"E7 묶음이 아니다 ({path.name} 없음): {bundle}", file=sys.stderr)
-            return 2
-
-    plans = json.loads(plans_path.read_text(encoding="utf-8"))
-    with summary_path.open(encoding="utf-8") as fh:
-        rows = list(csv.DictReader(fh))
+    bundles = [Path(b) for b in args.bundle]
+    for bundle in bundles:
+        for name in ("e7_summary.csv", "e7_plans.json"):
+            if not (bundle / name).exists():
+                print(f"E7 묶음이 아니다 ({name} 없음): {bundle}", file=sys.stderr)
+                return 2
 
     out: dict = {
         "generated_by": "scripts/export_e7_reference.py",
-        "bundle": {
-            "group_id": plans.get("group_id", bundle.name),
+        "bundles": [],
+        "zone_names": list(ZONE_NAMES),
+        "pose_keys": list(e4.POSE_KEYS),
+        "score_note": ("score = Σ 부위가중·제거율 − discomfort_weight·불편도 − w·에너지"
+                       " − time_weight·T/T_ref (00_common.md 4.4). w(energy_weight)가 다르면"
+                       " 목적함수가 달라 score 를 가로로 비교하지 않는다. w 를 고를 때는"
+                       " total_removal · energy · duration_s · discomfort 를 본다."),
+        "rows": [],
+    }
+
+    for bundle in bundles:
+        plans = json.loads((bundle / "e7_plans.json").read_text(encoding="utf-8"))
+        group = plans.get("group_id", bundle.name)
+        bundle_args = plans.get("args", {})
+        out["bundles"].append({
+            "group_id": group,
             "path": bundle_path_label(bundle),
             "commit": plans.get("commit"),
             "physics_hash": plans.get("physics_hash"),
@@ -97,42 +109,46 @@ def main(argv: list[str] | None = None) -> int:
             "kinetics_enabled": plans.get("kinetics_enabled"),
             "time_constant_s": plans.get("time_constant_s"),
             "zone_nozzle_counts": dict(zip(ZONE_NAMES, plans.get("zone_nozzle_counts", []))),
-            "args": plans.get("args"),
+            # 단계 수 덮어쓰기(--n-phases)와 예산은 묶음마다 다를 수 있다.
+            "n_phases_arg": bundle_args.get("n_phases"),
+            "max_evals": bundle_args.get("max_evals"),
+            "patches_per_m2": bundle_args.get("patches_per_m2"),
+            "args": bundle_args,
             "note": args.note,
-        },
-        "zone_names": list(ZONE_NAMES),
-        "pose_keys": list(e4.POSE_KEYS),
-        "score_note": ("score 는 제거율 − 불편도 − w·에너지다. w(energy_weight)가 다르면 목적함수가"
-                       " 달라 score 를 가로로 비교하지 않는다. w 를 고를 때는 total_removal ·"
-                       " energy · duration_s · discomfort 를 본다."),
-        "rows": [],
-    }
+        })
+        with (bundle / "e7_summary.csv").open(encoding="utf-8") as fh:
+            rows = list(csv.DictReader(fh))
+        for row in rows:
+            w = float(row["energy_weight"])
+            key = f"{row['condition']}_s{row['seed']}"
+            plan = (plans.get("scenarios", {}).get(row["scenario"], {})
+                    .get(f"w{w:g}", {}).get(key))
+            entry = {
+                "bundle": group,
+                "scenario": row["scenario"],
+                "condition": row["condition"],
+                "energy_weight": w,
+                "seed": int(row["seed"]),
+                "infeasible": row["infeasible"] not in ("False", "false", ""),
+            }
+            for col in METRIC_COLS:
+                value = row.get(col, "")
+                entry[col] = float(value) if value not in ("", None) else None
+            entry["n_phases"] = int(entry["n_phases"]) if entry["n_phases"] is not None else None
+            entry["phase_durations_s"] = [float(v) for v in row["phase_durations_s"].split(";") if v]
+            entry["plan"] = plan_block(plan)
+            out["rows"].append(entry)
 
-    for row in rows:
-        w = float(row["energy_weight"])
-        key = f"{row['condition']}_s{row['seed']}"
-        plan = (plans.get("scenarios", {}).get(row["scenario"], {})
-                .get(f"w{w:g}", {}).get(key))
-        entry = {
-            "scenario": row["scenario"],
-            "condition": row["condition"],
-            "energy_weight": w,
-            "seed": int(row["seed"]),
-            "infeasible": row["infeasible"] not in ("False", "false", ""),
-        }
-        for col in METRIC_COLS:
-            value = row.get(col, "")
-            entry[col] = float(value) if value not in ("", None) else None
-        entry["n_phases"] = int(entry["n_phases"]) if entry["n_phases"] is not None else None
-        entry["phase_durations_s"] = [float(v) for v in row["phase_durations_s"].split(";") if v]
-        entry["plan"] = plan_block(plan)
-        out["rows"].append(entry)
+    # 묶음이 하나면 예전 모양(`bundle`)도 함께 남긴다 — A 의 scripts/verify_e7_plans.py 와
+    # tests/test_particles.py 가 `ref["bundle"]` 로 도장을 읽는다 (호환 유지).
+    if len(out["bundles"]) == 1:
+        out["bundle"] = out["bundles"][0]
 
     out_path = Path(args.out)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(json.dumps(out, ensure_ascii=False, indent=2), encoding="utf-8")
     missing = [r for r in out["rows"] if r["plan"] is None]
-    print(f"행 {len(out['rows'])}개 (계획 없는 행 {len(missing)}개)")
+    print(f"묶음 {len(out['bundles'])}개 → 행 {len(out['rows'])}개 (계획 없는 행 {len(missing)}개)")
     print(f"저장 위치 {out_path}")
     return 0
 
