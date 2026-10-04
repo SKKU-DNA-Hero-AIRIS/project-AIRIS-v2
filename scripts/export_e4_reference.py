@@ -65,15 +65,21 @@ def at_bounds(pose: dict, scenario) -> list[str]:
 
 
 def bundle_path_label(path: Path) -> str:
-    """저장소 기준 상대 경로. 밖(다른 worktree)이면 폴더 이름만 남긴다.
+    """`outputs/<묶음>` 또는 `<worktree 이름>/outputs/<묶음>`.
 
-    사용자 홈 경로가 그대로 들어가면 공개 파일에 개인 경로가 남고, 다른 기계에서 쓸모도 없다.
+    사용자 홈 경로가 그대로 들어가면 공개 파일에 개인 경로가 남고 다른 기계에서 쓸모도 없다.
+    다른 worktree 의 출력이면 그 worktree 폴더 이름을 앞에 붙여, 어느 체크아웃에서 나온
+    묶음인지 알 수 있게 한다 (통합 2026-10-01 지적: 묶음마다 접두사가 달랐다).
     """
     resolved = path.resolve()
     try:
         return resolved.relative_to(ROOT).as_posix()
     except ValueError:
-        return resolved.name
+        pass
+    for parent in resolved.parents:                  # worktree 뿌리 = .git 이 있는 곳
+        if (parent / ".git").exists():
+            return f"{parent.name}/{resolved.relative_to(parent).as_posix()}"
+    return resolved.name
 
 
 def read_bundle(path: Path) -> tuple[dict, dict]:

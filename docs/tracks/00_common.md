@@ -6,10 +6,10 @@
 
 | 트랙 | 수정 가능 | 절대 수정 금지 |
 |---|---|---|
-| B | `airis/sim/body.py`, `human_mesh.py`, `jet.py`, `scenario.py`, `airis/viz/debug3d.py`, `configs/*.yaml`, `data/meshes/*`, `scripts/build_sim_mesh.py`, `tests/test_body.py`, `tests/test_jet.py`, `tests/test_human_mesh.py` | |
-| D | `airis/sim/patch_baseline.py`, `airis/sim/scoring.py`, `tests/test_sanity_physics.py`, `tests/fakes.py`, `scripts/compare_evaluators.py`, `scripts/compare_bodies.py`, `tests/test_plan_eval.py` | `configs/` |
-| C | `airis/optimize/*`, `scripts/run_optimize.py`, `scripts/run_baselines.py`, `scripts/run_e4.py`, `scripts/run_e3.py`, `scripts/run_dataset.py`, `scripts/run_e7.py`, `docs/experiments.md`, `tests/test_encoding.py`, `tests/test_cmaes_dummy.py`, `tests/test_plan_encoding.py`, `tests/test_e3.py`, `tests/test_e4.py`, `tests/test_dataset.py`, `docs/e4_reference.json`·`scripts/export_e4_reference.py`(예정, 2026-09-30 합의) | `configs/` |
-| A | `airis/sim/particles.py`, `airis/sim/kernels/*`, `tests/test_particles.py` | `configs/` |
+| B | `airis/sim/body.py`, `human_mesh.py`, `jet.py`, `scenario.py`, `airis/viz/debug3d.py`, `configs/*.yaml`, `data/meshes/*`, `scripts/build_sim_mesh.py`, `tests/test_body.py`, `tests/test_jet.py`, `tests/test_human_mesh.py`, `tests/test_scenarios.py` | |
+| D | `airis/sim/patch_baseline.py`, `airis/sim/scoring.py`, `tests/test_sanity_physics.py`, `tests/fakes.py`, `scripts/compare_evaluators.py`, `scripts/compare_bodies.py`, `tests/test_plan_eval.py`, `tests/test_fakes.py` | `configs/` |
+| C | `airis/optimize/*`, `scripts/run_optimize.py`, `scripts/run_baselines.py`, `scripts/run_e4.py`, `scripts/run_e3.py`, `scripts/run_dataset.py`, `scripts/run_e7.py`, `docs/experiments.md`, `tests/test_encoding.py`, `tests/test_cmaes_dummy.py`, `tests/test_plan_encoding.py`, `tests/test_e3.py`, `tests/test_e4.py`, `tests/test_dataset.py`, `docs/e4_reference.json`·`scripts/export_e4_reference.py`, `docs/e7_reference.json`·`scripts/export_e7_reference.py`(PR #118) | `configs/` |
+| A | `airis/sim/particles.py`, `airis/sim/kernels/*`, `scripts/compare_plan_evaluators.py`, `tests/test_particles.py` | `configs/` |
 | E | `airis/realtime/*`, `airis/viz/*`(단 `debug3d.py`는 B), `scripts/run_dashboard.py`, `scripts/render_frames.py`, `tests/test_realtime.py`, `tests/test_viz.py`, `docs/figures/*` | `configs/`, `airis/sim/*` |
 | F | `airis/model/*`, `scripts/train_*.py`, `scripts/build_pose_knn.py`, `scripts/run_e5_*.py`, `tests/test_pose_flow.py`, `tests/test_model_*.py`, `docs/experiments_model.md`, `docs/proposals/*` (2026-09-30 신설. C의 혼합 추천 PR 병합 뒤부터 소유, `docs/tracks/F_model.md`) | `configs/`, `airis/sim/*`, `airis/optimize/*`, `airis/realtime/*` |
 | 전원 | | `airis/sim/types.py`, `airis/sim/interface.py`, `docs/interfaces.md` |
@@ -105,13 +105,28 @@ r    = (x − c) − ((x − c)·n)·n              접평면 위, 충돌점 기
 U_H  = U_c(H)                                4.1/4.1b의 중심 속도를 s = H에서 (strength 포함)
 F    = (1 − exp(−ξ²/2)) / ξ                  원형 노즐
 F    = (1 − exp(−ξ²/2)) / sqrt(ξ)            슬롯. 슬롯 끝 밖은 exp(−ρ_e'²/(2σ²))를 곱한다
-w    = k · cosθ · U_H · F · gate(t)          k = jet.impingement.wall_jet_gain
+w    = k · cosθ · U_H · F · g(ξ) · gate(t)   k = jet.impingement.wall_jet_gain, g(ξ)는 아래 (m = 1이면 g ≡ 1)
 u_corr = u + w · e_r,   e_r = r / |r|        ξ < 1e-6이면 w = 0
 ```
 
 - 정체점(ξ = 0)에서 0, 그 둘레 고리에서 최대, 바깥은 원형 1/ξ · 슬롯 1/√ξ로 감쇠한다 (방사상 / 평면 벽면 제트). 봉우리 위치는 Beltaos & Rajaratnam 1974(r/H ≈ 0.14)와 같은 함수족이지만 원문 계수는 미확인이라 `k`를 문헌값으로 고정하지 않는다.
-- 설정: `jet.impingement.enabled` (기본 true), `jet.impingement.wall_jet_gain` (기본 1.0). `stagnation_radius_factor`, `wall_jet_start_factor`는 삭제. E3에서 `enabled` 켬/끔과 `k ∈ {0.5, 1, 2}`를 스윕한다.
+- 설정: `jet.impingement.enabled` (기본 true), `jet.impingement.wall_jet_gain` (기본 1.4. 1.0 → 1.4, PR #108, 2026-09-30 총괄 결정. 근거: Phares, Smedley & Flagan 2000 그림 3a의 평면 충돌 제트 표면 속도 상한 U/u_s ≤ 1 → 슬롯 k ≤ 1/0.614 = 1.63, k < 1은 문헌 근거 없음. 같은 PR에서 `adhesion.fabric_roughness_factor` 0.25 → 0.45로 기준 자세 전신 R을 유지했다: 메시 1,500/m² R 8.13% → 8.01%). `stagnation_radius_factor`, `wall_jet_start_factor`는 삭제. E3에서 `enabled` 켬/끔과 `k ∈ {1.0, 1.4, 1.6, 2.0}`를 스윕한다.
 - 계약: D는 `velocity_field_per_nozzle(probe, nozzle, 0, cfg, surface_normals=state.patch_normal)`로 법선을 넘긴다. A는 부착 입자(패치 법선 있음)에만 적용하고 부유 입자는 자유 제트 그대로. 보정을 켜면 τ가 커지므로 `adhesion.fabric_roughness_factor`를 B가 같은 PR에서 다시 잡는다 (기준 자세 전신 R 5~10% 유지).
+
+**충돌 영역 전단 배율 g(ξ) (B, PR #104, 2026-09-30 총괄 결정. E3 민감도 축)**: 충돌 영역의 얇은 층류 경계층 때문에 실제 전단이 벽면 제트 구간 Cf로 잡은 모델보다 크다는 문헌(Phares 2000 식 2.32, Tu & Wood 1996)과의 차이를 보는 손잡이다. 모델 자체는 바꾸지 않고 벽면 제트 항 `w`에만 곱한다 (자유 제트 `u`는 그대로).
+
+```
+g(ξ) = 1 + (√m − 1) · T(ξ)
+T(ξ) = 1                          (ξ ≤ ξ_z)
+T(ξ) = exp(−(ξ − ξ_z)² / 2)       (ξ > ξ_z)
+m    = jet.impingement.stagnation_shear_factor   (기본 1.0, m ≥ 0)
+ξ_z  = jet.impingement.stagnation_zone_xi        (기본 3.0, ξ_z > 0)
+```
+
+- m = 1이면 g ≡ 1이라 결과 불변(비트 단위로 같다). 4.2 전단이 |u_t|²에 비례하고 정면 충돌 면의 접선 속도는 거의 w이므로 정면 면에서만 충돌 영역(ξ ≤ ξ_z) 전단이 ≈ m배가 되고, 비스듬한 면은 자유 제트 성분이 섞여 그보다 작다. m은 충돌 영역에만 걸리는 국소 배율이라 모든 패치의 τ_med를 같은 비율로 바꾸는 `fabric_roughness_factor` f와 등가가 아니다.
+- ξ_z = 3 근거: H 0.4~0.7 m에서 슬롯·원형 모두 r ≈ 0.29~0.32H로, 모델 w 최대(슬롯 ξ 2.16, 원형 ξ 1.585)와 Phares 2000 전단 최대(슬롯 x_m ≈ 0.12H ≈ ξ 1.1~1.2, 원형 r_m ≈ 0.09H ≈ 0.8~0.9σ)를 덮고, 충돌 영역 층류 경계층이 난류로 바뀌는 r_t/H 0.2~0.4(Phares §2.3.2, 축대칭) 안쪽이다. 바깥은 σ 1개 폭의 가우시안으로 줄인다.
+- 구현 범위: 패치판(`jet.py`에 법선을 넘기는 D 경로)에만 들어 있다. 입자판(A, Taichi 커널)은 미구현이라 `impingement.enabled`에서 m ≠ 1이면 `NotImplementedError`를 올린다(PR #107). A가 커널에 같은 식을 넣기 전까지 m 축은 패치판 전용이다.
+- E3 방침(2026-10-01 총괄 결정): m마다 f를 다시 보정해 기준 자세 `PoseParams()` 전신 R ≈ 8.0%를 유지한 뒤 비교한다(m별 f 재보정). f를 고정한 실행은 보조 확인용이다.
 
 **패치판 등가 관계 (C, 2026-09-18, 테스트로 고정)**: 4.2 τ = ½ρ·Cf·|u_t|² 이고 4.3 제거율이 τ/τ_med 에만 의존하며 u 가 출구 속도 U0 에 선형이므로, 패치판에서는 `air.friction_coeff × k ≡ fabric_roughness_factor × 1/k`, `jet.slot.exit_velocity × k ≡ fabric_roughness_factor × 1/k²` 가 수치적으로 같다(차이 1e−8). 따라서 민감도 스윕(E3)은 세 상수 중 거칠기 하나만 돌린다. 입자판은 속도가 입자 수송·항력에도 들어가므로 이 등가가 성립하지 않는다.
 
