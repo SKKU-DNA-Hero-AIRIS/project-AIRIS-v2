@@ -1554,3 +1554,58 @@ def test_plan_rank_matches_patch_evaluator(scenario):
     assert min(r["patch_total"] for r in rows) > 0.0
     assert rho["score"] >= 0.90, rho
     assert rho["total"] >= 0.90, rho
+
+
+def _load_e7_verify_script():
+    """`scripts/verify_e7_plans.py`를 파일 경로로 불러온다 (scripts는 패키지가 아니다)."""
+    import importlib.util
+
+    path = ROOT / "scripts" / "verify_e7_plans.py"
+    spec = importlib.util.spec_from_file_location("verify_e7_plans", path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def test_e7_reference_stamp_matches_current_settings():
+    """`docs/e7_reference.json`의 번들 도장이 지금 설정과 같다 (물리·노즐 해시, kinetics).
+
+    다르면 참조 파일의 패치 점수가 다른 물리로 뽑힌 값이어서 입자판 값과 나란히 비교할 수
+    없다. 물리 설정을 바꿀 때 참조 파일을 다시 내보내도록 이 테스트가 알려 준다 (통합 검토
+    권장 항목).
+    """
+    mod = _load_e7_verify_script()
+    report = mod.stamp_report(mod.load_reference()["bundle"])
+    assert report["current_error"] is None, report
+    assert report["mismatched"] == [], report
+    # 비교가 공허하지 않은지: 번들에서 도장 키를 실제로 읽어 왔다
+    assert set(report["bundle"]) == set(mod.BUNDLE_STAMP_KEYS.values()), report["bundle"]
+
+
+def test_e7_stamp_report_flags_changed_physics():
+    """물리 해시나 T_r이 다르면 그 키를 짚어 준다. 번들에 없는 키는 비교하지 않는다."""
+    mod = _load_e7_verify_script()
+    bundle = copy.deepcopy(mod.load_reference()["bundle"])
+    bundle["physics_hash"] = "deadbeef"
+    bundle["time_constant_s"] = 3.0
+    assert sorted(mod.stamp_report(bundle)["mismatched"]) == ["physics_hash", "time_constant_s"]
+
+    bundle.pop("physics_hash")
+    assert mod.stamp_report(bundle)["mismatched"] == ["time_constant_s"]
+    assert "physics_hash" not in mod.stamp_report(bundle)["bundle"]
+
+
+def test_e7_stamp_report_survives_unreadable_settings(monkeypatch):
+    """지금 설정 도장을 못 읽어도 재평가를 막지 않는다 (경고만 내고 비교를 건너뛴다)."""
+    mod = _load_e7_verify_script()
+    import airis.model.predict as predict
+
+    def boom():
+        raise RuntimeError("설정을 못 읽었다")
+
+    monkeypatch.setattr(predict, "current_stamp", boom)
+    report = mod.stamp_report(mod.load_reference()["bundle"])
+    assert report["current"] is None
+    assert "설정을 못 읽었다" in report["current_error"]
+    assert report["mismatched"] == []
+
