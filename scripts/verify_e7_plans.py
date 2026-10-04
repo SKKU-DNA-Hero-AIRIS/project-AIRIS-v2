@@ -14,6 +14,9 @@
   짧은 조건에 특히 불리하게 보일 수 있다. 단계가 바뀌어도 부유 입자는 상태를 유지하므로
   비행 자체는 단계를 넘어 이어진다: 같은 자세를 여러 단계로 쪼갠 계획이 한 단계 계획과
   입자 하나까지 같다 (`tests/test_particles.py::test_plan_same_pose_split_equals_single_phase`).
+- 참조 파일의 번들 도장(물리·노즐 해시, kinetics)이 지금 설정과 다르면 경고만 내고 계속한다.
+  해시가 다르면 "패치 점수"는 다른 물리로 뽑힌 값이라 입자판과 나란히 두는 의미가 약해진다.
+  판정 결과는 `summary.json`의 `stamp`에 남는다.
 - 참조 파일의 단계 시간은 소수 둘째 자리로 반올림돼 있어 합이 `plan.duration_s`와 조금
   어긋난다 (P1에서 최대 0.04 s). 기본값은 마지막 단계를 늘려/줄여 총 시간을 맞춘다
   (`--no-match-duration`이면 그대로 쓴다). 보정량은 출력에 남는다.
@@ -45,6 +48,30 @@ REFERENCE = ROOT / "docs" / "e7_reference.json"
 
 def load_reference(path: Path = REFERENCE) -> dict:
     return json.loads(path.read_text(encoding="utf-8"))
+
+
+#: 참조 번들의 도장 키 -> `airis.model.predict`의 도장 키 (번들은 `nozzle_hash`로 적는다)
+BUNDLE_STAMP_KEYS = {"physics_hash": "physics_hash", "nozzle_hash": "nozzle_layout_hash",
+                     "kinetics_enabled": "kinetics_enabled",
+                     "time_constant_s": "time_constant_s"}
+
+
+def stamp_report(bundle: dict) -> dict:
+    """참조 번들의 설정 도장 vs 지금 설정.
+
+    반환 ``{"bundle": {...}, "current": {...} | None, "current_error": str | None,
+    "mismatched": [키 ...]}``. 지금 설정을 못 읽으면 `current`가 None이고 비교하지 않는다
+    (판정 실패가 재평가를 막지는 않는다). 키 이름과 비교 규약은 `airis.model.predict`를 따른다.
+    """
+    from airis.model.predict import current_stamp, stamp_mismatch
+
+    meta = {dst: bundle[src] for src, dst in BUNDLE_STAMP_KEYS.items() if src in bundle}
+    try:
+        now = current_stamp()
+    except Exception as exc:                        # 설정을 못 읽으면 비교만 건너뛴다
+        return {"bundle": meta, "current": None, "current_error": str(exc), "mismatched": []}
+    return {"bundle": meta, "current": now, "current_error": None,
+            "mismatched": stamp_mismatch(meta, now)}
 
 
 def build_plan(row: dict, zone_names: list[str], match_duration: bool = True) -> tuple[Plan, float]:
@@ -131,6 +158,20 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     print(f"행 {len(rows)}개, 입자 {args.particles}, 묶음 {ref['bundle']['group_id']}", flush=True)
 
+    stamp = stamp_report(ref["bundle"])
+    if stamp["current_error"] is not None:
+        print(f"  경고: 지금 설정 도장을 못 읽어 참조 번들과 비교하지 않는다 "
+              f"({stamp['current_error']})", file=sys.stderr, flush=True)
+    elif stamp["mismatched"]:
+        diff = ", ".join(f"{k} {stamp['bundle'][k]} -> {stamp['current'][k]}"
+                         for k in stamp["mismatched"])
+        print(f"  경고: 참조 번들과 설정이 다르다 ({diff}). 파일의 패치 점수는 다른 물리로 뽑힌 "
+              f"값이라 입자판 값과 나란히 비교하는 의미가 약하다.", file=sys.stderr, flush=True)
+    else:
+        print(f"  설정 도장 일치 (physics {stamp['bundle'].get('physics_hash')}, "
+              f"nozzle {stamp['bundle'].get('nozzle_layout_hash')}, "
+              f"T_r {stamp['bundle'].get('time_constant_s')} s)", flush=True)
+
     def progress(done: int, total: int) -> None:
         if done % 5 == 0 or done == total:
             print(f"  {done}/{total}", flush=True)
@@ -148,7 +189,7 @@ def main(argv: list[str] | None = None) -> int:
         writer.writerows(got)
     (out / "summary.json").write_text(json.dumps(
         {"when": datetime.now().isoformat(timespec="seconds"), "args": vars(args),
-         "bundle": ref["bundle"], "rows": got, "order_checks": checks,
+         "bundle": ref["bundle"], "stamp": stamp, "rows": got, "order_checks": checks,
          "order_agreement": (float(np.mean([c["same_order"] for c in checks]))
                              if checks else None)},
         ensure_ascii=False, indent=2), encoding="utf-8")
