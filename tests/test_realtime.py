@@ -261,6 +261,69 @@ def test_draw_pose_and_read_image(tmp_path):
 # ---------------------------------------------------------------------------
 # 개인정보: 화면에 원본 영상을 띄우지 않는다 (팀원 제안 3ab035e 를 받은 것)
 # ---------------------------------------------------------------------------
+def _edge_path():
+    from pathlib import Path as P
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        "render_plotly_png", P(__file__).resolve().parents[1] / "scripts" / "render_plotly_png.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod, P(mod.DEFAULT_EDGE)
+
+
+def test_render_plotly_png_renders_3d():
+    """kaleido 대신 쓰는 경로가 실제로 3D 그림을 PNG 로 만든다.
+
+    `fig.write_image`(kaleido)가 이 환경에서 멈추고, 헤드리스 화면 캡처는 WebGL 캔버스를 빈 채로
+    가져온다. 그래서 페이지 안에서 `Plotly.toImage` 를 부르는 경로가 맞는지 여기서 확인한다.
+    Edge 가 없는 환경(= 이 경로를 쓸 수 없는 환경)에서만 건너뛴다.
+    """
+    pytest.importorskip("websockets")
+    go = pytest.importorskip("plotly.graph_objects")
+    mod, edge = _edge_path()
+    if not edge.exists():
+        pytest.skip(f"Edge 가 없다: {edge}")
+
+    import tempfile
+    from pathlib import Path as P
+
+    fig = go.Figure(go.Mesh3d(x=[0, 1, 0, 0], y=[0, 0, 1, 0], z=[0, 0, 0, 1],
+                              i=[0, 0, 0, 1], j=[1, 2, 3, 2], k=[2, 3, 1, 3],
+                              intensity=[0.0, 0.4, 0.8, 1.0]))
+    fig.update_layout(paper_bgcolor="white", margin=dict(l=0, r=0, t=0, b=0))
+    out = P(tempfile.gettempdir()) / "airis_render_test.png"
+    out.unlink(missing_ok=True)
+    try:
+        mod.render_figure(fig, out, width=420, height=320, port=9407)
+        assert out.exists() and out.stat().st_size > 3000
+        from PIL import Image
+        img = Image.open(out).convert("RGB")
+        assert img.size == (420, 320)
+        colors = {tuple(c) for c in np.unique(np.asarray(img).reshape(-1, 3), axis=0)}
+        assert len(colors) > 3, "3D 가 그려지지 않고 빈 캔버스만 나왔다"
+    finally:
+        out.unlink(missing_ok=True)
+
+
+def test_dashboard_warms_up_model_before_first_user():
+    """기동할 때 추천을 한 번 미리 돌려 모델을 올려 둔다 (첫 사용자가 로딩을 기다리지 않게).
+
+    소스 검사다: 예열이 실제로 걸리는지는 AppTest 가 예외 없이 도는 것으로만 확인된다
+    (예열은 결과를 쓰지 않으므로 화면에 흔적이 남지 않는다).
+    """
+    import re
+    from pathlib import Path as P
+    src = (P(__file__).resolve().parents[1] / "scripts" / "run_dashboard.py").read_text(encoding="utf-8")
+    assert re.search(r"@st[.]cache_resource\([^)]*\)\s*def warm_up", src), \
+        "warm_up 은 서버당 한 번만 돌아야 한다 (cache_resource)"
+    after = src.split("def warm_up")[1]
+    assert "except Exception:" in after[:after.index("@st.cache_data")], \
+        "예열이 실패해도 화면은 떠야 한다"
+    body = src.split("def main(")[1]
+    assert body.index("warm_up(body_model)") < body.index('st.subheader("④ 추천 자세")'), \
+        "예열은 추천을 그리기 전에 끝나야 한다"
+
+
 def test_skeleton_only_has_no_input_pixels():
     """뼈대 그림에는 입력 프레임의 픽셀이 섞일 수 없다 (프레임을 인자로 받지 않는다)."""
     import inspect

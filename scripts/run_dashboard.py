@@ -11,6 +11,9 @@
        추천은 C의 혼합 모델(flow + kNN + 고정 후보표)을 부르고, 산출물이 없으면 표만 쓴다.
     ⑤ 입자 애니메이션 (A 덤프가 있으면, 없으면 합성 프레임 미리보기)
 
+기동할 때 추천을 한 번 미리 돌려(`warm_up`) 추천 모델을 올려 둔다. 첫 호출에는 산출물 로딩이 섞여
+몇 초가 걸리는데, 그 비용을 첫 사용자가 아니라 서버 기동 때 치르게 하는 것이다.
+
 **개인정보**: 카메라·업로드 영상은 YOLO 추론에만 쓰고 **화면에는 원본을 띄우지 않는다**. ②에 보이는 것은
 `camera.draw_skeleton_only` 가 빈 캔버스에 그린 뼈대뿐이다(원본 픽셀을 인자로 받지 않는다). 업로드한 영상 파일은
 프레임을 뽑은 뒤 바로 지우고, 세션에는 프레임 대신 **추정 결과만** 남긴다. 팀원 제안 3ab035e 를 받은 것이다.
@@ -26,6 +29,7 @@ import argparse
 import hashlib
 import json
 import sys
+import time
 from dataclasses import asdict, dataclass, fields
 from pathlib import Path
 
@@ -105,6 +109,22 @@ def get_scenarios():
 @st.cache_data(show_spinner=False, max_entries=32)
 def detect_cached(digest: str, _image: np.ndarray):
     return camera.detect_pose(get_pose_model(), _image)
+
+
+@st.cache_resource(show_spinner="추천 모델을 준비하는 중…")
+def warm_up(body_model: str) -> float:
+    """기동할 때 추천을 한 번 미리 돌려 모델(torch·가중치)을 올려 둔다. 결과는 쓰지 않는다.
+
+    첫 추천 호출에는 산출물 로딩이 함께 들어가 몇 초가 걸린다(측정 약 4초). 그 비용을 첫 사용자가
+    아니라 기동할 때 치르게 한다. `cache_resource` 라 서버 하나당 몸 모델별로 한 번만 돈다.
+    실패해도 화면은 그대로 떠야 하므로 예외를 삼킨다 (진짜 실패는 ④에서 폴백 메모로 보인다).
+    """
+    t0 = time.perf_counter()
+    try:
+        recommend(None, get_scenarios()["default"], model=body_model)
+    except Exception:
+        pass
+    return time.perf_counter() - t0
 
 
 @st.cache_data(show_spinner=False, ttl=60)
@@ -287,6 +307,9 @@ def main() -> None:
                    "않으며, 업로드한 영상 파일은 프레임을 뽑은 뒤 바로 지웁니다. 브라우저 카메라는 위젯이 "
                    "촬영 전 미리보기를 보여 주는데, 그 화면은 브라우저 안에만 있습니다. "
                    "시나리오(임산부·휠체어)는 영상으로 판별하지 않고 사용자가 직접 고릅니다.")
+
+    # 첫 사용자가 모델 로딩을 기다리지 않게 미리 올려 둔다 (서버당 한 번, 화면에는 준비 중 표시).
+    warm_up(body_model)
 
     scen_names = list(SCENARIO_LABELS)
     scen_default = q.get("scenario", "default")
