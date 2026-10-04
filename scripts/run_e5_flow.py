@@ -70,7 +70,12 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--folds", type=int, default=0,
                     help="체형 K-fold 교차검증 (0 이면 산출물 meta 의 holdout 체형만). fold 마다 flow 를 다시 학습한다")
     ap.add_argument("--fold-seed", type=int, default=0)
+    ap.add_argument("--fold-rule", choices=FOLD_RULES, default="permutation",
+                    help="체형 fold 나누는 규칙. modulo 는 체형을 늘려도 fold 가 유지된다 (학습 곡선용)")
     ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--body-noise", type=float, default=0.0,
+                    help="체형 입력 오차 비율 (0.05 = ±5%%). 추천은 오차를 넣은 체형으로, 채점은 진짜 체형으로 한다")
+    ap.add_argument("--body-noise-seed", type=int, default=0)
     ap.add_argument("--limit", type=int, default=None, help="holdout 행 수 상한 (빠른 점검용)")
     ap.add_argument("--out", default=None, help="기본값: outputs/e5flow_<시각>.csv")
     return ap
@@ -207,11 +212,25 @@ def summarize(res):
                .reset_index())
 
 
-def fold_indices(body_idx: np.ndarray, folds: int, seed: int) -> list[np.ndarray]:
-    """체형 단위 K-fold. 같은 (체형 목록, folds, seed) 면 같은 분할."""
+FOLD_RULES = ("permutation", "modulo")
+
+
+def fold_indices(body_idx: np.ndarray, folds: int, seed: int, rule: str = "permutation") -> list[np.ndarray]:
+    """체형 단위 K-fold. 같은 (체형 목록, folds, seed, rule) 면 같은 분할.
+
+    permutation (기본)  시드 순열을 K 조각으로 자른다. docs/experiments_model.md 의 기존 수치가 이 분할이다.
+                        체형 목록이 바뀌면(체형을 더 만들면) 같은 체형이 다른 fold 로 간다.
+    modulo              fold = (body_idx + seed) % K. 체형을 늘려도 같은 체형이 같은 fold 에 남으므로
+                        데이터셋 크기를 바꿔 가며 비교하는 학습 곡선에 쓴다 (팀원 제안 3ab035e).
+    """
     ids = np.unique(body_idx)
-    shuffled = np.random.default_rng(seed).permutation(ids)
-    return [np.sort(part) for part in np.array_split(shuffled, folds)]
+    if rule == "permutation":
+        shuffled = np.random.default_rng(seed).permutation(ids)
+        return [np.sort(part) for part in np.array_split(shuffled, folds)]
+    if rule == "modulo":
+        key = (ids.astype(np.int64) + int(seed)) % int(folds)
+        return [np.sort(ids[key == f]) for f in range(int(folds))]
+    raise ValueError(f"fold 규칙은 {FOLD_RULES} 중 하나: {rule!r}")
 
 
 def train_fold_model(train, scenarios, base_model, meta: dict):
@@ -221,9 +240,30 @@ def train_fold_model(train, scenarios, base_model, meta: dict):
     return train_pose_flow(train, scenarios, base_model.cfg, meta=dict(meta), log=None)
 
 
+def estimated_body(body, noise: float, seed: int, body_idx: int, scenario: str):
+    """체형 입력 오차: 체형 값마다 독립으로 (1 + U(−noise, +noise)) 를 곱한 추정 체형. noise 0 이면 body 그대로.
+
+    카메라 포즈 추정이 체형 값(키·어깨 폭 등)을 ±noise 만큼 틀리게 준 경우를 흉내 낸다. 같은
+    (seed, body_idx, scenario, noise) 면 같은 추정 체형이라 방법끼리·실행끼리 같은 오차로 비교한다.
+    """
+    import zlib
+    from dataclasses import fields
+
+    if noise <= 0:
+        return body
+    rng = np.random.default_rng([int(seed), int(body_idx), zlib.crc32(scenario.encode()), int(round(noise * 1e6))])
+    keys = [f.name for f in fields(body)]
+    factors = 1.0 + rng.uniform(-noise, noise, size=len(keys))
+    return type(body)(**{k: float(getattr(body, k)) * float(f) for k, f in zip(keys, factors)})
+
+
 def run_split(test, train, model, methods, args, evaluator, nozzle, scenarios, *, fold=None,
               knn_path=None, model_path=None) -> list[dict]:
-    """holdout(test) 행마다 방법별로 자세를 예측하고 점수 비율을 잰다."""
+    """holdout(test) 행마다 방법별로 자세를 예측하고 점수 비율을 잰다.
+
+    args.body_noise > 0 이면 추천(후보 생성·재채점)은 오차를 넣은 추정 체형으로 하고, 고른 자세는 진짜 체형으로
+    채점한다 (체형 입력 오차 내성, scripts/run_e5_body_noise.py).
+    """
     import time as _time
 
     from airis.model import predict as pred
@@ -242,6 +282,8 @@ def run_split(test, train, model, methods, args, evaluator, nozzle, scenarios, *
         from airis.realtime.recommend import STUB_TABLE as stub_table
 
     n = max(1, int(args.n_samples))
+    noise = float(getattr(args, "body_noise", 0.0) or 0.0)
+    noise_seed = int(getattr(args, "body_noise_seed", 0) or 0)
     rows: list[dict] = []
     t_all = _time.perf_counter()
     for i, row in test.iterrows():
@@ -250,11 +292,14 @@ def run_split(test, train, model, methods, args, evaluator, nozzle, scenarios, *
         enc = PoseEncoder(scenario)
         stub_cands = [enc.clip_pose(e.pose) for e in stub_table[scenario.name]] if stub_table else []
         seed = args.seed + int(row["body_idx"])
+        # 추천은 추정 체형(est)으로 한다: 후보 생성도 재채점도 est. 체형 잡음이 0 이면 est 는 진짜 체형 그대로다.
+        # 고른 자세의 점수(아래 score_batch)는 항상 진짜 체형(body)으로 잰다.
+        est = estimated_body(body, noise, noise_seed, int(row["body_idx"]), scenario.name)
         for m in methods:
             t0 = _time.perf_counter()
             n_cands = n_screen = None
             if m == "hybrid" or m.startswith("hybrid-"):
-                p = pred.predict(body, scenario, backend="hybrid", n_flow=args.n_flow, n_knn=args.n_knn,
+                p = pred.predict(est, scenario, backend="hybrid", n_flow=args.n_flow, n_knn=args.n_knn,
                                  seed=seed, path=model_path or args.model, knn_path=knn_path,
                                  evaluator=evaluator, nozzle=nozzle, extra_candidates=stub_cands,
                                  **variant_kwargs(m, args))
@@ -262,35 +307,36 @@ def run_split(test, train, model, methods, args, evaluator, nozzle, scenarios, *
                 n_cands = len(p.candidates)
                 n_screen = len(p.candidates) if p.screen_scores is not None else 0
             elif m == "flow":
-                p = pred.predict(body, scenario, backend="flow", n_samples=n, seed=seed, path=model_path or args.model,
+                p = pred.predict(est, scenario, backend="flow", n_samples=n, seed=seed, path=model_path or args.model,
                                  evaluator=evaluator, nozzle=nozzle)
                 pose, n_evals = p.pose, len(p.candidates)
             elif m == "flow+stub":
-                p = pred.predict(body, scenario, backend="flow", n_samples=max(1, n - len(stub_cands)),
+                p = pred.predict(est, scenario, backend="flow", n_samples=max(1, n - len(stub_cands)),
                                  seed=seed, path=model_path or args.model, evaluator=evaluator, nozzle=nozzle,
                                  extra_candidates=stub_cands)
                 pose, n_evals = p.pose, len(p.candidates)
             elif m == "flow1":
-                pose = pred.predict(body, scenario, backend="flow", n_samples=1, rescore=False,
+                pose = pred.predict(est, scenario, backend="flow", n_samples=1, rescore=False,
                                     seed=seed, path=model_path or args.model).pose
                 n_evals = 0
             elif m == "knn":
-                pose, n_evals = best_of(evaluator, near.candidates(body, scenario, n), nozzle, body, scenario)
+                pose, n_evals = best_of(evaluator, near.candidates(est, scenario, n), nozzle, est, scenario)
             elif m == "knn+stub":
-                cands = near.candidates(body, scenario, max(1, n - len(stub_cands))) + stub_cands
-                pose, n_evals = best_of(evaluator, cands, nozzle, body, scenario)
+                cands = near.candidates(est, scenario, max(1, n - len(stub_cands))) + stub_cands
+                pose, n_evals = best_of(evaluator, cands, nozzle, est, scenario)
             elif m == "clsreg":
-                pose, n_evals = best_of(evaluator, peaks.candidates(body, scenario), nozzle, body, scenario)
+                pose, n_evals = best_of(evaluator, peaks.candidates(est, scenario), nozzle, est, scenario)
             elif m in ("mlp", "hgb"):
-                bvec = np.array([[getattr(body, k) for k in BODY_KEYS]], dtype=np.float32)
+                bvec = np.array([[getattr(est, k) for k in BODY_KEYS]], dtype=np.float32)
                 x = (mlp if m == "mlp" else hgb).predict(model._cond(bvec, [scenario.name]).numpy())
                 pose, n_evals = model.space.to_pose(x[0], scenario), 0
             else:
-                pose, n_evals = best_of(evaluator, stub_cands, nozzle, body, scenario)
+                pose, n_evals = best_of(evaluator, stub_cands, nozzle, est, scenario)
             ms = (_time.perf_counter() - t0) * 1000.0
             score, infeasible = score_batch(evaluator, [pose], nozzle, body, scenario)
             rows.append({
                 "body_idx": int(row["body_idx"]), "scenario": scenario.name, "method": m,
+                "body_noise": noise, "est_height_m": est.height_m,
                 "height_m": body.height_m, "boundary": in_boundary(scenario.name, body.height_m),
                 "ref_score": ref, "score": float(score[0]),
                 "ratio": float(score[0]) / ref if ref > 0 else float("nan"),
@@ -329,7 +375,7 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.folds and args.folds > 1:
         rows = []
-        folds = fold_indices(df["body_idx"].to_numpy(), args.folds, args.fold_seed)
+        folds = fold_indices(df["body_idx"].to_numpy(), args.folds, args.fold_seed, args.fold_rule)
         tmp = Path(args.out).parent if args.out else ROOT / "outputs"
         tmp.mkdir(parents=True, exist_ok=True)
         for f, ids in enumerate(folds):

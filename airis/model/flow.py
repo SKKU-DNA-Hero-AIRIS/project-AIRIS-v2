@@ -580,6 +580,7 @@ def train_flow(df, scenarios: dict[str, Scenario], cfg: FlowConfig = FlowConfig(
     model.meta.setdefault("space_kind", space.kind)
     model.meta.setdefault("n_rows", int(len(df)))
     model.meta.setdefault("n_train_points", int(len(arr["x"])))
+    model.meta["device"] = str(device)          # 실제로 학습한 장치 (auto 가 무엇으로 풀렸는지, 재현성 기록)
     return model
 
 
