@@ -8,8 +8,9 @@ numpy 준비와 업로드만 한다.
 - 4.1 자유 제트 속도장  -> `ParticleFields.jet_velocity` (ti.func, 원형 노즐)
 - 4.1b 슬롯(평면) 제트 -> `ParticleFields.jet_velocity` (같은 함수, 슬롯 노즐)
 - 4.2 벽면 전단         -> `k_detach`
-- 4.2b 충돌 제트 보정  -> `ParticleFields.impingement` (ti.func). 부착 입자의 `k_detach`에만 더한다.
-                          부유 입자(`k_advect`)는 자유 제트 그대로 (00_common.md 4.2b 계약)
+- 4.2b 충돌 제트 보정  -> `ParticleFields.imp_one` (ti.func). 부착 입자의 이탈 판정에만 더한다.
+                          부유 입자(`k_advect`)는 자유 제트 그대로 (00_common.md 4.2b 계약).
+                          충돌 영역 전단 배율 g(xi)도 여기서 곱한다 (B `jet.stagnation_weight`와 같은 식)
 - 4.3 이탈 판정         -> `detach_one` (입자별 tau_crit 비교)
 - 4.6 시간 의존 이탈    -> `detach_one` (kinetics). tau > tau_crit인 부착 입자가 스텝마다
                           확률 1 - exp(-dt/T_r)로 이탈한다. 구현은 입자마다 지수분포 난수
@@ -63,7 +64,9 @@ C_IMP_ON = 21        # jet.impingement.enabled (0/1)
 C_IMP_K = 22         # jet.impingement.wall_jet_gain (4.2b k)
 C_KIN_ON = 23        # adhesion.kinetics.enabled (0/1). 계획 평가에서만 켠다
 C_KIN_TR = 24        # adhesion.kinetics.time_constant_s (4.6 T_r)
-NUM_CONST = 25
+C_IMP_M = 25         # jet.impingement.stagnation_shear_factor (4.2b g의 m)
+C_IMP_XI_Z = 26      # jet.impingement.stagnation_zone_xi (4.2b g의 xi_z)
+NUM_CONST = 27
 
 IMPINGEMENT_XI_MIN = 1e-6   # 4.2b: xi < 1e-6 이면 w = 0 (정체점)
 
@@ -318,6 +321,15 @@ class ParticleFields:
                 if is_slot:
                     f_shape = core / ti.sqrt(xi)
                 w = self.cst[C_IMP_K] * cos_t * u_h * f_shape * end * gate
+                # 4.2b 충돌 영역 전단 배율 g(xi) = 1 + (sqrt(m) - 1)·T(xi),
+                # T = 1 (xi <= xi_z), exp(-(xi - xi_z)²/2) (xi > xi_z). B의
+                # `jet.stagnation_weight`와 같은 식이다. m = 1이면 g = 1이라 **곱셈 자체를
+                # 건너뛴다** — `w * g_stag`를 늘 실행하면 코드 생성이 달라져 m = 1에서도
+                # ulp 수준(최대 상대 2.2e-6)으로 값이 흔들렸다 (통합 검토 실측).
+                if self.cst[C_IMP_M] != 1.0:
+                    over = ti.max(xi - self.cst[C_IMP_XI_Z], 0.0)
+                    w = w * (1.0 + (ti.sqrt(self.cst[C_IMP_M]) - 1.0)
+                             * ti.exp(-0.5 * over * over))
                 corr = (w / rho) * r                                 # w · e_r
         return corr
 
@@ -585,15 +597,15 @@ def pack_constants(cfg: dict, booth: dict) -> np.ndarray:
     imp = jet.get("impingement") or {}
     c[C_IMP_ON] = 1.0 if imp.get("enabled", False) else 0.0
     c[C_IMP_K] = imp.get("wall_jet_gain", 1.0)
-    # 4.2b 충돌 영역 전단 배율 g(xi) (B PR #104)는 아직 커널에 없다. m != 1이면 패치판과
-    # 조용히 갈라지므로 막는다. 보정이 꺼져 있으면 g를 쓸 일이 없어 그대로 둔다.
-    # TODO(A): 커널 imp_one에 g(xi) = 1 + (sqrt(m) - 1)·T(xi)를 넣고 이 검사를 지운다.
-    m_factor = float(imp.get("stagnation_shear_factor", 1.0))
-    if c[C_IMP_ON] > 0.5 and m_factor != 1.0:
-        raise NotImplementedError(
-            "입자판 커널에 4.2b 충돌 영역 전단 배율 g(xi)가 아직 없다: "
-            f"jet.impingement.stagnation_shear_factor = {m_factor} (1.0만 지원). "
-            "패치판과 갈라지므로 막는다. 1.0으로 두거나 impingement.enabled를 끄고 쓴다.")
+    # 4.2b 충돌 영역 전단 배율. 패치판 `jet.jet_params`와 같은 범위 검사를 한다.
+    c[C_IMP_M] = float(imp.get("stagnation_shear_factor", 1.0))
+    c[C_IMP_XI_Z] = float(imp.get("stagnation_zone_xi", 3.0))
+    if not (np.isfinite(c[C_IMP_M]) and c[C_IMP_M] >= 0.0):
+        raise ValueError(
+            f"jet.impingement.stagnation_shear_factor 는 0 이상의 유한값이어야 한다: {c[C_IMP_M]}")
+    if not (np.isfinite(c[C_IMP_XI_Z]) and c[C_IMP_XI_Z] > 0.0):
+        raise ValueError(
+            f"jet.impingement.stagnation_zone_xi 는 양수인 유한값이어야 한다: {c[C_IMP_XI_Z]}")
     kinetics = (cfg["adhesion"].get("kinetics") or {})
     c[C_KIN_ON] = 1.0 if kinetics.get("enabled", False) else 0.0
     c[C_KIN_TR] = 1.0

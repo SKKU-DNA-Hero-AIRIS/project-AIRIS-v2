@@ -824,7 +824,11 @@ def _impingement_numpy(points, normals, nozzle, cfg, t=0.0):
                 continue
             core = 1.0 - np.exp(-xi ** 2 / 2)
             shape = core / np.sqrt(xi) if slot_rows[m] else core / xi
-            out[i] += k * cos_t * u_h * shape * end * gate * r / rho
+            # 충돌 영역 전단 배율 g(xi) = 1 + (sqrt(m) - 1)·T(xi)
+            m_factor = jet["impingement"].get("stagnation_shear_factor", 1.0)
+            over = max(xi - jet["impingement"].get("stagnation_zone_xi", 3.0), 0.0)
+            g_stag = 1.0 + (np.sqrt(m_factor) - 1.0) * np.exp(-0.5 * over ** 2)
+            out[i] += k * cos_t * u_h * shape * end * gate * g_stag * r / rho
     return out
 
 
@@ -834,6 +838,22 @@ def _mannequin_probe(pose: PoseParams, scenario, cfg):
     n = np.asarray(st.patch_normal, np.float64)
     x = st.patch_pos + cfg["air"]["wall_offset_m"] * n
     return x.astype(np.float32), n.astype(np.float32)
+
+
+def test_stagnation_factor_is_monotone_in_m(scenario):
+    """m이 커질수록 충돌 영역 보정이 커진다 (m = 1 < 3 < 6). 영역 밖은 거의 그대로다."""
+    nozzle = load_nozzles()
+    x, n = _mannequin_probe(PoseParams(torso_yaw=30.0), scenario, load_physics())
+    mags = []
+    for m in (1.0, 3.0, 6.0):
+        cfg = _with_stagnation(m)
+        ev = ParticleEvaluator(cfg, max_candidates=1, particles_per_candidate=1, duration_s=0.0)
+        try:
+            u = ev.probe_surface_velocity(x, n, nozzle).astype(np.float64)
+        finally:
+            ev.destroy()
+        mags.append(np.linalg.norm(u - _jet_velocity_numpy(x, nozzle, cfg), axis=1).mean())
+    assert mags[0] < mags[1] < mags[2], mags
 
 
 @pytest.mark.parametrize("kind", ["round", "slot", "mixed"])
@@ -1320,26 +1340,85 @@ def test_mesh_occlusion_switches_to_raycast(scenario):
     assert np.abs(mesh_vis - capsule_vis).mean() > 0.01, "메시 판정으로 전환되지 않았다"
 
 
-def test_stagnation_shear_factor_is_rejected_until_kernel_has_it():
-    """4.2b 충돌 영역 전단 배율 g(xi)(B #104)는 아직 커널에 없다. m != 1이면 패치판과 조용히
-    갈라지므로 평가기를 만들 때 막는다. 기본값 m = 1과 보정 꺼짐은 그대로 동작한다.
-
-    TODO(A): 커널에 g(xi)를 넣으면 이 테스트를 m ∈ {1, 3, 6} 패치판 대조로 바꾼다.
-    """
+def _with_stagnation(m: float, xi_z: float | None = None) -> dict:
     cfg = copy.deepcopy(load_physics())
-    assert cfg["jet"]["impingement"]["stagnation_shear_factor"] == 1.0    # 기본값
+    cfg["jet"]["impingement"]["stagnation_shear_factor"] = m
+    if xi_z is not None:
+        cfg["jet"]["impingement"]["stagnation_zone_xi"] = xi_z
+    return cfg
+
+
+def test_stagnation_factor_one_changes_nothing_and_validates(scenario):
+    """4.2b 충돌 영역 전단 배율: m = 1이면 결과가 비트 단위로 그대로다 (g = 1).
+
+    m < 0, xi_z <= 0은 패치판 `jet.jet_params`와 같이 막는다.
+    """
+    cfg = load_physics()
+    assert cfg["jet"]["impingement"]["stagnation_shear_factor"] == 1.0      # 기본값
+    nozzle = load_nozzles()
+    x, n = _mannequin_probe(PoseParams(), scenario, cfg)
     ev = ParticleEvaluator(cfg, max_candidates=1, particles_per_candidate=1, duration_s=0.0)
-    ev.destroy()                                                         # m = 1은 통과
+    ev_one = ParticleEvaluator(_with_stagnation(1.0), max_candidates=1,
+                               particles_per_candidate=1, duration_s=0.0)
+    try:
+        np.testing.assert_array_equal(ev.probe_surface_velocity(x, n, nozzle),
+                                      ev_one.probe_surface_velocity(x, n, nozzle))
+    finally:
+        ev.destroy()
+        ev_one.destroy()
 
-    bad = copy.deepcopy(cfg)
-    bad["jet"]["impingement"]["stagnation_shear_factor"] = 3.0
-    with pytest.raises(NotImplementedError, match="stagnation_shear_factor"):
-        ParticleEvaluator(bad, max_candidates=1, particles_per_candidate=1, duration_s=0.0)
+    for bad, match in ((_with_stagnation(-0.5), "stagnation_shear_factor"),
+                       (_with_stagnation(float("inf")), "stagnation_shear_factor"),
+                       (_with_stagnation(float("nan")), "stagnation_shear_factor"),
+                       (_with_stagnation(3.0, xi_z=0.0), "stagnation_zone_xi"),
+                       (_with_stagnation(3.0, xi_z=float("inf")), "stagnation_zone_xi")):
+        with pytest.raises(ValueError, match=match):
+            ParticleEvaluator(bad, max_candidates=1, particles_per_candidate=1, duration_s=0.0)
 
-    off = copy.deepcopy(bad)                    # 보정이 꺼져 있으면 g를 쓸 일이 없다
-    off["jet"]["impingement"]["enabled"] = False
-    ev = ParticleEvaluator(off, max_candidates=1, particles_per_candidate=1, duration_s=0.0)
-    ev.destroy()
+
+@pytest.mark.parametrize("m", [3.0, 6.0])
+def test_stagnation_factor_matches_patch_evaluator(m, scenario):
+    """m != 1에서도 부착 입자의 이탈 판정 속도가 B의 `velocity_field(..., surface_normals=)`와
+    1e-4로 같다 (4.2b g(xi)를 커널이 같은 식으로 곱한다).
+
+    m을 키우면 충돌점 둘레(xi <= xi_z)의 보정이 sqrt(m)배까지 커지므로 속도도 커져야 한다.
+    """
+    cfg = _with_stagnation(m)
+    nozzle = load_nozzles()
+    x, n = _mannequin_probe(PoseParams(torso_yaw=30.0), scenario, cfg)
+    ev = ParticleEvaluator(cfg, max_candidates=1, particles_per_candidate=1, duration_s=0.0)
+    ev_one = ParticleEvaluator(_with_stagnation(1.0), max_candidates=1,
+                               particles_per_candidate=1, duration_s=0.0)
+    try:
+        u_ti = ev.probe_surface_velocity(x, n, nozzle).astype(np.float64)
+        u_one = ev_one.probe_surface_velocity(x, n, nozzle).astype(np.float64)
+    finally:
+        ev.destroy()
+        ev_one.destroy()
+    u_b = velocity_field(x, nozzle, 0.0, cfg, surface_normals=n).astype(np.float64)
+    corr = _impingement_numpy(x, n, nozzle, cfg)                     # 독립 구현도 g를 포함한다
+    u_ref = _jet_velocity_numpy(x, nozzle, cfg) + corr
+    # 허용치는 가림 대조와 같은 형태: |Δu| <= 1e-4·|u| + 1e-5·Σ_m |u_m| (좌우 벽 상쇄점 때문)
+    scale = np.linalg.norm(velocity_field_per_nozzle(x, nozzle, 0.0, cfg, surface_normals=n)
+                           .astype(np.float64), axis=2).sum(axis=0)
+    for name, ref in (("B 패치판", u_b), ("float64 독립 구현", u_ref)):
+        err = np.linalg.norm(u_ti - ref, axis=1)
+        assert np.all(err <= 1e-4 * np.linalg.norm(ref, axis=1) + 1e-5 * scale), name
+
+    # m을 키우면 충돌 영역(xi <= xi_z) 보정이 커진다. 최댓값 지점은 영역 밖이라 평균으로 본다.
+    free = _jet_velocity_numpy(x, nozzle, cfg)
+    grew = (np.linalg.norm(u_ti - free, axis=1).mean()
+            / np.linalg.norm(u_one.astype(np.float64) - free, axis=1).mean())
+    assert grew > 1.1, (m, grew)
+    assert grew < np.sqrt(m), (m, grew)                 # 상한은 sqrt(m) (충돌점 둘레 최대 배율)
+
+    # 영역에서 멀면(xi >> xi_z) g -> 1이라 m = 1과 사실상 같아야 한다. 충돌점에서 아주 멀리
+    # 떨어진 점만 골라 본다 (보정 크기가 m = 1 대비 0.1% 안).
+    far = np.linalg.norm(u_one.astype(np.float64) - free, axis=1) > 0.0
+    corr_m = np.linalg.norm(u_ti - free, axis=1)[far]
+    corr_1 = np.linalg.norm(u_one.astype(np.float64) - free, axis=1)[far]
+    ratio = corr_m / corr_1
+    assert ratio.min() < 1.001, (m, float(ratio.min()))
 
 
 # ------------------------------------------ 계획 평가 (plan_extension.md, 4단계)
