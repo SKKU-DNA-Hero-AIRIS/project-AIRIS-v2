@@ -19,7 +19,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from airis.model.knn import STAMP_COLS, PoseKNN           # noqa: E402
+from airis.model.knn import PROVENANCE_COLS, STAMP_COLS, PoseKNN   # noqa: E402
 from airis.optimize import cli                            # noqa: E402
 
 
@@ -44,9 +44,13 @@ def main(argv: list[str] | None = None) -> int:
     if df.empty:
         print("표에 넣을 행이 없다", file=sys.stderr)
         return 2
-    for col in STAMP_COLS:                       # 설정이 섞인 데이터셋은 거부한다
+    for col in STAMP_COLS:                       # 설정이 섞인 데이터셋은 거부한다 (출처 열 commit 은 경고만)
         if col in df.columns and df[col].nunique(dropna=False) > 1:
-            print(f"데이터셋의 {col} 값이 여러 개다: {sorted(map(str, df[col].unique()))}", file=sys.stderr)
+            values = sorted(map(str, df[col].unique()))
+            if col in PROVENANCE_COLS:
+                print(f"[경고] 데이터셋의 {col} 값이 여러 개다: {values} (출처 기록이라 그대로 진행한다)")
+                continue
+            print(f"데이터셋의 {col} 값이 여러 개다: {values}", file=sys.stderr)
             return 2
 
     table = PoseKNN.from_dataset(df)

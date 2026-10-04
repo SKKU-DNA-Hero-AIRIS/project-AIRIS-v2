@@ -23,8 +23,17 @@ from airis.sim import BodyParams, PoseParams, Scenario
 
 from .flow import BODY_KEYS, POSE_KEYS
 
-#: 학습 데이터셋에서 한 값이어야 하는 열 (predict.py 가 현재 설정과 비교한다).
+#: 학습 데이터셋의 도장 열 (predict.py 가 현재 설정과 비교한다).
 STAMP_COLS = ("nozzle_layout_hash", "physics_hash", "body_model", "patches_per_m2", "commit")
+#: 도장 중 출처 기록일 뿐 설정이 아닌 열. 여러 값이어도 된다 (데이터셋 생성이 중단·재개되면 HEAD 가 바뀐다).
+#: 나머지 도장 열(설정)은 데이터셋에서 한 값이어야 한다.
+PROVENANCE_COLS = ("commit",)
+
+
+def stamp_value(series) -> str:
+    """도장 열 → 기록할 값. 한 값이면 그 값, 여러 값이면 많은 순으로 '+' 로 잇는다 (예: '55681cc+8af76a9')."""
+    counts = series.astype(str).value_counts()
+    return "+".join(counts.index.tolist())
 TABLE_COLS = (["body_idx", "scenario"] + [f"body_{k}" for k in BODY_KEYS]
               + [f"pose_{k}" for k in POSE_KEYS] + ["score", "arm_class"] + list(STAMP_COLS))
 
@@ -39,6 +48,9 @@ class PoseKNN:
         self.table = table.reset_index(drop=True)
         self.meta = {c: (self.table[c].iloc[0] if c in self.table.columns and len(self.table) else None)
                      for c in STAMP_COLS}
+        for c in PROVENANCE_COLS:                # 출처 열은 여러 값일 수 있다 → 전부 적는다
+            if c in self.table.columns and len(self.table):
+                self.meta[c] = stamp_value(self.table[c])
         cols = [f"body_{k}" for k in BODY_KEYS]
         bodies = self.table[cols].to_numpy(dtype=np.float64)
         self.mean = bodies.mean(axis=0)

@@ -433,3 +433,45 @@ def test_refresh_stops_early_when_backup_left_over(fake_steps, tmp_path):
     assert tpm.main(["--dataset", str(ds), "--out-dir", str(tmp_path / "o2"), "--model-dir", str(models),
                      "--no-install"]) == 0
     assert calls == ["train", "knn", "cv"]
+
+
+def test_check_dataset_allows_mixed_commit_but_not_mixed_config(monkeypatch):
+    """commit 은 출처 기록이라 여러 값이어도 진행한다 (생성 중단·재개). 설정 해시가 섞이면 여전히 거부한다."""
+    monkeypatch.setattr(tpm, "current_stamp", lambda: {"nozzle_layout_hash": "n0", "physics_hash": "p0"})
+    df = pd.DataFrame({"physics_hash": ["p0"] * 5, "nozzle_layout_hash": ["n0"] * 5, "body_model": "mesh",
+                       "commit": ["aaa", "aaa", "aaa", "bbb", "bbb"]})
+    stamp, warns = tpm.check_dataset(df)
+    assert stamp["commit"] == "aaa+bbb", "많은 순으로 전부 적는다"
+    assert stamp["physics_hash"] == "p0" and stamp["body_model"] == "mesh"
+    assert len(warns) == 1 and warns[0].startswith("commit") and "'aaa': 3" in warns[0]
+    with pytest.raises(ValueError, match="physics_hash"):
+        tpm.check_dataset(df.assign(physics_hash=["p0", "p0", "p0", "p1", "p1"]))
+    with pytest.raises(ValueError, match="body_model"):
+        tpm.check_dataset(df.assign(body_model=["mesh"] * 4 + ["capsule"]))
+
+
+def test_knn_table_accepts_mixed_commit(tmp_path, capsys):
+    """kNN 표 생성도 commit 이 섞인 데이터셋을 받고, 표 meta 에 전부 적는다."""
+    import build_pose_knn
+    from airis.model.flow import BODY_KEYS, POSE_KEYS
+    from airis.model.knn import PoseKNN
+    from airis.sim import BodyParams, PoseParams
+
+    rows = []
+    for i in range(6):
+        r = {"body_idx": i, "scenario": "default", "score": 0.5, "arm_class": "hands_up",
+             "nozzle_layout_hash": "n0", "physics_hash": "p0", "body_model": "mesh", "patches_per_m2": 1500.0,
+             "commit": "aaa" if i < 4 else "bbb"}
+        r.update({f"body_{k}": getattr(BodyParams(), k) + 0.01 * i for k in BODY_KEYS})
+        r.update({f"pose_{k}": getattr(PoseParams(), k) for k in POSE_KEYS})
+        rows.append(r)
+    df = pd.DataFrame(rows)
+    ds, out = tmp_path / "ds.parquet", tmp_path / "knn.parquet"
+    df.to_parquet(ds)
+    assert build_pose_knn.main(["--dataset", str(ds), "--out", str(out)]) == 0
+    assert "commit" in capsys.readouterr().out
+    table = PoseKNN.load(out)
+    assert table.meta["commit"] == "aaa+bbb" and table.meta["physics_hash"] == "p0"
+    df.assign(physics_hash=["p0"] * 5 + ["p1"]).to_parquet(ds)
+    assert build_pose_knn.main(["--dataset", str(ds), "--out", str(tmp_path / "bad.parquet")]) == 2
+    assert not (tmp_path / "bad.parquet").exists(), "설정 해시가 섞이면 여전히 거부한다"

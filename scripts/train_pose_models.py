@@ -87,24 +87,33 @@ def current_stamp() -> dict[str, str]:
 
 
 def check_dataset(df) -> tuple[dict, list[str]]:
-    """(데이터셋 도장, 경고 목록). 도장 열이 여러 값이면 ValueError."""
-    from airis.model.knn import STAMP_COLS
+    """(데이터셋 도장, 경고 목록). 설정 도장 열이 여러 값이면 ValueError.
+
+    출처 열(commit)은 여러 값이어도 된다: 데이터셋 생성이 중단·재개되면 HEAD 가 바뀐다. 경고로 남기고
+    도장에는 전부 적는다 ('55681cc+8af76a9'). 물리가 같은지는 physics_hash·nozzle_layout_hash 가 가른다.
+    """
+    from airis.model.knn import PROVENANCE_COLS, STAMP_COLS, stamp_value
 
     stamp: dict = {}
+    warns: list[str] = []
     for col in STAMP_COLS:
         if col in df.columns:
             vals = sorted(set(df[col].astype(str)))
             if len(vals) != 1:
-                raise ValueError(f"데이터셋의 {col} 가 여러 값이다 {vals}. 한 물리 기준의 행만 쓴다.")
-            stamp[col] = vals[0]
+                if col not in PROVENANCE_COLS:
+                    raise ValueError(f"데이터셋의 {col} 가 여러 값이다 {vals}. 한 물리 기준의 행만 쓴다.")
+                counts = df[col].astype(str).value_counts().to_dict()
+                warns.append(f"{col}: 데이터셋에 여러 값이 있다 {counts}. 출처 기록이라 그대로 진행한다 "
+                             "(설정 해시는 한 값).")
+            stamp[col] = stamp_value(df[col])
     from airis.model import predict
 
     now = current_stamp()
     # 자세 산출물이므로 설정 해시(STAMP_KEYS)만 본다. kinetics 는 계획 평가에만 쓰여 자세 데이터셋과 무관하다.
     diff = [k for k in predict.stamp_mismatch(stamp, now) if k in predict.STAMP_KEYS]
-    warns = [f"{k}: 데이터셋 {stamp[k]} ≠ 지금 설정 {now[k]}. 해시는 설정 YAML 내용(정렬 직렬화) 기준이라 "
-             "물리·노즐 설정 값이 바뀐 것이다. 데이터셋부터 다시 만든다(C). "
-             "(#98 이전 옛 규약 도장이면 값이 같아도 다르게 나온다.)" for k in diff]
+    warns += [f"{k}: 데이터셋 {stamp[k]} ≠ 지금 설정 {now[k]}. 해시는 설정 YAML 내용(정렬 직렬화) 기준이라 "
+              "물리·노즐 설정 값이 바뀐 것이다. 데이터셋부터 다시 만든다(C). "
+              "(#98 이전 옛 규약 도장이면 값이 같아도 다르게 나온다.)" for k in diff]
     return stamp, warns
 
 
