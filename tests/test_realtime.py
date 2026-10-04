@@ -333,9 +333,12 @@ def test_display_wording_is_plain_but_identifiers_are_not():
 
     # 내부 식별자는 그대로
     assert set(baseline_poses()) == {"B0 기본", "B1 몸 회전", "B2 만세"}
-    assert set(BASELINE_LABELS) >= set(baseline_poses()) | {"추천"}
-    for name, shown in BASELINE_LABELS.items():
-        assert not shown.startswith(("B0", "B1", "B2")), f"{name} 표시 문구에 약어가 남았다: {shown}"
+    from airis.realtime.recommend import BASELINE_LABELS_SHORT
+    for table in (BASELINE_LABELS, BASELINE_LABELS_SHORT):
+        assert set(table) >= set(baseline_poses()) | {"추천"}
+        for name, shown in table.items():
+            assert not shown.startswith(("B0", "B1", "B2")), f"{name} 에 약어가 남았다: {shown}"
+    assert all(len(v) <= 7 for v in BASELINE_LABELS_SHORT.values()), "짧은 이름이 길면 잘린다"
 
     # 출처 문구: 사람이 읽을 수 있고, 원문 식별자는 들어가지 않는다
     assert source_text("model: hybrid (flow)") == "AI 추천 후보 중에서 시뮬레이션으로 확인한 자세"
@@ -919,10 +922,12 @@ def test_dashboard_runs_to_recommendation(mode, scenario):
     scen_radio = next(r for r in at.radio if r.key == "scenario")
     assert scen_radio.value == scenario
     # 화면에는 일반인 표현을 쓴다 (내부 식별자는 ScoreRow.name 으로 따로 둔다)
-    from airis.realtime.recommend import BASELINE_LABELS
+    from airis.realtime.recommend import BASELINE_LABELS_SHORT
     labels = [m.label for m in at.metric]
-    assert labels == [f"{BASELINE_LABELS[n]} 대비" for n in ("B0 기본", "B1 몸 회전", "B2 만세")]
+    assert labels == [f"{BASELINE_LABELS_SHORT[n]} 대비" for n in ("B0 기본", "B1 몸 회전", "B2 만세")]
     assert not any("B0" in t or "hybrid" in t for t in labels)
+    # 지표 칸이 좁아 긴 이름은 "안내 없이 서 있을 때..." 로 잘린다. 짧은 이름만 쓴다.
+    assert all(len(t) <= 10 for t in labels), f"지표 라벨이 길어 잘린다: {labels}"
     at.selectbox[0].set_value("합성 프레임 미리보기 (가짜 궤적)").run()
     assert not at.exception, [e.value for e in at.exception]
 
