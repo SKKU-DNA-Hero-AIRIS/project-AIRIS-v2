@@ -9,6 +9,7 @@
     ③ 시나리오 선택 (영상으로 판별하지 않는다)
     ④ 추천 자세 3D 마네킹 + 기준 자세(B0·B1·B2)와 점수 비교 (D PatchEvaluator, 400/m²)
        추천은 C의 혼합 모델(flow + kNN + 고정 후보표)을 부르고, 산출물이 없으면 표만 쓴다.
+    ④-2 추천 동작: 그 자세 그대로 제자리에서 10방향으로 돌기 (airis.realtime.plan_guide)
     ⑤ 입자 애니메이션 (A 덤프가 있으면, 없으면 합성 프레임 미리보기)
 
 기동할 때 추천을 한 번 미리 돌려(`warm_up`) 추천 모델을 올려 둔다. 첫 호출에는 산출물 로딩이 섞여
@@ -40,7 +41,7 @@ if str(ROOT) not in sys.path:
 import numpy as np                                                    # noqa: E402
 import streamlit as st                                                # noqa: E402
 
-from airis.realtime import camera, pose_estimate as pe               # noqa: E402
+from airis.realtime import camera, plan_guide, pose_estimate as pe  # noqa: E402
 from airis.realtime.recommend import (BASELINE_LABELS, BASELINE_LABELS_SHORT,  # noqa: E402
                                       MESH_E4_BASELINES,
                                       MESH_E4_HANDS_UP_SEEDS, RESPONSE_BUDGET_S,
@@ -474,6 +475,44 @@ def main() -> None:
         })
     with st.expander("자세별 점수 표 (부위별 값은 시뮬레이터 내부 값, 순위 비교용)"):
         st.dataframe(table, **WIDE, hide_index=True)
+
+    # ---------------- ④-2 추천 동작 (회전) ----------------
+    st.subheader("④-2 추천 동작: 그 자세로 한 바퀴 돌기")
+    plan = plan_guide.rotation_plan(rec.pose)
+    guide_col, effect_col = st.columns([1.2, 1.0], gap="large")
+    with guide_col:
+        for line in plan_guide.rotation_instructions(rec.pose, scenario):
+            st.markdown(f"- {line}")
+        st.caption(f"바람 세기는 모든 구역 100%입니다 (지금 장비 그대로). "
+                   f"자세를 바꾸지 않으므로 자세를 바꾸는 시간이 들지 않습니다 — "
+                   f"그래서 {int(plan.duration_s)}초를 {plan_guide.ROTATION_STEPS}칸으로 쪼갤 수 있습니다.")
+        st.download_button(
+            "장비 제어 파일 내려받기 (JSON)",
+            data=json.dumps(plan_guide.control_json(
+                plan, body, scenario, source=f"rotation: {plan_guide.ROTATION_STEPS}단계 · {rec.source}",
+                reference={"bundle": "e7_sweep_reference.json",
+                           "condition": f"P1opt_{plan_guide.ROTATION_STEPS}"}),
+                ensure_ascii=False, indent=1),
+            file_name=f"airis_plan_{scen}.json", mime="application/json")
+    with effect_col:
+        ref = plan_guide.rotation_reference(scen)
+        if ref:
+            base = next((r for r in ref if r.key == "P0"), None)
+            st.dataframe([{
+                "동작": r.label,
+                "먼지 제거 효과": round(r.total_removal, 3),
+                "안내 없이 통과 대비": "—" if base is None or r.key == "P0"
+                               else f"{r.total_removal / base.total_removal:.1f}배",
+                "시간": f"{r.duration_s:.0f}초",
+            } for r in ref], **WIDE, hide_index=True)
+            st.caption("C의 운전 계획 실험(E7) 값입니다. **기본 체형 기준**이라 위 체형과 다를 수 있고, "
+                       "'먼지 제거 효과'는 보정 전 시뮬레이션 값이라 절대 비율이 아닙니다.")
+        else:
+            st.info("운전 계획 실험 결과 파일이 없어 수치를 보여 주지 못합니다 (안내 자체는 위와 같습니다).")
+        with st.expander("자세를 바꿔 가는 계획 (준비 중)"):
+            st.caption("단계마다 **다른** 자세로 가는 계획입니다. 지금은 계획 모델 산출물이 없어 "
+                       "화면 틀만 있습니다. 실험(E7)에서는 돌기만 하는 쪽이 더 좋았습니다 — "
+                       "자세를 바꾸는 동안은 먼지가 떨어지지 않기 때문입니다.")
 
     # ---------------- ⑤ 입자 애니메이션 ----------------
     st.subheader("⑤ 입자 애니메이션")
