@@ -43,7 +43,7 @@ import streamlit as st                                                # noqa: E4
 
 from airis.realtime import camera, plan_guide, pose_estimate as pe  # noqa: E402
 from airis.realtime.recommend import (BASELINE_LABELS, BASELINE_LABELS_SHORT,  # noqa: E402
-                                      MESH_E4_BASELINES,
+                                      FEASIBILITY_MARGIN, MESH_E4_BASELINES,
                                       MESH_E4_HANDS_UP_SEEDS, RESPONSE_BUDGET_S,
                                       compare_with_baselines, default_body, improvement,
                                       model_artifacts, pose_instructions, recommend,
@@ -417,6 +417,8 @@ def main() -> None:
                    f"몸을 옆으로 돌리는 데서 옵니다.")
         for note in rec.notes:
             st.info(note)
+        st.caption(f"키를 {FEASIBILITY_MARGIN:.0%} 크게 보고도 부스 안인 자세만 제안합니다 "
+                   f"(체형 측정 오차 대비).")
         over = rec.elapsed_s > RESPONSE_BUDGET_S
         st.caption(("⚠️ " if over else "") + f"응답 시간 {rec.elapsed_s:.2f} s "
                    f"(목표 {RESPONSE_BUDGET_S:.1f} s 이내" +
