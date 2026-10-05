@@ -14,6 +14,9 @@
 재채점은 구성 D(중복 제거 `RESCORE_DEDUP_DEG`, 스레드 `RESCORE_THREADS`)로 부른다. 후보 수가 같아도
 거의 같은 자세를 묶고 채점을 나눠 응답 시간을 줄인다 (F 측정 평균 1.04 s → 0.55 s).
 
+부스 안 판정에는 여유(`FEASIBILITY_MARGIN`, `FEASIBILITY_MARGIN_MODE`)를 준다. 카메라 체형 추정이 조금
+작게 나왔을 때 천장에 닿는 자세를 안내하지 않기 위해서다. 전부 걸리면 여유 없이 고르고 메모를 남긴다.
+
 `Recommendation.source` 는 `"model: hybrid (flow|knn|extra)"`(고른 후보의 출처) 또는 `"stub: …"`,
 `"fallback: B0"` 이다. `stats` 에 출처별 후보 수·가능 수·최고 점수, `elapsed_s` 에 응답 시간(목표 1.5 s)이
 들어간다. 산출물 경로·학습 커밋·설정 해시 일치는 `model_artifacts()`(= C의 `predict.artifact_status()`)로 읽기만 한다.
@@ -125,6 +128,15 @@ RESPONSE_BUDGET_S = 1.5
 #: 점수·출처별 통계는 그대로다 (선별 평가기는 쓰지 않는다).
 RESCORE_DEDUP_DEG = 3.0
 RESCORE_THREADS = 3
+#: 부스 안 판정 여유 (총괄 확정 2026-10-04, experiments_model.md 7.2). 카메라 체형 추정이 조금 작게
+#: 나왔을 때 천장에 닿는 자세를 안내하지 않도록, **키·팔·다리를 2% 크게 본 몸에서도 부스 안**인 후보를
+#: 고른다. 점수와 불가 판정은 추정 체형 것을 그대로 쓴다.
+#: 측정(체형 오차 ±5%): 불가 1행 → 0행. 비용은 키 1.80 m 이상 9/300행에서 평균 −3.8%, 채점 1.2회 추가.
+#: **보장은 아니다** — 키를 2% 넘게 작게 본 경우는 여전히 뚫린다 (여유를 예상 오차만큼 줘야 보장된다).
+FEASIBILITY_MARGIN = 0.02
+#: "reach" = 키·팔 길이·다리 길이만 키운다 (천장에만 보수적). "all" 은 어깨 너비·몸통 두께까지 키운다.
+#: 이 부스(폭 1.46 m)에서는 둘의 결과가 같지만, 더 좁은 부스에서 벽 쪽 품질을 깎지 않는 쪽을 쓴다.
+FEASIBILITY_MARGIN_MODE = "reach"
 #: 후보 출처 표시 이름 (화면용. 내부 식별자 "flow"·"knn"·"extra" 는 바꾸지 않는다)
 SOURCE_LABELS = {"flow": "AI 추천 후보", "knn": "비슷한 체형 참조",
                  "extra": "기본 후보표"}
@@ -221,7 +233,9 @@ def _model_predict(body: BodyParams, scenario: Scenario, model: str,
     try:
         return predict(body, scenario, evaluator=patch_evaluator(model), nozzle=_nozzles(),
                        extra_candidates=extra_candidates,
-                       dedup_deg=RESCORE_DEDUP_DEG, n_threads=RESCORE_THREADS)
+                       dedup_deg=RESCORE_DEDUP_DEG, n_threads=RESCORE_THREADS,
+                       feasibility_margin=FEASIBILITY_MARGIN,
+                       feasibility_margin_mode=FEASIBILITY_MARGIN_MODE)
     except FileNotFoundError:
         note("학습 산출물(data/models/pose_flow.pt · pose_knn.parquet)이 없어 표(E4)로 안내합니다")
     except ImportError as exc:
@@ -286,6 +300,10 @@ def recommend(body: BodyParams | None, scenario: Scenario, *, use_model: bool = 
                 # 평가기의 불가 판정과 별개로 E가 한 번 더 본다 (clip_pose 로 자세가 바뀌었을 수 있다).
                 notes.append("모델이 고른 자세가 부스(천장·벽) 밖이라 표의 자세로 대체")
             else:
+                if getattr(pred, "margin_fallback", False):
+                    notes.append(f"후보가 모두 여유 판정에 걸려 **여유 없이** 고른 자세입니다 "
+                                 f"(키를 {FEASIBILITY_MARGIN:.0%} 크게 보면 부스 밖). "
+                                 f"체형을 다시 재 보세요.")
                 src = pred.sources[i] if 0 <= i < len(pred.sources) else pred.source
                 label = "모델 추천"
                 if src == "extra":                 # 고른 것이 표 후보면 표의 이름을 그대로 쓴다

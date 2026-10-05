@@ -728,15 +728,44 @@ def test_recommend_passes_stub_candidates_to_model(monkeypatch):
     rec = recommend(CAPSULE_BODY, sc, model="capsule")
     assert [p for p in seen["extra_candidates"]] == [e.pose for e in STUB_TABLE["default"]]
     # 재채점 구성 D (F 측정 뒤 총괄 확정): 거의 같은 후보를 묶고 채점을 스레드로 나눈다
-    from airis.realtime.recommend import RESCORE_DEDUP_DEG, RESCORE_THREADS
+    from airis.realtime.recommend import (FEASIBILITY_MARGIN, FEASIBILITY_MARGIN_MODE,
+                                          RESCORE_DEDUP_DEG, RESCORE_THREADS)
     assert seen["dedup_deg"] == RESCORE_DEDUP_DEG == 3.0
     assert seen["n_threads"] == RESCORE_THREADS == 3
+    # 부스 안 판정 여유: 키·팔·다리를 2% 크게 본 몸에서도 부스 안인 후보를 고른다
+    assert seen["feasibility_margin"] == FEASIBILITY_MARGIN == 0.02
+    assert seen["feasibility_margin_mode"] == FEASIBILITY_MARGIN_MODE == "reach"
     assert seen["evaluator"] is rmod.patch_evaluator("capsule") and seen["nozzle"] is rmod._nozzles()
     # 표 후보가 이겼으면 표의 이름을 쓰되 출처는 모델이다 (풀 전체에서 고른 것이라)
     assert rec.source == "model: hybrid (extra)"
     assert rec.label.startswith("모델 추천") and STUB_TABLE["default"][0].label in rec.label
     assert rec.pose == PoseEncoder(sc).clip_pose(STUB_TABLE["default"][0].pose)
     assert rec.elapsed_s > 0.0
+
+
+def test_recommend_notes_margin_fallback(monkeypatch):
+    """후보가 전부 여유 판정에 걸리면 그 사실을 화면 메모로 남긴다 (조용히 넘어가지 않는다)."""
+    import airis.model.predict as P
+    from airis.realtime.recommend import FEASIBILITY_MARGIN
+
+    sc = SCENARIOS["default"]
+    good = PoseParams(torso_yaw=60.0)
+
+    def fake(body, scenario, **kw):
+        pred = _fake_prediction([good], ["knn"], [0.9], [False])
+        pred.margin_fallback = True                  # predict 가 여유 없이 고른 상태
+        return pred
+
+    monkeypatch.setattr(P, "predict", fake)
+    rec = recommend(CAPSULE_BODY, sc, model="capsule")
+    assert rec.source == "model: hybrid (knn)" and rec.pose == PoseEncoder(sc).clip_pose(good)
+    assert any("여유 없이" in n for n in rec.notes), rec.notes
+    assert any(f"{FEASIBILITY_MARGIN:.0%}" in n for n in rec.notes)
+
+    # 평소에는 그 메모가 없다
+    monkeypatch.setattr(P, "predict", lambda b, s, **kw: _fake_prediction(
+        [good], ["knn"], [0.9], [False]))
+    assert not any("여유 없이" in n for n in recommend(CAPSULE_BODY, sc, model="capsule").notes)
 
 
 def test_recommend_reports_source_stats(monkeypatch):
