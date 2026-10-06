@@ -56,6 +56,11 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--seeds", nargs="*", type=int, default=[0])
     ap.add_argument("--energy-weights", nargs="*", type=float, default=[0.0, 0.01, 0.03, 0.1],
                     help="scoring.energy_weight 스윕 (통합·D 검토 2026-09-30). 0 이면 에너지 항 없음")
+    ap.add_argument("--warm-start", type=float, nargs="?", const=0.2, default=None,
+                    metavar="sigma0",
+                    help="P5 를 단일 자세 최적에서 출발시킨다 (모든 단계 같은 자세, 세기 최대, "
+                         "시간 균등). 초기 스텝은 주어진 값(생략하면 0.2)으로 작게 잡는다. "
+                         "점수 함수·밀도는 그대로이고 시작점과 초기 스텝만 바뀐다")
     ap.add_argument("--n-phases", type=int, default=None,
                     help="plan.n_phases 덮어쓰기 (configs 는 건드리지 않는다). E7 본 실행은 2 였고, "
                          "단계 수가 병목인지 보는 스윕에 쓴다")
@@ -64,6 +69,9 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--max-evals", type=int, default=6000, help="계획 최적화 예산 (21차원)")
     ap.add_argument("--pose-max-evals", type=int, default=3000, help="단일 자세 최적(P2·P4·시작점) 예산")
     ap.add_argument("--popsize", type=int, default=100)
+    ap.add_argument("--tol-stagnation-gens", type=int, default=30,
+                    help="정체 몇 세대면 멈출지 (계획·자세 최적화 공통). 따뜻한 시작에서는 20 이면 "
+                         "충분하다 — 실측에서 99%% 점수에 7,900 평가, 종료까지 10,900 평가였다")
     ap.add_argument("--sigma0", type=float, default=0.5)
     ap.add_argument("--starts", default=cli.DEFAULT_STARTS, help="자세 최적화 시작점 (P5 시작점도 여기서 만든다)")
     ap.add_argument("--patches-per-m2", type=float, default=1500.0)
@@ -174,6 +182,7 @@ def main(argv: list[str] | None = None) -> int:
             limits = dataclasses.replace(limits, duration_bounds_s=(need, hi))
     print(f"[{group_id}] evaluator={args.evaluator} scenarios={names} seeds={args.seeds} "
           f"conditions={conditions} energy_weights={weights} n_phases={limits.n_phases} "
+          + (f"warm_start(sigma0 {args.warm_start:g}) " if args.warm_start is not None else "") +
           f"nozzles={nozzle.count}({nozzle_source}) "
           f"kinetics={kinetics['kinetics_enabled']}(T_r {kinetics['time_constant_s']:g} s)")
 
@@ -199,6 +208,7 @@ def main(argv: list[str] | None = None) -> int:
                 return 3
             pose_res = run_cmaes(evaluator, body, scenario, nozzle, max_evals=args.pose_max_evals,
                                  seed=args.seeds[0], popsize=args.popsize, sigma0=args.sigma0,
+                                 tol_stagnation_gens=args.tol_stagnation_gens,
                                  starts=pose_starts, log_dir=args.log_dir,
                                  exp_id=explog.new_exp_id(args.tag + "pose"))
             best_pose = pose_res.best_pose
@@ -229,12 +239,19 @@ def main(argv: list[str] | None = None) -> int:
                             fixed = [PoseParams()] * limits.n_phases
                         elif cond == "P4":
                             fixed = [best_pose] * limits.n_phases
-                        starts = None if cond != "P5" else [
-                            Start(s.name, s.pose, s.sigma0) for s in pose_starts]
+                        if cond != "P5":
+                            starts = None
+                        elif args.warm_start is not None:
+                            # 따뜻한 시작: 단일 자세 최적 하나에서, 작은 스텝으로 (총괄 10-06).
+                            # run_cmaes_plan 이 이 자세를 모든 단계에 넣은 계획으로 바꾼다.
+                            starts = [Start("warm", best_pose, args.warm_start)]
+                        else:
+                            starts = [Start(s.name, s.pose, s.sigma0) for s in pose_starts]
                         res = run_cmaes_plan(
                             ev, body, scen, nozzle, limits=limits, starts=starts,
                             max_evals=args.max_evals, seed=seed, popsize=args.popsize,
-                            sigma0=args.sigma0, log_dir=args.log_dir,
+                            sigma0=args.sigma0, tol_stagnation_gens=args.tol_stagnation_gens,
+                            log_dir=args.log_dir,
                             exp_id=explog.new_exp_id(f"{args.tag}{cond.lower()}"),
                             **({"fixed_poses": fixed} if fixed is not None else {}))
                         plan = res.best_plan
