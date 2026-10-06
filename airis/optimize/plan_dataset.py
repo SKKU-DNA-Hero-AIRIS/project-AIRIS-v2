@@ -294,6 +294,12 @@ def build_plan_dataset(
     existing = _read(out_path)
     done: set = set()
     if existing is not None and len(existing):
+        missing = [c for c in CONSISTENCY_COLS if c not in existing.columns]
+        if missing:
+            # 옛 코드로 만든 파일이다. 이어 붙이면 그 열이 NaN 인 행이 섞여 도장 검사가 무의미해진다.
+            raise ValueError(
+                f"{out_path} 에 도장 열이 없다: {missing}. 옛 코드로 만든 파일이라 이어 만들 수 "
+                f"없다 — 다른 파일로 만들거나 기존 파일을 옮겨라.")
         for col in CONSISTENCY_COLS:
             vals = set(existing[col].astype(str))
             if vals != {str(stamp[col])}:

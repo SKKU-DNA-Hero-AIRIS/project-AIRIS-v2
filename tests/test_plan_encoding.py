@@ -743,3 +743,17 @@ def test_candidate_raw_is_symmetry_normalized(scenarios):
     assert plain["zone_chest_low"] < plain["zone_back_low"], plain
     assert raw["zone_chest_low"] == pytest.approx(plain["zone_back_low"])
     assert raw["zone_back_low"] == pytest.approx(plain["zone_chest_low"])
+
+
+def test_plan_dataset_rejects_file_without_stamp_columns(tmp_path):
+    """도장 열이 없는 옛 파일에는 이어 붙이지 않는다 — NaN 행이 섞이면 도장 검사가 무의미해진다."""
+    import pandas as pd
+
+    from airis.optimize.plan_dataset import PlanDatasetConfig, build_plan_dataset
+
+    out = tmp_path / "old.parquet"
+    pd.DataFrame([{"body_idx": 0, "scenario": "default", "score": 1.0}]).to_parquet(out, index=False)
+    with pytest.raises(ValueError, match="도장 열이 없다"):
+        build_plan_dataset(out, n_bodies=1, scenarios=["default"],
+                           cfg=PlanDatasetConfig(n_phases=3, evaluator="dummy"),
+                           processes=1, log=lambda *a: None)
