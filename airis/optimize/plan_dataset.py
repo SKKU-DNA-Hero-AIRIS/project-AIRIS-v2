@@ -39,7 +39,10 @@ KEY_COLS = ("body_idx", "scenario")
 CONSISTENCY_COLS = ("nozzle_layout_hash", "physics_hash", "body_seed", "max_evals", "popsize",
                     "patches_per_m2", "evaluator", "body_model", "n_phases", "energy_weight",
                     "kinetics_enabled", "time_constant_s", "zone_nozzle_counts",
-                    "duration_lo_s", "duration_hi_s", "min_phase_s")
+                    "duration_lo_s", "duration_hi_s", "min_phase_s",
+                    # 후보 선정·따뜻한 시작 설정이 다르면 행의 뜻이 달라진다 (통합 검토 10-07)
+                    "candidate_k", "candidate_tol", "candidate_min_dist",
+                    "warm_start_sigma0", "pose_max_evals")
 #: 고정 회전 기준선의 단계 수 (총괄 10-04: min_phase_s 를 지키는 표준은 10단계).
 ROTATION_STEPS = 10
 
@@ -128,9 +131,11 @@ def candidate_columns(candidates: list[dict], encoder, best_score: float, *,
         picked.append(x)
         if len(chosen) >= k:
             break
-    # 저장은 원래 단위. decode 한 계획은 encode 가 이미 대칭 정규화·투영을 거친 것이다.
+    # 저장은 원래 단위. **decode 는 clip 만 하므로 normalize 를 다시 거친다** — 1단계 yaw 가
+    # 정면(0°) 경계면 chest/back 구역을 맞바꾸는 규칙(plan_encoding.normalize)이 decode 에는
+    # 없어서, 그냥 decode 하면 같은 계획이 구역 순서만 다른 값으로 저장된다 (통합 검토 10-07).
     return {
-        "cand_plan_raw": [[float(v) for v in encoder.raw_vector(encoder.decode(x))]
+        "cand_plan_raw": [[float(v) for v in encoder.raw_vector(encoder.normalize(encoder.decode(x)))]
                           for x in picked],
         "cand_score": [float(c["score"]) for c in chosen],
         "n_candidates": len(chosen),
@@ -256,6 +261,9 @@ def stamp_for(cfg: PlanDatasetConfig) -> dict:
         "candidate_k": cfg.candidate_k,
         "warm_start_sigma0": cfg.warm_start_sigma0,
         "tol_stagnation_gens": cfg.tol_stagnation_gens,
+        "candidate_tol": cfg.candidate_tol,
+        "candidate_min_dist": cfg.candidate_min_dist,
+        "pose_max_evals": cfg.pose_max_evals,
     }
 
 
@@ -327,16 +335,18 @@ def build_plan_dataset(
             rate = n_new / max(time.perf_counter() - t0, 1e-9)
             log(f"[plan] {n_new}/{len(tasks)}  {rate * 60:.2f} 행/분")
 
-    if processes <= 1:
-        _worker_init(cfg)
-        for task in tasks:
-            consume(run_task(task))
-    elif tasks:
-        ctx = mp.get_context("spawn")
-        with ctx.Pool(processes, initializer=_worker_init, initargs=(cfg,)) as pool:
-            for row in pool.imap_unordered(run_task, tasks, chunksize=1):
-                consume(row)
-    flush()
+    try:                                    # 작업자가 죽어도 모은 행은 저장한다 (flush 주기 ≤ 20행)
+        if processes <= 1:
+            _worker_init(cfg)
+            for task in tasks:
+                consume(run_task(task))
+        elif tasks:
+            ctx = mp.get_context("spawn")
+            with ctx.Pool(processes, initializer=_worker_init, initargs=(cfg,)) as pool:
+                for row in pool.imap_unordered(run_task, tasks, chunksize=1):
+                    consume(row)
+    finally:
+        flush()
 
     n_rows = len(frames[0]) if frames else 0
     return {"path": out_path, "n_rows": n_rows, "n_new": n_new, "n_skipped": n_skipped}

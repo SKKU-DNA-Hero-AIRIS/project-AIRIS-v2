@@ -710,3 +710,36 @@ def test_plan_limits_rejects_too_many_phases():
     assert plan_limits(PlanDatasetConfig(n_phases=9)).duration_bounds_s == (18.0, 20.0)
     with pytest.raises(ValueError, match="N ≤ 9"):
         plan_limits(PlanDatasetConfig(n_phases=10))
+
+
+def test_candidate_raw_is_symmetry_normalized(scenarios):
+    """후보 저장 벡터는 대칭 정규화를 거친다 — decode 는 clip 만 한다 (통합 검토 10-07).
+
+    1단계 yaw 가 정면(0°)이면 `normalize` 가 chest/back 구역을 맞바꾼다. 그 규칙이 decode 에는
+    없어서, 그냥 decode 하면 같은 계획이 구역 순서만 다른 값으로 저장된다.
+    """
+    import numpy as np
+
+    from airis.optimize.plan_dataset import candidate_columns
+    from airis.optimize.plan_encoding import PlanEncoder, PlanLimits, plan_keys
+
+    enc = PlanEncoder(scenarios["default"], PlanLimits(n_phases=3, duration_bounds_s=(6.0, 20.0)))
+    keys = plan_keys(3)
+    x = np.zeros(enc.dim)
+    x[keys.index("p1_torso_yaw")] = -1.0            # 1단계 yaw 를 범위 하한(정면 쪽)으로
+    x[keys.index("zone_chest_low")] = -1.0          # 가슴 약, 등 강 → normalize 가 맞바꾼다
+    x[keys.index("zone_chest_high")] = -1.0
+    x[keys.index("zone_back_low")] = 1.0
+    x[keys.index("zone_back_high")] = 1.0
+
+    out = candidate_columns([{"x": x, "score": 1.0, "infeasible": False}], enc, 1.0,
+                            k=4, tol=0.02, min_dist=0.05)
+    raw = dict(zip(keys, out["cand_plan_raw"][0]))
+    plain = dict(zip(keys, enc.raw_vector(enc.decode(x))))
+
+    assert abs(raw["p1_torso_yaw"]) < 1e-9, "정면이면 1단계 yaw 는 0 으로 접힌다"
+    # 맞바꿈이 실제로 일어나 저장값과 '그냥 decode' 값이 다르다 — 이 테스트가 구분력이 있다.
+    assert raw["zone_chest_low"] > raw["zone_back_low"], raw
+    assert plain["zone_chest_low"] < plain["zone_back_low"], plain
+    assert raw["zone_chest_low"] == pytest.approx(plain["zone_back_low"])
+    assert raw["zone_back_low"] == pytest.approx(plain["zone_chest_low"])
