@@ -99,7 +99,7 @@ def test_limits_come_from_artifacts_not_config(artifacts):
 
 def test_limits_without_columns_fail_with_a_clear_message():
     """kNN 표만 있고 한도 열이 없는데 N × min_phase_s 가 설정 파일의 총 시간 상한 이상이면 무엇이 문제인지 알린다."""
-    bare10 = PlanKNN.from_dataset(plan_df(10, n_bodies=2, stamps=False))        # 10 × 2 s = 설정 상한 20 s
+    bare10 = PlanKNN.from_dataset(plan_df(5, n_bodies=2, stamps=False), min_phase_s=4.0)   # 5 × 4 s = 설정 상한 20 s
     with pytest.raises(ValueError, match="계획 한도를 정할 수 없다"):
         pred.plan_limits_for(None, bare10)
     # 한도 열이 비어 있으면(NaN) 없는 것으로 보고 다른 출처의 값을 쓴다
