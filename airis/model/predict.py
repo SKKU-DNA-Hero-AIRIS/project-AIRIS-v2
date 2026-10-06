@@ -648,7 +648,10 @@ def plan_limits_for(model: PoseFlow | None = None, knn: PlanKNN | None = None):
 
     def num(key):
         v = meta.get(key)
-        return None if v is None else float(v)
+        if v is None:
+            return None
+        v = float(v)
+        return v if np.isfinite(v) else None                    # 비어 있는 한도 열(NaN)은 없는 것으로 본다
 
     lo, hi = num("duration_lo_s"), num("duration_hi_s")
     if lo is not None and hi is not None:
@@ -656,6 +659,13 @@ def plan_limits_for(model: PoseFlow | None = None, knn: PlanKNN | None = None):
     for key in ("min_phase_s", "transition_s", "s_max", "cap_ratio"):
         if num(key) is not None:
             lim = replace(lim, **{key: num(key)})
+    lo, hi = lim.duration_bounds_s
+    need = lim.n_phases * lim.min_phase_s
+    if not lo < hi or need > hi + 1e-9:
+        raise ValueError(
+            f"계획 한도를 정할 수 없다: 단계 {lim.n_phases}개 × 최소 {lim.min_phase_s:g} s = {need:g} s 인데 총 시간 범위가 "
+            f"{lo:g}~{hi:g} s 다. 산출물에 한도 열(duration_lo_s, duration_hi_s)이 없어 설정 파일의 범위를 쓴 경우다. "
+            "한도 열이 있는 데이터셋으로 산출물을 다시 만들거나 limits 인자로 한도를 준다.")
     return lim
 
 
