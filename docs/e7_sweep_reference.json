@@ -44,7 +44,7 @@
         "log_dir": "C:\\Users\\SEONGWOO\\Documents\\airis-v2-e7sweep\\outputs",
         "dummy_target": null
       },
-      "note": "단계 수 스윕(N 3·4·6, w 0.01, 시드 1) · N=9 최적화(w 0.1, 시드 1, 예산 24,000) · 회전 기준선 표(P1_12/10/8 × 기본·최적·팔내림, 시드 0, 가중 4개). 모두 main 4edeb82 기준 worktree, 메시 1,500/m², physics_hash c5aea26d"
+      "note": "단계 수 스윕(N 3·4·6, w 0.01, 시드 1) · N=9 최적화(w 0.1, 시드 1·2) · 회전 기준선 표(P1_12/10/8 × 기본·최적·팔내림, 시드 0, 가중 4개) · 따뜻한 시작 1건(default, N=9, w 0.1, 시드 1). 모두 메시 1,500/m², physics_hash c5aea26d"
     },
     {
       "group_id": "e7n9_pregnant_20261004_134157_d4b33f",
@@ -89,7 +89,7 @@
         "log_dir": "C:\\Users\\SEONGWOO\\Documents\\airis-v2-e7sweep\\outputs",
         "dummy_target": null
       },
-      "note": "단계 수 스윕(N 3·4·6, w 0.01, 시드 1) · N=9 최적화(w 0.1, 시드 1, 예산 24,000) · 회전 기준선 표(P1_12/10/8 × 기본·최적·팔내림, 시드 0, 가중 4개). 모두 main 4edeb82 기준 worktree, 메시 1,500/m², physics_hash c5aea26d"
+      "note": "단계 수 스윕(N 3·4·6, w 0.01, 시드 1) · N=9 최적화(w 0.1, 시드 1·2) · 회전 기준선 표(P1_12/10/8 × 기본·최적·팔내림, 시드 0, 가중 4개) · 따뜻한 시작 1건(default, N=9, w 0.1, 시드 1). 모두 메시 1,500/m², physics_hash c5aea26d"
     },
     {
       "group_id": "e7n9_wheelchair_20261004_134157_322688",
@@ -134,7 +134,142 @@
         "log_dir": "C:\\Users\\SEONGWOO\\Documents\\airis-v2-e7sweep\\outputs",
         "dummy_target": null
       },
-      "note": "단계 수 스윕(N 3·4·6, w 0.01, 시드 1) · N=9 최적화(w 0.1, 시드 1, 예산 24,000) · 회전 기준선 표(P1_12/10/8 × 기본·최적·팔내림, 시드 0, 가중 4개). 모두 main 4edeb82 기준 worktree, 메시 1,500/m², physics_hash c5aea26d"
+      "note": "단계 수 스윕(N 3·4·6, w 0.01, 시드 1) · N=9 최적화(w 0.1, 시드 1·2) · 회전 기준선 표(P1_12/10/8 × 기본·최적·팔내림, 시드 0, 가중 4개) · 따뜻한 시작 1건(default, N=9, w 0.1, 시드 1). 모두 메시 1,500/m², physics_hash c5aea26d"
+    },
+    {
+      "group_id": "e7n9s2_default_20261005_133808_fa0e17",
+      "path": "airis-v2-e7sweep/outputs/e7n9s2_default_20261005_133808_fa0e17",
+      "commit": "0da53b4",
+      "physics_hash": "c5aea26d",
+      "nozzle_hash": "3b99200e",
+      "kinetics_enabled": true,
+      "time_constant_s": 2.0,
+      "zone_nozzle_counts": {
+        "chest_low": 2.0,
+        "chest_high": 2.0,
+        "back_low": 2.0,
+        "back_high": 2.0,
+        "top": 4.0
+      },
+      "n_phases_arg": 9,
+      "max_evals": 24000,
+      "patches_per_m2": 1500.0,
+      "args": {
+        "evaluator": "patch",
+        "conditions": "P5",
+        "scenarios": [
+          "default"
+        ],
+        "seeds": [
+          2
+        ],
+        "energy_weights": [
+          0.1
+        ],
+        "n_phases": 9,
+        "rotation_pose": null,
+        "max_evals": 24000,
+        "pose_max_evals": 3000,
+        "popsize": 100,
+        "sigma0": 0.5,
+        "starts": "default,hands_up",
+        "patches_per_m2": 1500.0,
+        "body": null,
+        "tag": "e7n9s2_default",
+        "log_dir": "C:\\Users\\SEONGWOO\\Documents\\airis-v2-e7sweep\\outputs",
+        "dummy_target": null
+      },
+      "note": "단계 수 스윕(N 3·4·6, w 0.01, 시드 1) · N=9 최적화(w 0.1, 시드 1·2) · 회전 기준선 표(P1_12/10/8 × 기본·최적·팔내림, 시드 0, 가중 4개) · 따뜻한 시작 1건(default, N=9, w 0.1, 시드 1). 모두 메시 1,500/m², physics_hash c5aea26d"
+    },
+    {
+      "group_id": "e7n9s2_pregnant_20261005_133808_9688fa",
+      "path": "airis-v2-e7sweep/outputs/e7n9s2_pregnant_20261005_133808_9688fa",
+      "commit": "0da53b4",
+      "physics_hash": "c5aea26d",
+      "nozzle_hash": "3b99200e",
+      "kinetics_enabled": true,
+      "time_constant_s": 2.0,
+      "zone_nozzle_counts": {
+        "chest_low": 2.0,
+        "chest_high": 2.0,
+        "back_low": 2.0,
+        "back_high": 2.0,
+        "top": 4.0
+      },
+      "n_phases_arg": 9,
+      "max_evals": 24000,
+      "patches_per_m2": 1500.0,
+      "args": {
+        "evaluator": "patch",
+        "conditions": "P5",
+        "scenarios": [
+          "pregnant"
+        ],
+        "seeds": [
+          2
+        ],
+        "energy_weights": [
+          0.1
+        ],
+        "n_phases": 9,
+        "rotation_pose": null,
+        "max_evals": 24000,
+        "pose_max_evals": 3000,
+        "popsize": 100,
+        "sigma0": 0.5,
+        "starts": "default,hands_up",
+        "patches_per_m2": 1500.0,
+        "body": null,
+        "tag": "e7n9s2_pregnant",
+        "log_dir": "C:\\Users\\SEONGWOO\\Documents\\airis-v2-e7sweep\\outputs",
+        "dummy_target": null
+      },
+      "note": "단계 수 스윕(N 3·4·6, w 0.01, 시드 1) · N=9 최적화(w 0.1, 시드 1·2) · 회전 기준선 표(P1_12/10/8 × 기본·최적·팔내림, 시드 0, 가중 4개) · 따뜻한 시작 1건(default, N=9, w 0.1, 시드 1). 모두 메시 1,500/m², physics_hash c5aea26d"
+    },
+    {
+      "group_id": "e7n9s2_wheelchair_20261005_133808_976315",
+      "path": "airis-v2-e7sweep/outputs/e7n9s2_wheelchair_20261005_133808_976315",
+      "commit": "0da53b4",
+      "physics_hash": "c5aea26d",
+      "nozzle_hash": "3b99200e",
+      "kinetics_enabled": true,
+      "time_constant_s": 2.0,
+      "zone_nozzle_counts": {
+        "chest_low": 2.0,
+        "chest_high": 2.0,
+        "back_low": 2.0,
+        "back_high": 2.0,
+        "top": 4.0
+      },
+      "n_phases_arg": 9,
+      "max_evals": 24000,
+      "patches_per_m2": 1500.0,
+      "args": {
+        "evaluator": "patch",
+        "conditions": "P5",
+        "scenarios": [
+          "wheelchair"
+        ],
+        "seeds": [
+          2
+        ],
+        "energy_weights": [
+          0.1
+        ],
+        "n_phases": 9,
+        "rotation_pose": null,
+        "max_evals": 24000,
+        "pose_max_evals": 3000,
+        "popsize": 100,
+        "sigma0": 0.5,
+        "starts": "default,hands_up",
+        "patches_per_m2": 1500.0,
+        "body": null,
+        "tag": "e7n9s2_wheelchair",
+        "log_dir": "C:\\Users\\SEONGWOO\\Documents\\airis-v2-e7sweep\\outputs",
+        "dummy_target": null
+      },
+      "note": "단계 수 스윕(N 3·4·6, w 0.01, 시드 1) · N=9 최적화(w 0.1, 시드 1·2) · 회전 기준선 표(P1_12/10/8 × 기본·최적·팔내림, 시드 0, 가중 4개) · 따뜻한 시작 1건(default, N=9, w 0.1, 시드 1). 모두 메시 1,500/m², physics_hash c5aea26d"
     },
     {
       "group_id": "e7np3_default_20261003_125521_063406",
@@ -179,7 +314,7 @@
         "log_dir": "C:\\Users\\SEONGWOO\\Documents\\airis-v2-e7sweep\\outputs",
         "dummy_target": null
       },
-      "note": "단계 수 스윕(N 3·4·6, w 0.01, 시드 1) · N=9 최적화(w 0.1, 시드 1, 예산 24,000) · 회전 기준선 표(P1_12/10/8 × 기본·최적·팔내림, 시드 0, 가중 4개). 모두 main 4edeb82 기준 worktree, 메시 1,500/m², physics_hash c5aea26d"
+      "note": "단계 수 스윕(N 3·4·6, w 0.01, 시드 1) · N=9 최적화(w 0.1, 시드 1·2) · 회전 기준선 표(P1_12/10/8 × 기본·최적·팔내림, 시드 0, 가중 4개) · 따뜻한 시작 1건(default, N=9, w 0.1, 시드 1). 모두 메시 1,500/m², physics_hash c5aea26d"
     },
     {
       "group_id": "e7np3_pregnant_20261003_125521_d7013a",
@@ -224,7 +359,7 @@
         "log_dir": "C:\\Users\\SEONGWOO\\Documents\\airis-v2-e7sweep\\outputs",
         "dummy_target": null
       },
-      "note": "단계 수 스윕(N 3·4·6, w 0.01, 시드 1) · N=9 최적화(w 0.1, 시드 1, 예산 24,000) · 회전 기준선 표(P1_12/10/8 × 기본·최적·팔내림, 시드 0, 가중 4개). 모두 main 4edeb82 기준 worktree, 메시 1,500/m², physics_hash c5aea26d"
+      "note": "단계 수 스윕(N 3·4·6, w 0.01, 시드 1) · N=9 최적화(w 0.1, 시드 1·2) · 회전 기준선 표(P1_12/10/8 × 기본·최적·팔내림, 시드 0, 가중 4개) · 따뜻한 시작 1건(default, N=9, w 0.1, 시드 1). 모두 메시 1,500/m², physics_hash c5aea26d"
     },
     {
       "group_id": "e7np3_wheelchair_20261003_125522_7acdbf",
@@ -269,7 +404,7 @@
         "log_dir": "C:\\Users\\SEONGWOO\\Documents\\airis-v2-e7sweep\\outputs",
         "dummy_target": null
       },
-      "note": "단계 수 스윕(N 3·4·6, w 0.01, 시드 1) · N=9 최적화(w 0.1, 시드 1, 예산 24,000) · 회전 기준선 표(P1_12/10/8 × 기본·최적·팔내림, 시드 0, 가중 4개). 모두 main 4edeb82 기준 worktree, 메시 1,500/m², physics_hash c5aea26d"
+      "note": "단계 수 스윕(N 3·4·6, w 0.01, 시드 1) · N=9 최적화(w 0.1, 시드 1·2) · 회전 기준선 표(P1_12/10/8 × 기본·최적·팔내림, 시드 0, 가중 4개) · 따뜻한 시작 1건(default, N=9, w 0.1, 시드 1). 모두 메시 1,500/m², physics_hash c5aea26d"
     },
     {
       "group_id": "e7np4_default_20261003_133330_216706",
@@ -314,7 +449,7 @@
         "log_dir": "C:\\Users\\SEONGWOO\\Documents\\airis-v2-e7sweep\\outputs",
         "dummy_target": null
       },
-      "note": "단계 수 스윕(N 3·4·6, w 0.01, 시드 1) · N=9 최적화(w 0.1, 시드 1, 예산 24,000) · 회전 기준선 표(P1_12/10/8 × 기본·최적·팔내림, 시드 0, 가중 4개). 모두 main 4edeb82 기준 worktree, 메시 1,500/m², physics_hash c5aea26d"
+      "note": "단계 수 스윕(N 3·4·6, w 0.01, 시드 1) · N=9 최적화(w 0.1, 시드 1·2) · 회전 기준선 표(P1_12/10/8 × 기본·최적·팔내림, 시드 0, 가중 4개) · 따뜻한 시작 1건(default, N=9, w 0.1, 시드 1). 모두 메시 1,500/m², physics_hash c5aea26d"
     },
     {
       "group_id": "e7np4_pregnant_20261003_133406_5130f8",
@@ -359,7 +494,7 @@
         "log_dir": "C:\\Users\\SEONGWOO\\Documents\\airis-v2-e7sweep\\outputs",
         "dummy_target": null
       },
-      "note": "단계 수 스윕(N 3·4·6, w 0.01, 시드 1) · N=9 최적화(w 0.1, 시드 1, 예산 24,000) · 회전 기준선 표(P1_12/10/8 × 기본·최적·팔내림, 시드 0, 가중 4개). 모두 main 4edeb82 기준 worktree, 메시 1,500/m², physics_hash c5aea26d"
+      "note": "단계 수 스윕(N 3·4·6, w 0.01, 시드 1) · N=9 최적화(w 0.1, 시드 1·2) · 회전 기준선 표(P1_12/10/8 × 기본·최적·팔내림, 시드 0, 가중 4개) · 따뜻한 시작 1건(default, N=9, w 0.1, 시드 1). 모두 메시 1,500/m², physics_hash c5aea26d"
     },
     {
       "group_id": "e7np4_wheelchair_20261003_134444_875f3a",
@@ -404,7 +539,7 @@
         "log_dir": "C:\\Users\\SEONGWOO\\Documents\\airis-v2-e7sweep\\outputs",
         "dummy_target": null
       },
-      "note": "단계 수 스윕(N 3·4·6, w 0.01, 시드 1) · N=9 최적화(w 0.1, 시드 1, 예산 24,000) · 회전 기준선 표(P1_12/10/8 × 기본·최적·팔내림, 시드 0, 가중 4개). 모두 main 4edeb82 기준 worktree, 메시 1,500/m², physics_hash c5aea26d"
+      "note": "단계 수 스윕(N 3·4·6, w 0.01, 시드 1) · N=9 최적화(w 0.1, 시드 1·2) · 회전 기준선 표(P1_12/10/8 × 기본·최적·팔내림, 시드 0, 가중 4개) · 따뜻한 시작 1건(default, N=9, w 0.1, 시드 1). 모두 메시 1,500/m², physics_hash c5aea26d"
     },
     {
       "group_id": "e7np6_default_20261003_135856_83c7a0",
@@ -449,7 +584,7 @@
         "log_dir": "C:\\Users\\SEONGWOO\\Documents\\airis-v2-e7sweep\\outputs",
         "dummy_target": null
       },
-      "note": "단계 수 스윕(N 3·4·6, w 0.01, 시드 1) · N=9 최적화(w 0.1, 시드 1, 예산 24,000) · 회전 기준선 표(P1_12/10/8 × 기본·최적·팔내림, 시드 0, 가중 4개). 모두 main 4edeb82 기준 worktree, 메시 1,500/m², physics_hash c5aea26d"
+      "note": "단계 수 스윕(N 3·4·6, w 0.01, 시드 1) · N=9 최적화(w 0.1, 시드 1·2) · 회전 기준선 표(P1_12/10/8 × 기본·최적·팔내림, 시드 0, 가중 4개) · 따뜻한 시작 1건(default, N=9, w 0.1, 시드 1). 모두 메시 1,500/m², physics_hash c5aea26d"
     },
     {
       "group_id": "e7np6_pregnant_20261003_135941_bc3adb",
@@ -494,7 +629,7 @@
         "log_dir": "C:\\Users\\SEONGWOO\\Documents\\airis-v2-e7sweep\\outputs",
         "dummy_target": null
       },
-      "note": "단계 수 스윕(N 3·4·6, w 0.01, 시드 1) · N=9 최적화(w 0.1, 시드 1, 예산 24,000) · 회전 기준선 표(P1_12/10/8 × 기본·최적·팔내림, 시드 0, 가중 4개). 모두 main 4edeb82 기준 worktree, 메시 1,500/m², physics_hash c5aea26d"
+      "note": "단계 수 스윕(N 3·4·6, w 0.01, 시드 1) · N=9 최적화(w 0.1, 시드 1·2) · 회전 기준선 표(P1_12/10/8 × 기본·최적·팔내림, 시드 0, 가중 4개) · 따뜻한 시작 1건(default, N=9, w 0.1, 시드 1). 모두 메시 1,500/m², physics_hash c5aea26d"
     },
     {
       "group_id": "e7np6_wheelchair_20261003_142013_a37d93",
@@ -539,11 +674,11 @@
         "log_dir": "C:\\Users\\SEONGWOO\\Documents\\airis-v2-e7sweep\\outputs",
         "dummy_target": null
       },
-      "note": "단계 수 스윕(N 3·4·6, w 0.01, 시드 1) · N=9 최적화(w 0.1, 시드 1, 예산 24,000) · 회전 기준선 표(P1_12/10/8 × 기본·최적·팔내림, 시드 0, 가중 4개). 모두 main 4edeb82 기준 worktree, 메시 1,500/m², physics_hash c5aea26d"
+      "note": "단계 수 스윕(N 3·4·6, w 0.01, 시드 1) · N=9 최적화(w 0.1, 시드 1·2) · 회전 기준선 표(P1_12/10/8 × 기본·최적·팔내림, 시드 0, 가중 4개) · 따뜻한 시작 1건(default, N=9, w 0.1, 시드 1). 모두 메시 1,500/m², physics_hash c5aea26d"
     },
     {
       "group_id": "e7p1n2_default_20261004_125511_06c79c",
-      "path": "airis-v2-e7base/outputs/e7p1n2_default_20261004_125511_06c79c",
+      "path": "outputs/e7p1n2_default_20261004_125511_06c79c",
       "commit": "55681cc",
       "physics_hash": "c5aea26d",
       "nozzle_hash": "3b99200e",
@@ -587,11 +722,11 @@
         "log_dir": "C:\\Users\\SEONGWOO\\Documents\\airis-v2-e7base\\outputs",
         "dummy_target": null
       },
-      "note": "단계 수 스윕(N 3·4·6, w 0.01, 시드 1) · N=9 최적화(w 0.1, 시드 1, 예산 24,000) · 회전 기준선 표(P1_12/10/8 × 기본·최적·팔내림, 시드 0, 가중 4개). 모두 main 4edeb82 기준 worktree, 메시 1,500/m², physics_hash c5aea26d"
+      "note": "단계 수 스윕(N 3·4·6, w 0.01, 시드 1) · N=9 최적화(w 0.1, 시드 1·2) · 회전 기준선 표(P1_12/10/8 × 기본·최적·팔내림, 시드 0, 가중 4개) · 따뜻한 시작 1건(default, N=9, w 0.1, 시드 1). 모두 메시 1,500/m², physics_hash c5aea26d"
     },
     {
       "group_id": "e7p1n2_pregnant_20261004_125511_212ca3",
-      "path": "airis-v2-e7base/outputs/e7p1n2_pregnant_20261004_125511_212ca3",
+      "path": "outputs/e7p1n2_pregnant_20261004_125511_212ca3",
       "commit": "55681cc",
       "physics_hash": "c5aea26d",
       "nozzle_hash": "3b99200e",
@@ -635,11 +770,11 @@
         "log_dir": "C:\\Users\\SEONGWOO\\Documents\\airis-v2-e7base\\outputs",
         "dummy_target": null
       },
-      "note": "단계 수 스윕(N 3·4·6, w 0.01, 시드 1) · N=9 최적화(w 0.1, 시드 1, 예산 24,000) · 회전 기준선 표(P1_12/10/8 × 기본·최적·팔내림, 시드 0, 가중 4개). 모두 main 4edeb82 기준 worktree, 메시 1,500/m², physics_hash c5aea26d"
+      "note": "단계 수 스윕(N 3·4·6, w 0.01, 시드 1) · N=9 최적화(w 0.1, 시드 1·2) · 회전 기준선 표(P1_12/10/8 × 기본·최적·팔내림, 시드 0, 가중 4개) · 따뜻한 시작 1건(default, N=9, w 0.1, 시드 1). 모두 메시 1,500/m², physics_hash c5aea26d"
     },
     {
       "group_id": "e7p1n2_wheelchair_20261004_125511_b75f64",
-      "path": "airis-v2-e7base/outputs/e7p1n2_wheelchair_20261004_125511_b75f64",
+      "path": "outputs/e7p1n2_wheelchair_20261004_125511_b75f64",
       "commit": "55681cc",
       "physics_hash": "c5aea26d",
       "nozzle_hash": "3b99200e",
@@ -683,7 +818,53 @@
         "log_dir": "C:\\Users\\SEONGWOO\\Documents\\airis-v2-e7base\\outputs",
         "dummy_target": null
       },
-      "note": "단계 수 스윕(N 3·4·6, w 0.01, 시드 1) · N=9 최적화(w 0.1, 시드 1, 예산 24,000) · 회전 기준선 표(P1_12/10/8 × 기본·최적·팔내림, 시드 0, 가중 4개). 모두 main 4edeb82 기준 worktree, 메시 1,500/m², physics_hash c5aea26d"
+      "note": "단계 수 스윕(N 3·4·6, w 0.01, 시드 1) · N=9 최적화(w 0.1, 시드 1·2) · 회전 기준선 표(P1_12/10/8 × 기본·최적·팔내림, 시드 0, 가중 4개) · 따뜻한 시작 1건(default, N=9, w 0.1, 시드 1). 모두 메시 1,500/m², physics_hash c5aea26d"
+    },
+    {
+      "group_id": "e7warm2_20261006_120718_953302",
+      "path": "outputs/e7warm2_20261006_120718_953302",
+      "commit": "e4fb7ba",
+      "physics_hash": "c5aea26d",
+      "nozzle_hash": "3b99200e",
+      "kinetics_enabled": true,
+      "time_constant_s": 2.0,
+      "zone_nozzle_counts": {
+        "chest_low": 2.0,
+        "chest_high": 2.0,
+        "back_low": 2.0,
+        "back_high": 2.0,
+        "top": 4.0
+      },
+      "n_phases_arg": 9,
+      "max_evals": 24000,
+      "patches_per_m2": 1500.0,
+      "args": {
+        "evaluator": "patch",
+        "conditions": "P5",
+        "scenarios": [
+          "default"
+        ],
+        "seeds": [
+          1
+        ],
+        "energy_weights": [
+          0.1
+        ],
+        "warm_start": 0.2,
+        "n_phases": 9,
+        "rotation_pose": null,
+        "max_evals": 24000,
+        "pose_max_evals": 3000,
+        "popsize": 100,
+        "sigma0": 0.5,
+        "starts": "default,hands_up",
+        "patches_per_m2": 1500.0,
+        "body": null,
+        "tag": "e7warm2",
+        "log_dir": "C:\\Users\\SEONGWOO\\Documents\\airis-v2-e7base\\outputs",
+        "dummy_target": null
+      },
+      "note": "단계 수 스윕(N 3·4·6, w 0.01, 시드 1) · N=9 최적화(w 0.1, 시드 1·2) · 회전 기준선 표(P1_12/10/8 × 기본·최적·팔내림, 시드 0, 가중 4개) · 따뜻한 시작 1건(default, N=9, w 0.1, 시드 1). 모두 메시 1,500/m², physics_hash c5aea26d"
     }
   ],
   "zone_names": [
@@ -3095,6 +3276,468 @@
           "back_low": 1.0,
           "back_high": 0.9996,
           "top": 0.9902
+        }
+      }
+    },
+    {
+      "bundle": "e7n9s2_default_20261005_133808_fa0e17",
+      "scenario": "default",
+      "condition": "P5",
+      "energy_weight": 0.1,
+      "seed": 2,
+      "infeasible": false,
+      "score": 1.1372211665147058,
+      "total_removal": 0.3516835973336783,
+      "discomfort": 0.3377319696301624,
+      "energy": 0.9377833568649997,
+      "duration_s": 19.64808362052883,
+      "n_phases": 9,
+      "phase_durations_s": [
+        2.05,
+        2.35,
+        2.36,
+        2.16,
+        2.11,
+        2.21,
+        2.18,
+        2.23,
+        2.0
+      ],
+      "plan": {
+        "duration_s": 19.65,
+        "phases": [
+          {
+            "duration_s": 2.05,
+            "pose": {
+              "shoulder_abduction": 176.02197177786854,
+              "shoulder_flexion": -10.274483292360618,
+              "elbow_flexion": 1.2685619739650156,
+              "torso_pitch": -6.134019325974684,
+              "torso_yaw": 49.23441725268893,
+              "hip_flexion": 7.318796538578782,
+              "knee_flexion": 5.074215252255381
+            },
+            "torso_yaw_folded": 49.23441725268893
+          },
+          {
+            "duration_s": 2.35,
+            "pose": {
+              "shoulder_abduction": 170.0924438004907,
+              "shoulder_flexion": 40.77605592235655,
+              "elbow_flexion": 25.203278661944868,
+              "torso_pitch": 21.88771218363153,
+              "torso_yaw": -85.19182285603777,
+              "hip_flexion": 0.2565588733974189,
+              "knee_flexion": 13.969650946130908
+            },
+            "torso_yaw_folded": 85.19182285603777
+          },
+          {
+            "duration_s": 2.36,
+            "pose": {
+              "shoulder_abduction": 177.5469476774341,
+              "shoulder_flexion": 71.65721207102337,
+              "elbow_flexion": 33.236936265656716,
+              "torso_pitch": 42.1634403865746,
+              "torso_yaw": -95.10054944734536,
+              "hip_flexion": 14.655976603040282,
+              "knee_flexion": 2.8336644726203275
+            },
+            "torso_yaw_folded": 84.89945055265464
+          },
+          {
+            "duration_s": 2.16,
+            "pose": {
+              "shoulder_abduction": 177.1989467285405,
+              "shoulder_flexion": -14.474847156771357,
+              "elbow_flexion": 3.373151374112119,
+              "torso_pitch": -4.043804260884851,
+              "torso_yaw": 136.02487012228158,
+              "hip_flexion": 0.3635149979474772,
+              "knee_flexion": 3.03120695154518
+            },
+            "torso_yaw_folded": 43.975129877718416
+          },
+          {
+            "duration_s": 2.11,
+            "pose": {
+              "shoulder_abduction": 177.30785149169213,
+              "shoulder_flexion": 53.74126918240506,
+              "elbow_flexion": 45.32907378734333,
+              "torso_pitch": -0.6369418653276178,
+              "torso_yaw": 179.76525455680274,
+              "hip_flexion": 0.5168811346350172,
+              "knee_flexion": 0.05323575928036728
+            },
+            "torso_yaw_folded": 0.2347454431972551
+          },
+          {
+            "duration_s": 2.21,
+            "pose": {
+              "shoulder_abduction": 153.94248931148036,
+              "shoulder_flexion": -6.207231959504387,
+              "elbow_flexion": 13.111515147186005,
+              "torso_pitch": 1.0893904337640272,
+              "torso_yaw": 67.24391711600276,
+              "hip_flexion": 1.5955406638362657,
+              "knee_flexion": 5.702924359292014
+            },
+            "torso_yaw_folded": 67.24391711600276
+          },
+          {
+            "duration_s": 2.18,
+            "pose": {
+              "shoulder_abduction": 176.7798181270006,
+              "shoulder_flexion": -27.22413255029644,
+              "elbow_flexion": 1.845171366485363,
+              "torso_pitch": -19.748116689580687,
+              "torso_yaw": 49.18138799950091,
+              "hip_flexion": 0.049800440365500576,
+              "knee_flexion": 4.252357282947399
+            },
+            "torso_yaw_folded": 49.18138799950091
+          },
+          {
+            "duration_s": 2.23,
+            "pose": {
+              "shoulder_abduction": 176.46662802922353,
+              "shoulder_flexion": 12.482856541565944,
+              "elbow_flexion": 35.90720858950994,
+              "torso_pitch": 2.157327082300611,
+              "torso_yaw": -86.29490844891932,
+              "hip_flexion": 1.7668581242255548,
+              "knee_flexion": 18.51073080594101
+            },
+            "torso_yaw_folded": 86.29490844891932
+          },
+          {
+            "duration_s": 2.0,
+            "pose": {
+              "shoulder_abduction": 161.17185082804002,
+              "shoulder_flexion": -4.222225411194788,
+              "elbow_flexion": 1.9101236338490368,
+              "torso_pitch": -3.7686759689079494,
+              "torso_yaw": -46.259339070984055,
+              "hip_flexion": 4.902835880329396,
+              "knee_flexion": 0.4343713425266238
+            },
+            "torso_yaw_folded": 46.259339070984055
+          }
+        ],
+        "zone_strengths": {
+          "chest_low": 0.9998,
+          "chest_high": 0.996,
+          "back_low": 0.9986,
+          "back_high": 0.9951,
+          "top": 0.9581
+        }
+      }
+    },
+    {
+      "bundle": "e7n9s2_pregnant_20261005_133808_9688fa",
+      "scenario": "pregnant",
+      "condition": "P5",
+      "energy_weight": 0.1,
+      "seed": 2,
+      "infeasible": false,
+      "score": 0.7427386397875996,
+      "total_removal": 0.25090109686726303,
+      "discomfort": 0.6117134370546259,
+      "energy": 0.6918444650842037,
+      "duration_s": 19.6990531112208,
+      "n_phases": 9,
+      "phase_durations_s": [
+        2.49,
+        2.06,
+        2.27,
+        2.17,
+        2.09,
+        2.18,
+        2.07,
+        2.37,
+        2.0
+      ],
+      "plan": {
+        "duration_s": 19.7,
+        "phases": [
+          {
+            "duration_s": 2.49,
+            "pose": {
+              "shoulder_abduction": 178.933427020107,
+              "shoulder_flexion": 56.59256030038391,
+              "elbow_flexion": 31.49802722983138,
+              "torso_pitch": 2.3358214833930884,
+              "torso_yaw": 1.108965786460601,
+              "hip_flexion": 19.688694715873346,
+              "knee_flexion": 1.027544093812588
+            },
+            "torso_yaw_folded": 1.108965786460601
+          },
+          {
+            "duration_s": 2.06,
+            "pose": {
+              "shoulder_abduction": 179.8533773469861,
+              "shoulder_flexion": -21.279688031872876,
+              "elbow_flexion": 0.8787239694594462,
+              "torso_pitch": 0.24136913352863232,
+              "torso_yaw": 123.83386981678467,
+              "hip_flexion": 2.585780217664384,
+              "knee_flexion": 12.271708470800988
+            },
+            "torso_yaw_folded": 56.16613018321533
+          },
+          {
+            "duration_s": 2.27,
+            "pose": {
+              "shoulder_abduction": 176.6793443387344,
+              "shoulder_flexion": 15.151104272315983,
+              "elbow_flexion": 17.751775088013044,
+              "torso_pitch": 0.5185795641223105,
+              "torso_yaw": -34.838991612163596,
+              "hip_flexion": 9.529287873994395,
+              "knee_flexion": 0.2996635280840393
+            },
+            "torso_yaw_folded": 34.838991612163596
+          },
+          {
+            "duration_s": 2.17,
+            "pose": {
+              "shoulder_abduction": 174.36633955929108,
+              "shoulder_flexion": 37.00435476719815,
+              "elbow_flexion": 41.17813636672709,
+              "torso_pitch": 1.3342721647452276,
+              "torso_yaw": -103.10671943184822,
+              "hip_flexion": 14.50196986590678,
+              "knee_flexion": 0.8934707259531965
+            },
+            "torso_yaw_folded": 76.89328056815178
+          },
+          {
+            "duration_s": 2.09,
+            "pose": {
+              "shoulder_abduction": 170.42591140401132,
+              "shoulder_flexion": 48.140041562844004,
+              "elbow_flexion": 1.1997500799737615,
+              "torso_pitch": -0.40073721487440395,
+              "torso_yaw": 179.6518783676152,
+              "hip_flexion": 0.0961156254493728,
+              "knee_flexion": 14.842543768699898
+            },
+            "torso_yaw_folded": 0.3481216323847889
+          },
+          {
+            "duration_s": 2.18,
+            "pose": {
+              "shoulder_abduction": 179.32065099981784,
+              "shoulder_flexion": 18.58272711650214,
+              "elbow_flexion": 5.081474953318786,
+              "torso_pitch": 1.7152161257467018,
+              "torso_yaw": -132.9245308063628,
+              "hip_flexion": 0.0004977882631446162,
+              "knee_flexion": 4.272629406719918
+            },
+            "torso_yaw_folded": 47.07546919363719
+          },
+          {
+            "duration_s": 2.07,
+            "pose": {
+              "shoulder_abduction": 172.46316432600412,
+              "shoulder_flexion": -10.097827329279152,
+              "elbow_flexion": 7.306288130848239,
+              "torso_pitch": 0.6730818842556694,
+              "torso_yaw": -112.23638354561234,
+              "hip_flexion": 0.13935906386818298,
+              "knee_flexion": 1.8452637935717298
+            },
+            "torso_yaw_folded": 67.76361645438766
+          },
+          {
+            "duration_s": 2.37,
+            "pose": {
+              "shoulder_abduction": 172.87278861261893,
+              "shoulder_flexion": -25.135554253757032,
+              "elbow_flexion": 0.33819381663752646,
+              "torso_pitch": -2.4477734394316935,
+              "torso_yaw": 73.4579457477569,
+              "hip_flexion": 0.5052074254470446,
+              "knee_flexion": 20.610333795097983
+            },
+            "torso_yaw_folded": 73.4579457477569
+          },
+          {
+            "duration_s": 2.0,
+            "pose": {
+              "shoulder_abduction": 179.48651471739615,
+              "shoulder_flexion": -6.2231153982235625,
+              "elbow_flexion": 9.85796255308287,
+              "torso_pitch": 1.3341537708669264,
+              "torso_yaw": -65.0584012916015,
+              "hip_flexion": 29.794309873583142,
+              "knee_flexion": 1.309663181922855
+            },
+            "torso_yaw_folded": 65.0584012916015
+          }
+        ],
+        "zone_strengths": {
+          "chest_low": 0.6,
+          "chest_high": 0.6,
+          "back_low": 0.9989,
+          "back_high": 0.9994,
+          "top": 0.9633
+        }
+      }
+    },
+    {
+      "bundle": "e7n9s2_wheelchair_20261005_133808_976315",
+      "scenario": "wheelchair",
+      "condition": "P5",
+      "energy_weight": 0.1,
+      "seed": 2,
+      "infeasible": false,
+      "score": 0.7016680500285375,
+      "total_removal": 0.17737007724821444,
+      "discomfort": 0.4337755805574656,
+      "energy": 0.9358206340944959,
+      "duration_s": 19.93038636236972,
+      "n_phases": 9,
+      "phase_durations_s": [
+        2.68,
+        2.0,
+        2.04,
+        2.38,
+        2.29,
+        2.0,
+        2.01,
+        2.53,
+        2.0
+      ],
+      "plan": {
+        "duration_s": 19.93,
+        "phases": [
+          {
+            "duration_s": 2.68,
+            "pose": {
+              "shoulder_abduction": 179.7832626933208,
+              "shoulder_flexion": -5.25322303655739,
+              "elbow_flexion": 6.596284152008705,
+              "torso_pitch": -9.993811353245462,
+              "torso_yaw": 16.729436843346306,
+              "hip_flexion": 90.0,
+              "knee_flexion": 90.0
+            },
+            "torso_yaw_folded": 16.729436843346306
+          },
+          {
+            "duration_s": 2.0,
+            "pose": {
+              "shoulder_abduction": 173.79740935332558,
+              "shoulder_flexion": 148.7195918941248,
+              "elbow_flexion": 1.3247810102903679,
+              "torso_pitch": 19.89215342523684,
+              "torso_yaw": 28.6659322417225,
+              "hip_flexion": 90.0,
+              "knee_flexion": 90.0
+            },
+            "torso_yaw_folded": 28.6659322417225
+          },
+          {
+            "duration_s": 2.04,
+            "pose": {
+              "shoulder_abduction": 179.75537251891785,
+              "shoulder_flexion": 27.88266641200982,
+              "elbow_flexion": 27.25315413121454,
+              "torso_pitch": 19.868830708766957,
+              "torso_yaw": -31.063080307985185,
+              "hip_flexion": 90.0,
+              "knee_flexion": 90.0
+            },
+            "torso_yaw_folded": 31.06308030798519
+          },
+          {
+            "duration_s": 2.38,
+            "pose": {
+              "shoulder_abduction": 165.24357588280736,
+              "shoulder_flexion": 0.707267807850446,
+              "elbow_flexion": 70.15899525451239,
+              "torso_pitch": -6.707994924983522,
+              "torso_yaw": -35.732222954619616,
+              "hip_flexion": 90.0,
+              "knee_flexion": 90.0
+            },
+            "torso_yaw_folded": 35.732222954619616
+          },
+          {
+            "duration_s": 2.29,
+            "pose": {
+              "shoulder_abduction": 177.56693317665668,
+              "shoulder_flexion": 17.44996140179731,
+              "elbow_flexion": 43.37723158993419,
+              "torso_pitch": -6.488893482931738,
+              "torso_yaw": 34.85742001140238,
+              "hip_flexion": 90.0,
+              "knee_flexion": 90.0
+            },
+            "torso_yaw_folded": 34.85742001140238
+          },
+          {
+            "duration_s": 2.0,
+            "pose": {
+              "shoulder_abduction": 179.1411989172935,
+              "shoulder_flexion": 16.856641967205846,
+              "elbow_flexion": 14.407817594615153,
+              "torso_pitch": -9.972434082188842,
+              "torso_yaw": 42.33324137585596,
+              "hip_flexion": 90.0,
+              "knee_flexion": 90.0
+            },
+            "torso_yaw_folded": 42.33324137585596
+          },
+          {
+            "duration_s": 2.01,
+            "pose": {
+              "shoulder_abduction": 178.28374630344192,
+              "shoulder_flexion": 4.9512468446718,
+              "elbow_flexion": 9.520669450671642,
+              "torso_pitch": 11.141363412579757,
+              "torso_yaw": 44.436169617099495,
+              "hip_flexion": 90.0,
+              "knee_flexion": 90.0
+            },
+            "torso_yaw_folded": 44.436169617099495
+          },
+          {
+            "duration_s": 2.53,
+            "pose": {
+              "shoulder_abduction": 169.67213802761543,
+              "shoulder_flexion": 13.955725437357934,
+              "elbow_flexion": 0.8321062747535724,
+              "torso_pitch": 6.295286849240522,
+              "torso_yaw": -44.827863142926915,
+              "hip_flexion": 90.0,
+              "knee_flexion": 90.0
+            },
+            "torso_yaw_folded": 44.827863142926915
+          },
+          {
+            "duration_s": 2.0,
+            "pose": {
+              "shoulder_abduction": 172.9446267418556,
+              "shoulder_flexion": -8.467575000975653,
+              "elbow_flexion": 1.01521999108932,
+              "torso_pitch": -7.708953140051808,
+              "torso_yaw": -43.988822666828426,
+              "hip_flexion": 90.0,
+              "knee_flexion": 90.0
+            },
+            "torso_yaw_folded": 43.988822666828426
+          }
+        ],
+        "zone_strengths": {
+          "chest_low": 0.9749,
+          "chest_high": 0.9989,
+          "back_low": 0.9944,
+          "back_high": 0.9992,
+          "top": 0.9529
         }
       }
     },
@@ -23969,6 +24612,160 @@
           "back_low": 1.0,
           "back_high": 1.0,
           "top": 1.0
+        }
+      }
+    },
+    {
+      "bundle": "e7warm2_20261006_120718_953302",
+      "scenario": "default",
+      "condition": "P5",
+      "energy_weight": 0.1,
+      "seed": 1,
+      "infeasible": false,
+      "score": 1.1168868921840074,
+      "total_removal": 0.33784570214079596,
+      "discomfort": 0.3484739398410961,
+      "energy": 0.9062057529969134,
+      "duration_s": 19.672636029422755,
+      "n_phases": 9,
+      "phase_durations_s": [
+        2.07,
+        2.49,
+        2.26,
+        2.24,
+        2.02,
+        2.4,
+        2.18,
+        2.0,
+        2.0
+      ],
+      "plan": {
+        "duration_s": 19.67,
+        "phases": [
+          {
+            "duration_s": 2.07,
+            "pose": {
+              "shoulder_abduction": 172.84312191029233,
+              "shoulder_flexion": 71.52794104603807,
+              "elbow_flexion": 54.16655483140431,
+              "torso_pitch": 39.84220596583148,
+              "torso_yaw": 84.06245794253181,
+              "hip_flexion": 0.4582742884176283,
+              "knee_flexion": 6.425308065501445
+            },
+            "torso_yaw_folded": 84.06245794253181
+          },
+          {
+            "duration_s": 2.49,
+            "pose": {
+              "shoulder_abduction": 178.95263436395092,
+              "shoulder_flexion": -4.56629589811909,
+              "elbow_flexion": 1.6071835090287079,
+              "torso_pitch": -5.42919367337791,
+              "torso_yaw": 73.67099136803299,
+              "hip_flexion": 0.26636170538247794,
+              "knee_flexion": 13.692619983431221
+            },
+            "torso_yaw_folded": 73.67099136803299
+          },
+          {
+            "duration_s": 2.26,
+            "pose": {
+              "shoulder_abduction": 145.720972165879,
+              "shoulder_flexion": 0.33579660562853064,
+              "elbow_flexion": 6.83577931810535,
+              "torso_pitch": -0.06335792913958116,
+              "torso_yaw": 137.28473023479182,
+              "hip_flexion": 4.697969767168343,
+              "knee_flexion": 22.043916306720877
+            },
+            "torso_yaw_folded": 42.71526976520818
+          },
+          {
+            "duration_s": 2.24,
+            "pose": {
+              "shoulder_abduction": 175.80891801147487,
+              "shoulder_flexion": 5.027559468632084,
+              "elbow_flexion": 10.307830173727908,
+              "torso_pitch": -12.211126739016045,
+              "torso_yaw": 45.89341467351565,
+              "hip_flexion": 0.02163516070802507,
+              "knee_flexion": 12.347004076707437
+            },
+            "torso_yaw_folded": 45.89341467351565
+          },
+          {
+            "duration_s": 2.02,
+            "pose": {
+              "shoulder_abduction": 176.3294106974578,
+              "shoulder_flexion": -28.108778355052355,
+              "elbow_flexion": 2.082092710959802,
+              "torso_pitch": -3.6554542601114512,
+              "torso_yaw": 39.34336325686846,
+              "hip_flexion": 0.30459218084213424,
+              "knee_flexion": 16.88592058135793
+            },
+            "torso_yaw_folded": 39.34336325686846
+          },
+          {
+            "duration_s": 2.4,
+            "pose": {
+              "shoulder_abduction": 163.77877986084314,
+              "shoulder_flexion": 20.630697058654597,
+              "elbow_flexion": 0.5992272699308254,
+              "torso_pitch": 12.42439171821318,
+              "torso_yaw": 103.35865282943797,
+              "hip_flexion": 2.9942623935322454,
+              "knee_flexion": 16.77444112343531
+            },
+            "torso_yaw_folded": 76.64134717056203
+          },
+          {
+            "duration_s": 2.18,
+            "pose": {
+              "shoulder_abduction": 169.11134165907256,
+              "shoulder_flexion": -7.323082596972192,
+              "elbow_flexion": 2.0117764710203687,
+              "torso_pitch": -6.337779904595537,
+              "torso_yaw": 127.68143241361986,
+              "hip_flexion": 0.9371682817363858,
+              "knee_flexion": 17.04693959529312
+            },
+            "torso_yaw_folded": 52.31856758638014
+          },
+          {
+            "duration_s": 2.0,
+            "pose": {
+              "shoulder_abduction": 168.63433712465692,
+              "shoulder_flexion": 50.646587070752005,
+              "elbow_flexion": 32.94825459318132,
+              "torso_pitch": 27.88313787363891,
+              "torso_yaw": 73.64364014638977,
+              "hip_flexion": 0.5182648451738381,
+              "knee_flexion": 18.9365845358143
+            },
+            "torso_yaw_folded": 73.64364014638977
+          },
+          {
+            "duration_s": 2.0,
+            "pose": {
+              "shoulder_abduction": 178.22144508206662,
+              "shoulder_flexion": -18.897844698564597,
+              "elbow_flexion": 3.3384329528597547,
+              "torso_pitch": -18.565548015833315,
+              "torso_yaw": 88.41876070437729,
+              "hip_flexion": 2.2531572937992173,
+              "knee_flexion": 18.467230936737064
+            },
+            "torso_yaw_folded": 88.41876070437729
+          }
+        ],
+        "zone_strengths": {
+          "chest_low": 0.9996,
+          "chest_high": 0.9961,
+          "back_low": 0.9998,
+          "back_high": 0.9995,
+          "top": 0.9171
         }
       }
     }
