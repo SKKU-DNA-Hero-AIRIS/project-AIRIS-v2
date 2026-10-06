@@ -2,7 +2,7 @@
 docs/proposals/flow_matching.md, docs/plan_extension.md.
 
     predict_pose(body, scenario) -> PoseParams        자세 모델 (혼합: flow + kNN + 고정 후보)
-    predict_plan(body, scenario) -> Plan              계획 모델 (data/models/plan_flow.pt)
+    predict_plan(body, scenario) -> Plan              계획 모델 (혼합: flow + kNN + 고정 회전 계획)
 
 **혼합 추천** (총괄 2026-09-30 확정, 기본 backend="hybrid")
 
@@ -44,7 +44,7 @@ import numpy as np
 from airis.sim import BodyParams, Evaluator, NozzleConfig, Plan, PoseParams, Scenario
 
 from .flow import PoseFlow          # torch 는 flow.py 안에서만 import 한다 (kNN 만으로도 돌아가게)
-from .knn import PoseKNN
+from .knn import PlanKNN, PoseKNN
 
 ROOT = Path(__file__).resolve().parents[2]
 #: 산출물 폴더. 환경변수 AIRIS_MODEL_DIR 이 있으면 그 폴더 (worktree 에서 본 폴더 산출물을 쓸 때 등).
@@ -52,6 +52,10 @@ MODEL_DIR = Path(os.environ.get("AIRIS_MODEL_DIR") or ROOT / "data" / "models")
 DEFAULT_MODEL_PATH = MODEL_DIR / "pose_flow.pt"
 DEFAULT_PLAN_MODEL_PATH = MODEL_DIR / "plan_flow.pt"
 DEFAULT_KNN_PATH = MODEL_DIR / "pose_knn.parquet"
+DEFAULT_PLAN_KNN_PATH = MODEL_DIR / "plan_knn.parquet"
+#: 고정 회전 계획의 단계 수. 표준 회전 기준선은 P1_10 · P1opt_10 이다 (총괄 2026-10-04: 10단계면 단계당 2.0 s 로
+#: 최적화의 단계 최소 시간과 같아 공정하다). 모델의 단계 수 N 과는 독립이다.
+ROTATION_STEPS = 10
 N_SAMPLES = 16
 N_FLOW = 8
 N_KNN = 8
@@ -83,6 +87,11 @@ class PlanPrediction:
     candidates: list[Plan]
     scores: np.ndarray | None
     infeasible: np.ndarray | None
+    sources: list[str] = field(default_factory=list)   # 후보마다 "flow" | "knn" | "fixed" | "extra"
+    source: str = ""                                   # 고른 후보의 출처
+    n_margin_checks: int = 0                           # 부스 안 판정 여유: 키운 체형으로 다시 채점한 횟수
+    n_margin_rejected: int = 0                         # 키운 체형에서 불가라 넘긴 후보 수
+    margin_fallback: bool = False                      # 전부 걸려서 여유 없이 고른 후보를 돌려줬는가
 
 
 #: 산출물이 유효한지 가르는 설정 해시 (학습 데이터의 도장과 지금 설정을 비교한다).
@@ -591,32 +600,230 @@ def plan_encoder(scenario: Scenario, *, limits=None, zone_nozzle_counts: Sequenc
     return PlanEncoder(scenario, limits if limits is not None else _default_plan_limits(), zone_nozzle_counts)
 
 
-def predict_plan_candidates(body: BodyParams, scenario: Scenario, *, n_samples: int = N_SAMPLES,
-                            rescore: bool = True, seed: int = 0, path: Path | str | None = None,
-                            evaluator: Evaluator | None = None, nozzle: NozzleConfig | None = None,
-                            extra_candidates: Sequence[Plan] = (), limits=None,
-                            zone_nozzle_counts: Sequence[float] | None = None) -> PlanPrediction:
-    """계획 후보까지 돌려주는 예측. predict 의 계획 버전.
+@lru_cache(maxsize=4)
+def _load_plan_knn_cached(path: str) -> PlanKNN:
+    table = PlanKNN.load(path)
+    _check_stamp(table.meta, Path(path))
+    return table
 
-    후보는 전부 plan_encoder(scenario).clip_plan 을 거친 뒤 채점한다 (rescore=False 여도 투영한다).
+
+def load_plan_knn(path: Path | str | None = None) -> PlanKNN:
+    """계획 kNN 표 로드 (경로별 캐시). 없으면 FileNotFoundError."""
+    return _load_plan_knn_cached(str(Path(path or DEFAULT_PLAN_KNN_PATH).resolve()))
+
+
+def plan_limits_for(model: PoseFlow | None = None, knn: PlanKNN | None = None):
+    """계획 산출물이 학습된 한도(C 의 PlanLimits). 후보 투영과 고정 회전 계획에 쓴다.
+
+    설정 파일의 plan.n_phases 는 2 이지만 계획 데이터셋의 단계 수 N 은 C 의 설계 결정값이고(5 또는 9 예상),
+    N 단계 실행은 총 시간 하한을 N × min_phase_s 로 올린다. 그래서 한도는 설정 파일이 아니라 산출물에서 읽는다.
+
+    - 단계 수·단계 최소 시간: flow 는 출력 공간(PlanSpace), kNN 표는 표에서.
+    - 총 시간 범위·세기 상한: flow 는 출력 공간의 범위. 산출물 meta 에 계획 한도 열(duration_lo_s 등)이 있으면
+      그 값이 우선한다 (데이터셋을 만든 한도 그대로).
+    - 그 밖(transition_s, cap_ratio)은 meta 에 있으면 그 값, 없으면 설정 파일.
+    flow 와 kNN 표의 단계 수가 다르면 ValueError.
     """
-    model = load_model(path, kind="plan")
-    if scenario.name not in model.scenario_names:
-        raise KeyError(f"학습에 없던 시나리오: {scenario.name} (학습: {model.scenario_names})")
-    candidates = model.sample_plans(body, scenario, max(1, int(n_samples)), seed=seed)
-    if rescore and extra_candidates:
-        candidates = candidates + list(extra_candidates)
+    from dataclasses import replace
+
+    from airis.sim import ZONE_NAMES
+
+    if model is None and knn is None:
+        return _default_plan_limits()
+    if model is not None and knn is not None and model.space.n_phases != knn.n_phases:
+        raise ValueError(f"계획 산출물의 단계 수가 다르다: flow {model.space.n_phases}, kNN 표 {knn.n_phases}. "
+                         "같은 데이터셋으로 다시 만든다.")
+    lim = _default_plan_limits()
+    meta = dict((knn.meta if knn is not None else {}) or {})
+    if model is not None:
+        bounds = model.space.to_dict()
+        lim = replace(lim, n_phases=model.space.n_phases, min_phase_s=model.space.min_phase_s,
+                      duration_bounds_s=(float(bounds["duration_s"][0]), float(bounds["duration_s"][1])),
+                      s_max=float(bounds[f"zone_{ZONE_NAMES[0]}"][1]))
+        meta.update(model.meta or {})
+    else:
+        lo = max(lim.duration_bounds_s[0], knn.n_phases * knn.min_phase_s)
+        lim = replace(lim, n_phases=knn.n_phases, min_phase_s=knn.min_phase_s,
+                      duration_bounds_s=(lo, max(lim.duration_bounds_s[1], lo)))
+
+    def num(key):
+        v = meta.get(key)
+        return None if v is None else float(v)
+
+    lo, hi = num("duration_lo_s"), num("duration_hi_s")
+    if lo is not None and hi is not None:
+        lim = replace(lim, duration_bounds_s=(lo, hi))
+    for key in ("min_phase_s", "transition_s", "s_max", "cap_ratio"):
+        if num(key) is not None:
+            lim = replace(lim, **{key: num(key)})
+    return lim
+
+
+def fixed_plans(scenario: Scenario, limits, *, rotation_pose: PoseParams | None = None,
+                n_steps: int = ROTATION_STEPS) -> list[Plan]:
+    """혼합 계획 추천의 고정 후보: 자세를 유지한 채 몸을 n_steps 방향으로 돌리는 계획 (C 의 rotation_plan).
+
+    - rotation_pose 가 있으면 그 자세로 도는 계획 ("제안 자세 그대로 회전", P1opt_N). 자세 추천 결과를 넘긴다.
+    - 기본 자세로 도는 계획 ("기본 자세 회전", P1_N). 항상 넣는다.
+    E7 에서 최적 자세 회전이 전 시나리오 1위였으므로, 모델 후보가 이 둘보다 나쁘면 이 둘이 뽑힌다.
+    limits 는 계획 산출물의 한도(plan_limits_for)를 그대로 넘긴다. 회전 단계 수는 limits.n_phases 와 독립이다.
+    """
+    from airis.optimize.baselines import rotation_plan
+
+    out = []
+    if rotation_pose is not None:
+        out.append(rotation_plan(rotation_pose, scenario, limits, int(n_steps)))
+    out.append(rotation_plan(PoseParams(), scenario, limits, int(n_steps)))
+    return out
+
+
+def _gather_plans(body: BodyParams, scenario: Scenario, *, backend: str, n_flow: int, n_knn: int, seed: int,
+                  path: Path | str | None, knn_path: Path | str | None):
+    """계획 후보(flow 샘플·kNN)와 출처, 산출물을 모은다. 한쪽이 없으면 있는 쪽으로 돌아간다 (경고 1회).
+
+    산출물이 계획 모델이 아니면(자세 모델을 읽었으면) ValueError 를 그대로 올린다.
+    """
+    want_flow = backend in ("hybrid", "flow") and n_flow > 0
+    want_knn = backend in ("hybrid", "knn") and n_knn > 0
+    model = knn = None
+    missing: list[str] = []
+    if want_flow:
+        try:
+            model = load_model(path, kind="plan")
+        except FileNotFoundError as exc:
+            missing.append(f"flow 산출물 없음({exc})")
+        except ImportError as exc:
+            missing.append(f"flow 를 쓸 수 없음(torch: {exc})")
+    if want_knn:
+        try:
+            knn = load_plan_knn(knn_path)
+        except FileNotFoundError as exc:
+            missing.append(f"kNN 표 없음({exc})")
+    if model is None and knn is None:
+        if backend == "flow":                       # 한 쪽만 쓰라고 했으면 그 실패를 그대로 올린다
+            load_model(path, kind="plan")
+        if backend == "knn":
+            load_plan_knn(knn_path)
+        reason = "; ".join(missing)
+        if any("torch" in m for m in missing) and not any("없음" in m for m in missing):
+            raise ImportError(f"flow 도 kNN 도 쓸 수 없다: {reason}")
+        raise FileNotFoundError(f"계획 모델 산출물이 없다: {reason} (scripts/train_plan_models.py 로 만든다)")
+    if missing and backend == "hybrid":
+        warnings.warn(f"혼합 계획 추천에서 일부만 쓴다: {'; '.join(missing)}", RuntimeWarning)
+
+    names = set()
+    for m in (model, knn):
+        if m is not None:
+            names |= set(m.scenario_names)
+    if scenario.name not in names:
+        raise KeyError(f"학습에 없던 시나리오: {scenario.name} (학습: {sorted(names)})")
+
+    candidates: list[Plan] = []
+    sources: list[str] = []
+    if model is not None and scenario.name in model.scenario_names:
+        got = model.sample_plans(body, scenario, max(1, int(n_flow)), seed=seed)
+        candidates += got
+        sources += ["flow"] * len(got)
+    if knn is not None and scenario.name in knn.scenario_names:
+        got = knn.candidates(body, scenario, int(n_knn))
+        candidates += got
+        sources += ["knn"] * len(got)
+    return candidates, sources, model, knn
+
+
+def margin_pick_plans(evaluator: Evaluator, candidates: Sequence[Plan], scores: np.ndarray, infeasible: np.ndarray,
+                      nozzle: NozzleConfig, body: BodyParams, scenario: Scenario, margin: float,
+                      mode: str = "all") -> tuple[int, int, int, bool]:
+    """margin_pick 의 계획 판. 점수 순으로 보며 키운 체형에서도 부스 안인 첫 계획을 고른다.
+
+    (고른 자리, 다시 채점한 횟수, 넘긴 후보 수, 폴백 여부). 계획은 단계 중 하나라도 부스 밖이면 불가다.
+    """
+    base = _pick(scores, infeasible)
+    order = sorted((j for j in range(len(candidates)) if not infeasible[j]), key=lambda j: (-float(scores[j]), j))
+    big = enlarged_body(body, margin, mode)
+    checks = 0
+    for rejected, j in enumerate(order):
+        _, bad = score_plans(evaluator, [candidates[j]], nozzle, big, scenario)
+        checks += 1
+        if not bool(bad[0]):
+            return j, checks, rejected, False
+    return base, checks, len(order), True
+
+
+def predict_plan_candidates(body: BodyParams, scenario: Scenario, *, backend: str | None = None,
+                            n_flow: int = N_FLOW, n_knn: int = N_KNN, n_samples: int | None = None,
+                            rescore: bool = True, seed: int = 0, path: Path | str | None = None,
+                            knn_path: Path | str | None = None,
+                            evaluator: Evaluator | None = None, nozzle: NozzleConfig | None = None,
+                            extra_candidates: Sequence[Plan] = (), fixed: bool | None = None,
+                            rotation_pose: PoseParams | None = None, rotation_steps: int = ROTATION_STEPS,
+                            limits=None, zone_nozzle_counts: Sequence[float] | None = None,
+                            feasibility_margin: float = 0.0,
+                            feasibility_margin_mode: str = "all") -> PlanPrediction:
+    """계획 후보까지 돌려주는 예측. predict 의 계획 버전 (혼합 추천).
+
+        후보 = flow 샘플 n_flow 개 (data/models/plan_flow.pt)
+             + 가까운 학습 체형의 최적 계획 n_knn 개 (data/models/plan_knn.parquet, knn.PlanKNN)
+             + 고정 회전 계획 (fixed_plans: rotation_pose 가 있으면 그 자세 회전, 그리고 기본 자세 회전)
+             + extra_candidates
+        → 패치판 evaluate_plan 으로 재채점 → 가장 높은 계획
+
+    후보 수는 인자로 정한다 (계획 1개 채점이 단계 수에 비례해 느려 응답 시간에 맞춰 줄일 수 있어야 한다).
+
+    - backend: "hybrid"(기본) | "flow" | "knn". 한쪽 산출물만 있으면 있는 쪽으로 돌아간다 (경고).
+    - n_samples 를 주면 예전 동작이다: 한쪽만 그 수만큼 쓰고(backend 기본 "flow") 고정 회전 계획은 넣지 않는다.
+    - fixed: 고정 회전 계획을 넣을지. 기본은 혼합일 때만 넣는다. rescore=False 면 넣지 않는다.
+    - 투영: flow·kNN 후보와 단계 수가 산출물과 같은 extra 후보는 PlanEncoder.clip_plan 을 거친다
+      (rescore=False 여도). 고정 회전 계획과 단계 수가 다른 extra 후보는 그대로 채점한다 (rotation_plan 이 이미
+      자세 투영과 세기 한도를 적용했고, 단계 수가 달라도 evaluate_plan 은 같은 자로 채점한다).
+    - limits: 주지 않으면 산출물의 한도 (plan_limits_for). 설정 파일의 n_phases 가 아니다.
+    - feasibility_margin: predict 와 같다 (기본 0 이면 추가 채점 없음).
+    """
+    if n_samples is not None:
+        backend = backend or "flow"
+        if backend == "flow":
+            n_flow, n_knn = int(n_samples), 0
+        elif backend == "knn":
+            n_flow, n_knn = 0, int(n_samples)
+        else:
+            raise ValueError("n_samples 는 backend='flow'·'knn' 에서만 쓴다 (hybrid 는 n_flow·n_knn)")
+        fixed = bool(fixed) if fixed is not None else False
+    backend = backend or "hybrid"
+    if backend not in BACKENDS:
+        raise ValueError(f"backend 는 {BACKENDS} 중 하나: {backend!r}")
+    if fixed is None:
+        fixed = backend == "hybrid"
+
+    candidates, sources, model, knn = _gather_plans(body, scenario, backend=backend, n_flow=n_flow, n_knn=n_knn,
+                                                   seed=seed, path=path, knn_path=knn_path)
+    limits = limits if limits is not None else plan_limits_for(model, knn)
     enc = plan_encoder(scenario, limits=limits, zone_nozzle_counts=zone_nozzle_counts, nozzle=nozzle)
     candidates = [enc.clip_plan(p) for p in candidates]
+    if rescore:
+        if fixed:
+            got = fixed_plans(scenario, limits, rotation_pose=rotation_pose, n_steps=rotation_steps)
+            candidates += got
+            sources += ["fixed"] * len(got)
+        for p in extra_candidates:
+            candidates.append(enc.clip_plan(p) if len(p.phases) == limits.n_phases else p)
+            sources.append("extra")
     if not rescore or len(candidates) == 1:
-        return PlanPrediction(candidates[0], candidates, None, None)
+        return PlanPrediction(candidates[0], candidates, None, None, sources, sources[0])
 
     if evaluator is None or nozzle is None:
-        ev, nz = default_rescorer(model, plan=True)
+        ev, nz = default_rescorer(model if model is not None else knn, plan=True)
         evaluator, nozzle = evaluator or ev, nozzle or nz
     scores, infeasible = score_plans(evaluator, candidates, nozzle, body, scenario)
-    pick = np.where(infeasible, -np.inf, scores) if not infeasible.all() else scores
-    return PlanPrediction(candidates[int(np.argmax(pick))], candidates, scores, infeasible)
+    i = _pick(scores, infeasible)
+    out = PlanPrediction(candidates[i], candidates, scores, infeasible, sources, sources[i])
+    if feasibility_margin_mode not in MARGIN_MODES:
+        raise ValueError(f"여유 방식은 {tuple(MARGIN_MODES)} 중 하나: {feasibility_margin_mode!r}")
+    if feasibility_margin and feasibility_margin > 0:
+        j, checks, rejected, fallback = margin_pick_plans(evaluator, candidates, scores, infeasible, nozzle, body,
+                                                          scenario, feasibility_margin, feasibility_margin_mode)
+        out.plan, out.source = candidates[j], sources[j]
+        out.n_margin_checks, out.n_margin_rejected, out.margin_fallback = checks, rejected, fallback
+    return out
 
 
 def predict_plan(body: BodyParams, scenario: Scenario, **kwargs) -> Plan:

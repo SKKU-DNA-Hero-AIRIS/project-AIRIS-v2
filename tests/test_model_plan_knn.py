@@ -190,3 +190,49 @@ def test_plan_knn_without_limit_columns_uses_argument_then_config(tmp_path):
         PlanKNN.from_dataset(df.drop(columns=["plan_duration_s"]))
     with pytest.raises(ValueError, match="단계 수"):
         PlanKNN.from_dataset(df[[c for c in df.columns if not c.startswith("plan_p")]])
+
+
+# ---------- 후보 벡터 열 (cand_plan_raw) ----------
+
+def test_candidate_matrix_reads_2d_and_flat_lists():
+    """parquet 에서 읽은 2차원 목록(배열의 배열)과 행 우선으로 편 1차원 목록을 같은 배열로 읽는다."""
+    want = np.arange(12, dtype=np.float64).reshape(3, 4)
+    nested = np.empty(3, dtype=object)
+    for i in range(3):
+        nested[i] = want[i].copy()
+    for value in (want.tolist(), nested, want.reshape(-1), want.reshape(-1).tolist(), [want[0].tolist()]):
+        got = flow.candidate_matrix(value, 4)
+        assert np.array_equal(got, want[:len(got)]) and got.shape[1] == 4
+    with pytest.raises(ValueError, match="배수"):
+        flow.candidate_matrix(list(range(10)), 4)
+    with pytest.raises(ValueError, match="다르다"):
+        flow.candidate_matrix([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0, 7.0, 8.0]], 4)
+
+
+@pytest.mark.parametrize("flat", [False, True])
+def test_training_arrays_expand_cand_plan_raw(scenarios, tmp_path, flat):
+    """계획 데이터셋의 후보 열(cand_plan_raw)이 학습 점으로 펼쳐진다. parquet 을 거쳐도 같다."""
+    n = 5
+    df = plan_df(n, n_bodies=4, scenarios=("default",))
+    keys = flow.PlanSpace.plan_keys(n)
+    best = df[[f"plan_{k}" for k in keys]].to_numpy(dtype=np.float64)
+    cands, counts = [], [3, 1, 0, 2]
+    for i, c in enumerate(counts):
+        m = np.stack([best[i] + 0.01 * j for j in range(c)]) if c else np.zeros((0, len(keys)))
+        cands.append((m.reshape(-1) if flat else [row for row in m]) if c else None)
+    df["cand_plan_raw"] = pd.Series(cands, dtype=object)
+    df["n_candidates"] = counts
+    path = tmp_path / "plan_ds.parquet"
+    df.to_parquet(path)
+    back = pd.read_parquet(path)
+    lim = limits_for(n)
+    space = flow.PlanSpace.from_scenarios([scenarios["default"]], n_phases=n, duration_bounds_s=lim.duration_bounds_s,
+                                          min_phase_s=lim.min_phase_s)
+    for frame in (df, back):
+        arr = flow.training_arrays(frame, space, scenarios)
+        assert len(arr["x"]) == 3 + 1 + 1 + 2, "후보가 있으면 후보들을, 없으면 최적 계획 하나를 쓴다"
+        assert np.allclose(np.bincount(arr["group"], weights=arr["weight"]), 1.0), "묶음마다 가중치 합 1"
+        assert arr["x"].shape[1] == space.dim == 8 * n + 5 and np.all(np.abs(arr["x"]) <= 1.0)
+        # 범위 안에 있는 값(1단계 어깨 벌림 170°)으로 본다. 상한에 붙은 값(세기 1.0)은 범위 밖 후보가 잘린다.
+        abd = space.decode(arr["x"][:3])[:, space.keys.index("p1_shoulder_abduction")]
+        assert abd == pytest.approx([170.0, 170.01, 170.02], abs=1e-4), "후보 순서와 값이 그대로"
