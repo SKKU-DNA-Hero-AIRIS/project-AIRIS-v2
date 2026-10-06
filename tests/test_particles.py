@@ -1688,3 +1688,82 @@ def test_e7_stamp_report_survives_unreadable_settings(monkeypatch):
     assert "설정을 못 읽었다" in report["current_error"]
     assert report["mismatched"] == []
 
+
+SWEEP_REFERENCE = ROOT / "docs" / "e7_sweep_reference.json"
+
+
+def test_e7_reference_bundles_reads_both_formats():
+    """묶음 하나인 참조 파일(`bundle`)과 여러 개인 스윕 파일(`bundles`)을 둘 다 읽는다."""
+    mod = _load_e7_verify_script()
+    one = mod.reference_bundles(mod.load_reference())
+    many = mod.reference_bundles(mod.load_reference(SWEEP_REFERENCE))
+    assert len(one) == 1 and one[0]["group_id"]
+    assert len(many) > 1, len(many)
+    assert all(b.get("group_id") for b in many)
+    assert mod.reference_bundles({"rows": []}) == []          # 번들 키가 없으면 빈 목록
+
+
+def test_e7_select_rows_narrows_by_seed_and_phases():
+    """스윕 파일은 같은 조건에 단계 수·시드가 여러 개다. 좁히지 않으면 섞여 들어온다.
+
+    `P5`는 N=3·4·6·9가 모두 있어서, N=9 비교에서 `--n-phases 9`를 빼면 다른 단계 수의 계획까지
+    재평가해 버린다. 이 테스트가 그 회귀를 잡는다.
+    """
+    mod = _load_e7_verify_script()
+    ref = mod.load_reference(SWEEP_REFERENCE)
+
+    wide, _ = mod.select_rows(ref, conditions=["P5"])
+    narrow, _ = mod.select_rows(ref, conditions=["P5"], n_phases=[9])
+    assert {r["n_phases"] for r in wide} > {9}, "스윕 파일에 N이 하나뿐이면 이 테스트가 공허하다"
+    assert {r["n_phases"] for r in narrow} == {9}
+    assert len(narrow) == 3, [r["scenario"] for r in narrow]   # 시나리오 3개
+
+    seeded, _ = mod.select_rows(ref, conditions=["P5"], n_phases=[9], seeds=[1])
+    assert [r["seed"] for r in seeded] == [1] * 3
+    assert mod.select_rows(ref, conditions=["P5"], n_phases=[9], seeds=[99])[0] == []
+
+    # 계획이 없는 행은 둘째 자리로 갈라 둔다 (재평가할 수 없다)
+    no_plan = {"rows": [{"condition": "P5", "scenario": "default", "energy_weight": 0.1,
+                         "seed": 1, "n_phases": 9, "plan": None}]}
+    rows, skipped = mod.select_rows(no_plan)
+    assert rows == [] and len(skipped) == 1
+
+
+def test_e7_merge_references_combines_rows_and_bundles():
+    """참조 파일 여러 개를 합쳐 한 표에서 비교한다. 구역 순서가 다르면 막는다.
+
+    N=9 시드 2 결과처럼 묶음이 저장소 밖에 있어 `docs/`에 아직 없는 결과를 저장소 파일과
+    나란히 보려면 합쳐야 한다.
+    """
+    mod = _load_e7_verify_script()
+    a = mod.load_reference()
+    b = mod.load_reference(SWEEP_REFERENCE)
+
+    assert mod.merge_references([a]) is a                      # 하나면 그대로
+    merged = mod.merge_references([a, b])
+    assert len(merged["rows"]) == len(a["rows"]) + len(b["rows"])
+    assert len(mod.reference_bundles(merged)) == (len(mod.reference_bundles(a))
+                                                 + len(mod.reference_bundles(b)))
+    assert "bundle" not in merged, "묶음이 여러 개면 단수 키를 남기지 않는다"
+    assert merged["zone_names"] == a["zone_names"]
+
+    bad = dict(b)
+    bad["zone_names"] = list(reversed(b["zone_names"]))
+    with pytest.raises(ValueError, match="zone_names"):
+        mod.merge_references([a, bad])
+
+
+def test_e7_order_checks_separate_seeds():
+    """같은 조건을 시드 여러 개로 돌린 행이 서로를 덮지 않는다 (라벨에 시드를 붙인다)."""
+    mod = _load_e7_verify_script()
+    rows = [{"scenario": "default", "energy_weight": 0.1, "condition": "P5", "seed": 1,
+             "patch_score": 1.0, "particle_score": 0.9},
+            {"scenario": "default", "energy_weight": 0.1, "condition": "P5", "seed": 2,
+             "patch_score": 1.1, "particle_score": 1.0},
+            {"scenario": "default", "energy_weight": 0.1, "condition": "P1opt_9", "seed": 1,
+             "patch_score": 0.8, "particle_score": 0.7}]
+    checks = mod.order_checks(rows)
+    pairs = {c["pair"] for c in checks}
+    assert pairs == {"P1opt_9/s1 vs P5/s1", "P1opt_9/s1 vs P5/s2", "P5/s1 vs P5/s2"}, pairs
+    assert all(c["same_order"] for c in checks)
+
