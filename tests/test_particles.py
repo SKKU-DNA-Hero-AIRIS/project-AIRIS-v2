@@ -1703,30 +1703,66 @@ def test_e7_reference_bundles_reads_both_formats():
     assert mod.reference_bundles({"rows": []}) == []          # 번들 키가 없으면 빈 목록
 
 
-def test_e7_select_rows_narrows_by_seed_and_phases():
-    """스윕 파일은 같은 조건에 단계 수·시드가 여러 개다. 좁히지 않으면 섞여 들어온다.
+def _sweep_rows() -> dict:
+    """`select_rows` 검사용 작은 참조. 같은 조건에 단계 수·시드가 섞인 모양을 본뜬다.
 
-    `P5`는 N=3·4·6·9가 모두 있어서, N=9 비교에서 `--n-phases 9`를 빼면 다른 단계 수의 계획까지
-    재평가해 버린다. 이 테스트가 그 회귀를 잡는다.
+    실제 참조 파일(`docs/e7_sweep_reference.json`)은 C가 묶음을 더할 때마다 행이 늘어난다.
+    행 수를 그 파일에 대고 단언하면 데이터가 늘 때 깨지므로(실제로 #162에서 깨졌다),
+    수를 세는 검사는 여기서 만든 행으로 한다.
+    """
+    def row(condition, scenario, seed, n, plan=True):
+        return {"condition": condition, "scenario": scenario, "seed": seed, "n_phases": n,
+                "energy_weight": 0.1, "plan": {"phases": [None] * n} if plan else None}
+
+    return {"rows": [row("P5", "default", 1, 3), row("P5", "default", 1, 9),
+                     row("P5", "pregnant", 1, 9), row("P5", "default", 2, 9),
+                     row("P1opt_9", "default", 1, 9), row("P1opt_9", "default", 1, 9, plan=False),
+                     row("P5", "default", 1, 9, plan=False)]}
+
+
+def test_e7_select_rows_narrows_by_seed_and_phases():
+    """조건·단계 수·시드로 좁히고, 계획이 없는 행은 둘째 자리로 가른다.
+
+    스윕 파일은 같은 조건에 단계 수와 시드가 여러 개다. `--n-phases`를 빼면 N=9 비교에
+    N=3·4·6 계획까지 섞여 들어온다 — 이 테스트가 그 회귀를 잡는다.
+    """
+    mod = _load_e7_verify_script()
+    ref = _sweep_rows()
+
+    wide, _ = mod.select_rows(ref, conditions=["P5"])
+    assert {r["n_phases"] for r in wide} == {3, 9}            # 좁히지 않으면 N이 섞인다
+    narrow, skipped = mod.select_rows(ref, conditions=["P5"], n_phases=[9])
+    assert [(r["scenario"], r["seed"]) for r in narrow] == [("default", 1), ("pregnant", 1),
+                                                            ("default", 2)]
+    assert len(skipped) == 1                                 # 계획이 없는 P5/N9 행
+
+    seeded, _ = mod.select_rows(ref, conditions=["P5"], n_phases=[9], seeds=[1])
+    assert [r["scenario"] for r in seeded] == ["default", "pregnant"]
+    assert mod.select_rows(ref, conditions=["P5"], n_phases=[9], seeds=[99])[0] == []
+    assert mod.select_rows(ref, scenarios=["pregnant"])[0] == [ref["rows"][2]]
+    assert mod.select_rows(ref, energy_weights=[0.0])[0] == []
+    assert len(mod.select_rows(ref)[0]) == 5                 # 조건을 안 주면 거르지 않는다
+
+
+def test_e7_sweep_reference_still_mixes_phase_counts():
+    """실제 스윕 파일이 `--n-phases`가 필요한 모양인지 (행 수가 아니라 구조만 본다).
+
+    C가 묶음을 더해도 깨지지 않게, 단계 수가 섞여 있다는 것과 좁히면 N=9만 남는다는 것만
+    확인한다 (#162에서 행 7개로 늘며 수를 세던 단언이 깨졌다).
     """
     mod = _load_e7_verify_script()
     ref = mod.load_reference(SWEEP_REFERENCE)
 
     wide, _ = mod.select_rows(ref, conditions=["P5"])
     narrow, _ = mod.select_rows(ref, conditions=["P5"], n_phases=[9])
-    assert {r["n_phases"] for r in wide} > {9}, "스윕 파일에 N이 하나뿐이면 이 테스트가 공허하다"
+    assert {r["n_phases"] for r in wide} > {9}, "단계 수가 하나뿐이면 이 검사가 공허하다"
     assert {r["n_phases"] for r in narrow} == {9}
-    assert len(narrow) == 3, [r["scenario"] for r in narrow]   # 시나리오 3개
+    assert 0 < len(narrow) < len(wide)
+    assert {"default", "pregnant", "wheelchair"} <= {r["scenario"] for r in narrow}
 
     seeded, _ = mod.select_rows(ref, conditions=["P5"], n_phases=[9], seeds=[1])
-    assert [r["seed"] for r in seeded] == [1] * 3
-    assert mod.select_rows(ref, conditions=["P5"], n_phases=[9], seeds=[99])[0] == []
-
-    # 계획이 없는 행은 둘째 자리로 갈라 둔다 (재평가할 수 없다)
-    no_plan = {"rows": [{"condition": "P5", "scenario": "default", "energy_weight": 0.1,
-                         "seed": 1, "n_phases": 9, "plan": None}]}
-    rows, skipped = mod.select_rows(no_plan)
-    assert rows == [] and len(skipped) == 1
+    assert {r["seed"] for r in seeded} == {1}
+    assert 0 < len(seeded) < len(narrow), "시드 2 행이 있어야 좁히는 뜻이 있다"
 
 
 def test_e7_merge_references_combines_rows_and_bundles():
