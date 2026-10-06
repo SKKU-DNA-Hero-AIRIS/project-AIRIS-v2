@@ -633,3 +633,127 @@ def test_warm_start_uses_single_pose_optimum(tmp_path):
     cold = run("--tag", "c")
     assert cold.returncode == 0 and "warm_start(sigma0" not in cold.stdout
     assert starts_used("c") == ["default", "hands_up"]
+
+
+# ---------- 계획 데이터셋 (C·F 합의 스키마 2026-10-06) ----------
+
+def test_plan_dataset_end_to_end(tmp_path):
+    """더미 평가기로 2행 — 열 이름·단계 수·도장·한도·후보·기준선과 이어 만들기."""
+    import numpy as np
+
+    from airis.optimize.plan_dataset import PlanDatasetConfig, build_plan_dataset, plan_limits
+    from airis.optimize.plan_encoding import plan_keys
+
+    out = tmp_path / "plan.parquet"
+    cfg = PlanDatasetConfig(n_phases=3, max_evals=300, pose_max_evals=150, popsize=10,
+                            evaluator="dummy", candidate_k=4)
+    res = build_plan_dataset(out, n_bodies=2, scenarios=["default"], cfg=cfg,
+                             processes=1, flush_every=1, log=lambda *a: None)
+    assert (res["n_rows"], res["n_new"], res["n_skipped"]) == (2, 2, 0)
+
+    import pandas as pd
+
+    df = pd.read_parquet(out)
+    # 계획 열은 8N + 5 개이고 이름·순서가 interfaces.md 키 순서다.
+    expected = [f"plan_{k}" for k in plan_keys(3)]
+    assert [c for c in df.columns if c.startswith("plan_")] == expected
+    assert len(expected) == 8 * 3 + 5
+
+    # 도장 10개 (zone_nozzle_counts 는 문자열) + 한도 6개.
+    for col in ("physics_hash", "nozzle_layout_hash", "body_model", "patches_per_m2", "commit",
+                "kinetics_enabled", "time_constant_s", "zone_nozzle_counts", "n_phases",
+                "energy_weight"):
+        assert col in df.columns, col
+        assert df[col].nunique(dropna=False) == 1, col
+    assert isinstance(df["zone_nozzle_counts"].iloc[0], str)
+    assert df["kinetics_enabled"].iloc[0] is True or df["kinetics_enabled"].iloc[0] == True  # noqa: E712
+    limits = plan_limits(cfg)
+    assert df["duration_lo_s"].iloc[0] == pytest.approx(limits.duration_bounds_s[0])
+    assert df["duration_lo_s"].iloc[0] == pytest.approx(3 * limits.min_phase_s), "하한이 N×최소로 오른다"
+    for col in ("duration_hi_s", "min_phase_s", "transition_s", "s_max", "cap_ratio"):
+        assert col in df.columns, col
+
+    # 후보: raw 벡터 길이가 차원과 같고 점수는 내림차순, 수가 k 이하.
+    for raws, scores, n in zip(df["cand_plan_raw"], df["cand_score"], df["n_candidates"]):
+        assert 0 < n <= cfg.candidate_k
+        assert all(len(v) == len(expected) for v in raws)
+        assert list(scores) == sorted(scores, reverse=True)
+
+    # 선택 열: 기준선 두 개와 단일 자세 최적.
+    for col in ("score_p1_10", "score_p1opt_10", "pose_shoulder_abduction", "pose_score"):
+        assert col in df.columns, col
+    assert np.isfinite(df["score"]).all() and np.isfinite(df["score_p1opt_10"]).all()
+
+    # 체형은 자세 데이터셋과 같은 body_idx (body_seed 0).
+    from airis.optimize.dataset import sample_bodies
+    bodies = sample_bodies(2, 0, df["body_model"].iloc[0])
+    assert df.sort_values("body_idx")["body_height_m"].tolist() == [
+        pytest.approx(b.height_m) for b in bodies]
+
+    # 다시 돌리면 끝난 행을 건너뛴다.
+    again = build_plan_dataset(out, n_bodies=2, scenarios=["default"], cfg=cfg,
+                               processes=1, flush_every=1, log=lambda *a: None)
+    assert (again["n_new"], again["n_skipped"]) == (0, 2)
+
+    # 설정이 다르면 섞지 않는다.
+    with pytest.raises(ValueError, match="섞을 수 없다"):
+        build_plan_dataset(out, n_bodies=2, scenarios=["default"],
+                           cfg=PlanDatasetConfig(n_phases=4, max_evals=300, pose_max_evals=150,
+                                                 popsize=10, evaluator="dummy", candidate_k=4),
+                           processes=1, log=lambda *a: None)
+
+
+def test_plan_limits_rejects_too_many_phases():
+    """N × min_phase_s 가 총 시간 상한 이상이면 거부한다 (N=10 실행이 그렇게 죽었다)."""
+    from airis.optimize.plan_dataset import PlanDatasetConfig, plan_limits
+
+    assert plan_limits(PlanDatasetConfig(n_phases=9)).duration_bounds_s == (18.0, 20.0)
+    with pytest.raises(ValueError, match="N ≤ 9"):
+        plan_limits(PlanDatasetConfig(n_phases=10))
+
+
+def test_candidate_raw_is_symmetry_normalized(scenarios):
+    """후보 저장 벡터는 대칭 정규화를 거친다 — decode 는 clip 만 한다 (통합 검토 10-07).
+
+    1단계 yaw 가 정면(0°)이면 `normalize` 가 chest/back 구역을 맞바꾼다. 그 규칙이 decode 에는
+    없어서, 그냥 decode 하면 같은 계획이 구역 순서만 다른 값으로 저장된다.
+    """
+    import numpy as np
+
+    from airis.optimize.plan_dataset import candidate_columns
+    from airis.optimize.plan_encoding import PlanEncoder, PlanLimits, plan_keys
+
+    enc = PlanEncoder(scenarios["default"], PlanLimits(n_phases=3, duration_bounds_s=(6.0, 20.0)))
+    keys = plan_keys(3)
+    x = np.zeros(enc.dim)
+    x[keys.index("p1_torso_yaw")] = -1.0            # 1단계 yaw 를 범위 하한(정면 쪽)으로
+    x[keys.index("zone_chest_low")] = -1.0          # 가슴 약, 등 강 → normalize 가 맞바꾼다
+    x[keys.index("zone_chest_high")] = -1.0
+    x[keys.index("zone_back_low")] = 1.0
+    x[keys.index("zone_back_high")] = 1.0
+
+    out = candidate_columns([{"x": x, "score": 1.0, "infeasible": False}], enc, 1.0,
+                            k=4, tol=0.02, min_dist=0.05)
+    raw = dict(zip(keys, out["cand_plan_raw"][0]))
+    plain = dict(zip(keys, enc.raw_vector(enc.decode(x))))
+
+    assert abs(raw["p1_torso_yaw"]) < 1e-9, "정면이면 1단계 yaw 는 0 으로 접힌다"
+    # 맞바꿈이 실제로 일어나 저장값과 '그냥 decode' 값이 다르다 — 이 테스트가 구분력이 있다.
+    assert raw["zone_chest_low"] > raw["zone_back_low"], raw
+    assert plain["zone_chest_low"] < plain["zone_back_low"], plain
+    assert raw["zone_chest_low"] == pytest.approx(plain["zone_back_low"])
+    assert raw["zone_back_low"] == pytest.approx(plain["zone_chest_low"])
+
+
+def test_plan_dataset_rejects_file_without_stamp_columns(tmp_path):
+    """도장 열이 없는 옛 파일에는 이어 붙이지 않는다 — NaN 행이 섞이면 도장 검사가 무의미해진다."""
+    import pandas as pd
+
+    from airis.optimize.plan_dataset import PlanDatasetConfig, build_plan_dataset
+
+    out = tmp_path / "old.parquet"
+    pd.DataFrame([{"body_idx": 0, "scenario": "default", "score": 1.0}]).to_parquet(out, index=False)
+    with pytest.raises(ValueError, match="도장 열이 없다"):
+        build_plan_dataset(out, n_bodies=1, scenarios=["default"],
+                           cfg=PlanDatasetConfig(n_phases=3, evaluator="dummy"),
+                           processes=1, log=lambda *a: None)
