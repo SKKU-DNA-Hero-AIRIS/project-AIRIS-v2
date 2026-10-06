@@ -582,3 +582,54 @@ def test_run_e7_cli_phase_and_rotation_options(tmp_path):
     assert out.returncode == 2 and "--rotation-pose" in out.stderr
     out = run(["--conditions", "P1_x", "--tag", "bad"])
     assert out.returncode == 2 and "알 수 없는 조건" in out.stderr
+
+
+def test_warm_start_uses_single_pose_optimum(tmp_path):
+    """--warm-start 는 P5 를 단일 자세 최적 하나에서, 작은 스텝으로 출발시킨다 (총괄 10-06).
+
+    점수 함수·밀도는 그대로이고 **시작점과 초기 스텝만** 바뀌어야 한다.
+    """
+    import json
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[1]
+
+    def run(*extra):
+        return subprocess.run([sys.executable, str(root / "scripts" / "run_e7.py"),
+                               "--evaluator", "dummy", "--scenarios", "default", "--seeds", "0",
+                               "--energy-weights", "0.1", "--conditions", "P5",
+                               "--max-evals", "200", "--pose-max-evals", "120", "--popsize", "10",
+                               "--log-dir", str(tmp_path), *extra],
+                              cwd=root, capture_output=True, text=True, encoding="utf-8")
+
+    warm = run("--warm-start", "--tag", "w")
+    assert warm.returncode == 0, warm.stderr
+    assert "warm_start(sigma0 0.2)" in warm.stdout, "기본 sigma0 는 0.2"
+    plans = json.loads(next(tmp_path.glob("w_*/e7_plans.json")).read_text(encoding="utf-8"))
+    assert plans["args"]["warm_start"] == 0.2
+
+    # 시작점 이름이 history.csv 의 start 열에 남는다 (계획 실행은 meta.json 을 쓰지 않는다).
+    def starts_used(tag):
+        rows = []
+        for path in sorted(tmp_path.glob(f"{tag}p5_*/history.csv")):
+            with path.open(encoding="utf-8") as fh:
+                rows += list(csv.DictReader(fh))
+        assert rows, f"{tag} 의 P5 기록이 있어야 한다"
+        seen = []
+        for r in rows:                                   # 순서를 지킨 중복 제거
+            if r["start"] not in seen:
+                seen.append(r["start"])
+        return seen
+
+    assert starts_used("w") == ["warm"]
+
+    # 값을 직접 주면 그 값을 쓴다.
+    out = run("--warm-start", "0.15", "--tag", "w15")
+    assert out.returncode == 0 and "warm_start(sigma0 0.15)" in out.stdout
+
+    # 끄면 예전처럼 시작점 두 개(default·hands_up)에서 출발한다.
+    cold = run("--tag", "c")
+    assert cold.returncode == 0 and "warm_start(sigma0" not in cold.stdout
+    assert starts_used("c") == ["default", "hands_up"]
