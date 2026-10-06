@@ -235,24 +235,11 @@ class PlanSpace(VectorSpace):
 
     def durations(self, total_s: float, shares: Sequence[float]) -> list[float]:
         """총 시간과 몫 K−1 개 → 단계 시간 K 개 (각각 min_phase_s 이상, 합 = total_s)."""
-        r = [min(1.0, max(0.0, float(s))) for s in shares]
-        r.append(max(0.0, 1.0 - sum(r)))
-        tot = sum(r)
-        r = [v / tot for v in r] if tot > 0 else [1.0 / self.n_phases] * self.n_phases
-        free = max(0.0, float(total_s) - self.n_phases * self.min_phase_s)
-        return [self.min_phase_s + free * v for v in r]
+        return plan_durations(total_s, shares, self.n_phases, self.min_phase_s)
 
     def to_plan(self, x: np.ndarray, scenario: Scenario) -> Plan:
         """정규화 벡터 하나 → 범위 안의 Plan. 자세는 시나리오 제약(범위 + fixed_pose)으로 투영한다."""
-        from airis.optimize.encoding import PoseEncoder
-
-        raw = dict(zip(self.keys, map(float, self.decode(x)[0])))
-        enc = PoseEncoder(scenario)
-        times = self.durations(raw["duration_s"], [raw[f"share_{k}"] for k in range(1, self.n_phases)])
-        phases = [Phase(enc.clip_pose(PoseParams(**{p: raw[f"p{k}_{p}"] for p in POSE_KEYS})), t)
-                  for k, t in zip(range(1, self.n_phases + 1), times)]
-        zones = np.array([raw[f"zone_{z}"] for z in ZONE_NAMES], dtype=np.float64)
-        return Plan(phases, zones)
+        return plan_from_raw(self.decode(x)[0], scenario, self.n_phases, self.min_phase_s)
 
     def from_plan(self, plan: Plan) -> np.ndarray:
         """Plan → 원래 단위 벡터 (dim,). 데이터셋 plan_* 열과 테스트용. to_plan 의 역."""
@@ -279,6 +266,50 @@ class PlanSpace(VectorSpace):
 SPACE_KINDS: dict[str, type[VectorSpace]] = {"vector": VectorSpace, "pose": PoseSpace, "plan": PlanSpace}
 
 
+def plan_phase_count(columns, prefix: str = "plan_") -> int:
+    """열 이름에서 계획의 단계 수 N 을 읽는다 (`<prefix>p<k>_torso_yaw` 가 있는 k 의 개수).
+
+    계획 데이터셋의 단계 수는 C 의 설계 결정값이고 열 수로 고정된다. 모델은 이 값을 데이터에서 읽는다.
+    열이 p1 … pN 로 이어지지 않으면 ValueError.
+    """
+    ks = sorted(int(c[len(prefix) + 1:].split("_", 1)[0]) for c in columns
+                if c.startswith(prefix + "p") and c.endswith("_" + YAW_KEY)
+                and c[len(prefix) + 1:].split("_", 1)[0].isdigit())
+    if not ks or ks != list(range(1, len(ks) + 1)):
+        raise ValueError(f"계획 열({prefix}p<k>_…)에서 단계 수를 읽을 수 없다: 찾은 단계 {ks}")
+    return len(ks)
+
+
+def plan_durations(total_s: float, shares: Sequence[float], n_phases: int, min_phase_s: float) -> list[float]:
+    """총 시간과 몫 N−1 개 → 단계 시간 N 개 (각각 min_phase_s 이상, 합 = total_s). PlanEncoder.durations 와 같은 식."""
+    r = [min(1.0, max(0.0, float(s))) for s in shares]
+    r.append(max(0.0, 1.0 - sum(r)))
+    tot = sum(r)
+    r = [v / tot for v in r] if tot > 0 else [1.0 / n_phases] * n_phases
+    free = max(0.0, float(total_s) - n_phases * min_phase_s)
+    return [min_phase_s + free * v for v in r]
+
+
+def plan_from_raw(raw, scenario: Scenario, n_phases: int, min_phase_s: float) -> Plan:
+    """원래 단위 계획 벡터(PlanSpace.plan_keys 순서) → Plan. 자세는 시나리오 제약(범위 + fixed_pose)으로 투영한다.
+
+    데이터셋의 plan_* 행과 kNN 표의 행을 계획으로 되돌릴 때 쓴다. 시간·세기 범위와 풍량 한도는 여기서 다루지
+    않는다 (predict_plan 이 PlanEncoder.clip_plan 으로 투영한다).
+    """
+    from airis.optimize.encoding import PoseEncoder
+
+    keys = PlanSpace.plan_keys(n_phases)
+    values = np.asarray(raw, dtype=np.float64).reshape(-1)
+    if values.size != len(keys):
+        raise ValueError(f"계획 벡터 길이 {values.size} (단계 {n_phases}개면 {len(keys)})")
+    v = dict(zip(keys, map(float, values)))
+    enc = PoseEncoder(scenario)
+    times = plan_durations(v["duration_s"], [v[f"share_{k}"] for k in range(1, n_phases)], n_phases, min_phase_s)
+    phases = [Phase(enc.clip_pose(PoseParams(**{p: v[f"p{k}_{p}"] for p in POSE_KEYS})), t)
+              for k, t in zip(range(1, n_phases + 1), times)]
+    return Plan(phases, np.array([v[f"zone_{z}"] for z in ZONE_NAMES], dtype=np.float64))
+
+
 # ---------- 학습 데이터 ----------
 
 def _cand_cols() -> list[str]:
@@ -295,19 +326,41 @@ def body_from_row(row) -> BodyParams:
     return BodyParams(**{k: float(row[f"body_{k}"]) for k in BODY_KEYS})
 
 
+def candidate_matrix(value, dim: int) -> np.ndarray:
+    """후보 벡터 목록 열의 한 칸 → (후보 수, dim) 배열.
+
+    parquet 에서 읽은 2차원 목록(배열의 배열)과 행 우선으로 편 1차원 목록을 모두 받는다.
+    길이가 dim 의 배수가 아니면 ValueError (단계 수가 다른 데이터가 섞였다는 뜻이다).
+    """
+    rows = [np.asarray(v, dtype=np.float64).reshape(-1) for v in value] if len(value) and np.ndim(value[0]) else None
+    flat = np.concatenate(rows) if rows is not None else np.asarray(value, dtype=np.float64).reshape(-1)
+    if flat.size == 0 or flat.size % dim:
+        raise ValueError(f"후보 벡터 길이 {flat.size} 가 출력 차원 {dim} 의 배수가 아니다")
+    if rows is not None and any(r.size != dim for r in rows):
+        raise ValueError(f"후보 벡터 길이가 출력 차원 {dim} 과 다르다: {sorted({r.size for r in rows})}")
+    return flat.reshape(-1, dim)
+
+
 def training_arrays(df, space: VectorSpace, scenarios: dict[str, Scenario]) -> dict[str, np.ndarray]:
     """데이터셋 DataFrame → 학습 배열.
 
-    열 이름은 공간이 정한다: `<column_prefix><key>` (pose_* / plan_*), 후보 목록은 `cand_<column_prefix><key>`.
-    행에 후보 목록(dataset.py candidate_k > 0)이 있으면 그 후보들을, 없으면 최적 출력 하나를 쓴다.
+    열 이름은 공간이 정한다: `<column_prefix><key>` (pose_* / plan_*). 후보 목록은 두 형태 중 하나다.
+    - `cand_<column_prefix>raw`: 후보마다 원래 단위 벡터(space.keys 순서)를 모은 목록 열. (후보 수 × dim) 2차원,
+      또는 행 우선으로 편 1차원. 계획 데이터셋이 쓴다 (C 와 합의 2026-10-06: N = 9 면 키가 77개라 키마다 열을
+      두지 않는다. 대칭 정규화를 거친 PlanEncoder.raw_vector).
+    - `cand_<column_prefix><key>`: 키마다 목록 열. 자세 데이터셋이 쓴다.
+    행에 후보 목록(candidate_k > 0)이 있으면 그 후보들을, 없으면 최적 출력 하나를 쓴다.
     반환: body (N,5), scenario (N,) str, x (N,dim), mask (N,dim), weight (N,) (묶음마다 합 1), group (N,) int
     """
     cols = [f"{space.column_prefix}{k}" for k in space.keys]
     cand_cols = [f"cand_{c}" for c in cols]
+    raw_col = f"cand_{space.column_prefix}raw"
     body, scen, raw, group = [], [], [], []
     for g, (_, row) in enumerate(df.iterrows()):
         b = [float(row[f"body_{k}"]) for k in BODY_KEYS]
-        if _has_candidates(row, cand_cols[0]):
+        if _has_candidates(row, raw_col):
+            cand = candidate_matrix(row[raw_col], space.dim)
+        elif _has_candidates(row, cand_cols[0]):
             cand = np.stack([np.asarray(row[c], dtype=np.float64) for c in cand_cols], axis=1)
         else:
             cand = np.array([[float(row[c]) for c in cols]])
