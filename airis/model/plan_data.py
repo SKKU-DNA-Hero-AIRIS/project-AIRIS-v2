@@ -23,14 +23,17 @@ SINGLE_VALUED_COLS = tuple(c for c in PLAN_STAMP_COLS if c not in PROVENANCE_COL
 
 
 def _single(df, col: str):
-    """열의 값 하나 (없으면 None). 여러 값이면 ValueError."""
-    if col not in df.columns or not len(df):
+    """열의 값 하나 (열이 없거나 전부 비어 있으면 None). 여러 값이면 ValueError. 빈 값(NaN)은 세지 않는다."""
+    if col not in df.columns:
         return None
-    values = sorted(set(df[col].astype(str)))
+    filled = df[col].dropna()
+    if not len(filled):
+        return None
+    values = sorted(set(filled.astype(str)))
     if len(values) != 1:
         raise ValueError(f"계획 데이터셋의 {col} 가 여러 값이다 {values}. 한 조건(물리·단계 수·에너지 가중·한도)의 "
                          "행만 쓴다.")
-    return df[col].iloc[0]
+    return filled.iloc[0]
 
 
 def plan_limits_from_dataset(df):
@@ -77,6 +80,8 @@ def plan_meta_from_dataset(df) -> dict:
         if col not in df.columns or not len(df):
             continue
         v = stamp_value(df[col]) if col in PROVENANCE_COLS else _single(df, col)
+        if v is None:
+            continue
         meta["dataset_commit" if col == "commit" else col] = v.item() if hasattr(v, "item") else v
     lim = plan_limits_from_dataset(df)
     meta.update(n_phases=lim.n_phases, min_phase_s=lim.min_phase_s, duration_lo_s=lim.duration_bounds_s[0],
@@ -111,7 +116,7 @@ def check_plan_dataset(df) -> tuple[dict, list[str]]:
     for k in predict.stamp_mismatch(stamp, now):
         warns.append(f"{k}: 데이터셋 {stamp[k]} ≠ 지금 설정 {now[k]}. 물리·노즐 설정이나 계획 채점 설정이 "
                      "바뀐 것이다. 데이터셋부터 다시 만든다(C).")
-    missing = [c for c in SINGLE_VALUED_COLS if c not in df.columns]
+    missing = [c for c in SINGLE_VALUED_COLS if c not in df.columns or not df[c].notna().any()]
     if missing:
         warns.append(f"도장·한도 열이 없다: {missing}. 없는 한도는 설정 파일에서 읽고, 없는 도장은 비교하지 못한다.")
     return stamp, warns

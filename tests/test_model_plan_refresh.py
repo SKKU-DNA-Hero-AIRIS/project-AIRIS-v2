@@ -125,6 +125,18 @@ def test_stamp_check_and_meta(monkeypatch):
     _, warns3 = plan_data.check_plan_dataset(df)
     assert sorted(w.split(":")[0] for w in warns3) == ["physics_hash", "time_constant_s"]
 
+    # 한도 열이 비어 있으면(NaN) 없는 것으로 보고 설정 파일·N × 단계 최소 시간에서 읽는다
+    monkeypatch.setattr(pred, "current_stamp", lambda: dict(NOW))
+    blank = df.assign(duration_lo_s=np.nan, cap_ratio=np.nan)
+    lim = plan_data.plan_limits_from_dataset(blank)
+    assert lim.duration_bounds_s == pytest.approx((6.0, 20.0)) and np.isfinite(lim.cap_ratio)
+    _, warns_blank = plan_data.check_plan_dataset(blank)
+    assert len(warns_blank) == 1 and "duration_lo_s" in warns_blank[0] and "energy_weight" not in warns_blank[0]
+    assert np.isfinite(plan_data.plan_meta_from_dataset(blank)["duration_lo_s"])
+    half = df.copy()
+    half.loc[half.index[:2], "energy_weight"] = np.nan          # 일부만 비어 있으면 채워진 값으로 본다
+    assert plan_data.plan_meta_from_dataset(half)["energy_weight"] == pytest.approx(0.03)
+
     # 도장·한도 열이 없는 데이터셋: 무엇이 없는지 알린다
     _, warns4 = plan_data.check_plan_dataset(plan_df(N, n_bodies=2, stamps=False))
     assert len(warns4) == 1 and "energy_weight" in warns4[0] and "duration_lo_s" in warns4[0]
@@ -171,6 +183,22 @@ def test_plan_cv_scores_every_body_once_per_method(dataset_path, tmp_path, score
         knn = PlanKNN.load(tmp_path / f"_fold{f}_plan_knn.parquet")
         held = set(res[res["fold"] == f]["body_idx"])
         assert held and not held & set(knn.table["body_idx"])
+
+
+def test_plan_cv_rerun_in_same_process_reloads_fold_artifacts(dataset_path, tmp_path, scorer):
+    """같은 --out 으로 다시 돌려도 앞 실행의 fold 산출물(경로별 캐시)을 다시 쓰지 않는다."""
+    other = plan_df(N, n_bodies=12, seed=1)
+    other.to_parquet(tmp_path / "other.parquet")
+    out = tmp_path / "cv.csv"
+    for path in (dataset_path, tmp_path / "other.parquet"):
+        assert run_e5_plan.main(["--model", str(base_model(path, tmp_path)), "--dataset", str(path), "--folds", "2",
+                                 "--n-flow", "1", "--n-knn", "1", "--methods", "knn+fixed", "--limit", "1",
+                                 "--out", str(out)]) == 0
+    fold1 = tmp_path / "_fold1_plan_knn.parquet"
+    cached, on_disk = pred.load_plan_knn(fold1).table, PlanKNN.load(fold1).table
+    assert np.allclose(cached["body_height_m"], on_disk["body_height_m"])
+    first = pd.read_parquet(dataset_path)
+    assert not set(np.round(on_disk["body_height_m"], 9)) <= set(np.round(first["body_height_m"], 9)), "둘째 데이터셋의 표"
 
 
 def test_plan_cv_rotation_pose_and_bad_arguments(dataset_path, tmp_path, scorer, capsys):
