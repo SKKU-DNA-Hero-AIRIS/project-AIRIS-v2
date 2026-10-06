@@ -192,5 +192,5 @@ def score_plan(removal_by_part: np.ndarray, phases: list[Phase], scenario: Scena
     total = (float(weights @ removal_by_part)
              - float(scoring_cfg["discomfort_weight"]) * disc
              - float(scoring_cfg["energy_weight"]) * float(energy_value)
-             - float(scoring_cfg.get("time_weight", 0.0)) * total_time / t_ref)
+             - float(scoring_cfg["time_weight"]) * total_time / t_ref)
     return total, disc
