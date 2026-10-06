@@ -215,6 +215,14 @@ def main(argv: list[str] | None = None) -> int:
         if any(m in ("hybrid", "hybrid-nofixed", "knn+fixed") for m in methods):
             knn_path = PlanKNN.from_dataset(train, min_phase_s=limits.min_phase_s).save(
                 work / f"_fold{f}_plan_knn.parquet")
+        # 로더는 경로별로 캐시한다. 같은 프로세스에서 같은 --out 으로 다시 돌리면 앞 실행의 fold 산출물이 남으므로
+        # 비우고, 새 산출물을 미리 읽어 둔다 (응답 시간 열에 로드 시간이 들어가지 않게).
+        pred._load_cached.cache_clear()
+        pred._load_plan_knn_cached.cache_clear()
+        if model_path is not None:
+            pred.load_model(model_path, kind="plan")
+        if knn_path is not None:
+            pred.load_plan_knn(knn_path)
         rows += run_split(test, methods, args, evaluator, nozzle, scenarios, limits, fold=f, model_path=model_path,
                           knn_path=knn_path)
 

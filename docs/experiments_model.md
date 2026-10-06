@@ -241,6 +241,10 @@ python scripts/train_plan_models.py --install-from outputs/<결과 폴더> --mod
 | `knn+fixed` | kNN 16 + 고정 회전 계획 |
 | `fixed` | 고정 회전 계획만 (F). "그냥 회전" 기준선 |
 
+`train_plan_models.py` 의 기본 비교는 이 가운데 4개다(`flow+fixed` 제외. flow 재학습은 `hybrid` 가 이미 쓰므로
+추가 학습 비용은 없고 채점 횟수만 는다). 5개를 다 보려면 `--methods hybrid,hybrid-nofixed,flow+fixed,knn+fixed,fixed`.
+응답 시간 열은 fold 산출물을 미리 읽은 뒤에 잰다(로드 시간 제외).
+
 결과 표에는 고른 계획의 총 시간과 고정 회전 계획이 뽑힌 비율을 함께 싣는다(총 시간이 다르면 점수 비교가 공정하지
 않다, 4.2절). 데이터셋에 `score_p1_10`·`score_p1opt_10` 이 있으면 행별 결과에 그 기준선 대비 비율도 남긴다.
 
