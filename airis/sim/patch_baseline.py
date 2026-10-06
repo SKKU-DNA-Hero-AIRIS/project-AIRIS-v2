@@ -293,6 +293,7 @@ def _visible_from_points(state: BodyState, sources: np.ndarray, physics_cfg: dic
     visible[cm[hit], cn[hit]] = False
     return visible
 
+
 def _area_weighted_by_part(values: np.ndarray, area: np.ndarray,
                            part: np.ndarray) -> np.ndarray:
     """부위별 면적 가중 평균 -> (len(PART_NAMES),). 패치가 없는 부위는 0."""
