@@ -121,8 +121,11 @@ class PoseKNN:
 
 #: 계획 데이터셋의 도장 열. 자세 도장에 계획 채점 조건을 더한다 (C 와 합의 2026-10-06).
 #: 계획 점수는 에너지 가중(energy_weight)과 단계 수(n_phases)에 따라 달라 이 둘이 다르면 행끼리 비교할 수 없다.
+#: 데이터셋 생성 설정 (C, PR #159). 후보 선정(개수·점수 허용 폭·최소 거리)과 따뜻한 시작·자세 최적화 예산이 다르면
+#: 후보 열과 기준선(pose_*, score_p1opt_10)의 뜻이 달라진다. 지금 설정과 비교할 값은 없고, 섞였는지만 본다.
+PLAN_GENERATION_COLS = ("candidate_k", "candidate_tol", "candidate_min_dist", "warm_start_sigma0", "pose_max_evals")
 PLAN_STAMP_COLS = STAMP_COLS + ("kinetics_enabled", "time_constant_s", "zone_nozzle_counts", "n_phases",
-                                "energy_weight")
+                                "energy_weight") + PLAN_GENERATION_COLS
 #: 계획 한도(C 의 PlanLimits). 데이터셋을 만든 한도로 모델의 출력 범위와 투영을 맞춘다. 있으면 읽는다.
 PLAN_LIMIT_COLS = ("duration_lo_s", "duration_hi_s", "min_phase_s", "transition_s", "s_max", "cap_ratio")
 

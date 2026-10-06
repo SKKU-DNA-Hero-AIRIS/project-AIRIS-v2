@@ -23,12 +23,17 @@ SINGLE_VALUED_COLS = tuple(c for c in PLAN_STAMP_COLS if c not in PROVENANCE_COL
 
 
 def _single(df, col: str):
-    """열의 값 하나 (열이 없거나 전부 비어 있으면 None). 여러 값이면 ValueError. 빈 값(NaN)은 세지 않는다."""
-    if col not in df.columns:
+    """열의 값 하나 (열이 없으면 None). 여러 값이거나 빈 값(NaN)이 있으면 ValueError.
+
+    C 의 계획 데이터셋은 행마다 도장 전체를 넣으므로 도장·한도 열이 비는 일이 없다. 비어 있다면 그 열이 없던
+    옛 코드의 파일을 이어 만든 것이라 행끼리 조건이 같은지 알 수 없다 (C 확인 2026-10-07).
+    """
+    if col not in df.columns or not len(df):
         return None
     filled = df[col].dropna()
-    if not len(filled):
-        return None
+    if len(filled) != len(df):
+        raise ValueError(f"계획 데이터셋의 {col} 에 빈 값이 {len(df) - len(filled)}행 있다. 도장·한도 열은 모든 행에 "
+                         "있어야 한다 (옛 코드로 만든 파일을 이어 만든 경우). 데이터셋을 다시 만든다(C).")
     values = sorted(set(filled.astype(str)))
     if len(values) != 1:
         raise ValueError(f"계획 데이터셋의 {col} 가 여러 값이다 {values}. 한 조건(물리·단계 수·에너지 가중·한도)의 "
@@ -116,7 +121,7 @@ def check_plan_dataset(df) -> tuple[dict, list[str]]:
     for k in predict.stamp_mismatch(stamp, now):
         warns.append(f"{k}: 데이터셋 {stamp[k]} ≠ 지금 설정 {now[k]}. 물리·노즐 설정이나 계획 채점 설정이 "
                      "바뀐 것이다. 데이터셋부터 다시 만든다(C).")
-    missing = [c for c in SINGLE_VALUED_COLS if c not in df.columns or not df[c].notna().any()]
+    missing = [c for c in SINGLE_VALUED_COLS if c not in df.columns]
     if missing:
         warns.append(f"도장·한도 열이 없다: {missing}. 없는 한도는 설정 파일에서 읽고, 없는 도장은 비교하지 못한다.")
     return stamp, warns

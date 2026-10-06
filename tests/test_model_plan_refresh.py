@@ -58,6 +58,9 @@ def matching_stamp(monkeypatch):
 def scorer(monkeypatch):
     ev = ConstScorer()
     monkeypatch.setattr(pred, "default_rescorer", lambda model, *, plan=False: (ev, object()))
+    # 응답 시간 판정은 CPU 혼잡에 좌우되므로 이 테스트들에서는 풀어 둔다 (기준 자체는 test_gate_… 가 본다)
+    judge = tpl.judge
+    monkeypatch.setattr(tpl, "judge", lambda stats: judge(stats, tpl.PlanGate(max_mean_s=float("inf"))))
     return ev
 
 
@@ -97,6 +100,11 @@ def test_dataset_with_mixed_conditions_is_rejected():
     mixed.loc[mixed.index[:2], "energy_weight"] = 0.1
     with pytest.raises(ValueError, match="energy_weight 가 여러 값"):
         plan_data.check_plan_dataset(mixed)
+    for col, other in (("candidate_tol", 0.05), ("candidate_k", 8), ("pose_max_evals", 2000)):
+        blend = df.copy()                                       # 데이터셋 생성 설정이 섞여도 거부한다 (C, PR #159)
+        blend.loc[blend.index[:2], col] = other
+        with pytest.raises(ValueError, match=f"{col} 가 여러 값"):
+            plan_data.check_plan_dataset(blend)
     with pytest.raises(ValueError, match="단계 수"):
         plan_data.plan_limits_from_dataset(df.assign(n_phases=5))
     with pytest.raises(ValueError, match="보다 짧다"):
@@ -108,6 +116,10 @@ def test_stamp_check_and_meta(monkeypatch):
     stamp, warns = plan_data.check_plan_dataset(df)
     assert warns == [] and stamp["physics_hash"] == "p0" and stamp["n_phases"] == N
     assert stamp["zone_nozzle_counts"] == "2;2;2;2;4"
+    assert (stamp["candidate_k"], stamp["candidate_tol"], stamp["pose_max_evals"]) == (16, 0.02, 3000)
+    old = df.drop(columns=["candidate_tol", "warm_start_sigma0"])   # 생성 설정 열이 없는 예전 데이터셋: 알리고 진행
+    _, warns_old = plan_data.check_plan_dataset(old)
+    assert len(warns_old) == 1 and "candidate_tol" in warns_old[0] and "candidate_k" not in warns_old[0]
 
     # 출처(commit)는 여러 값이어도 경고만, meta 에는 전부 적는다
     two = df.copy()
@@ -125,17 +137,18 @@ def test_stamp_check_and_meta(monkeypatch):
     _, warns3 = plan_data.check_plan_dataset(df)
     assert sorted(w.split(":")[0] for w in warns3) == ["physics_hash", "time_constant_s"]
 
-    # 한도 열이 비어 있으면(NaN) 없는 것으로 보고 설정 파일·N × 단계 최소 시간에서 읽는다
+    # 도장·한도 열에 빈 값(NaN)이 있으면 거부한다: 정상 경로에서는 비지 않는다 (옛 파일을 이어 만든 신호)
     monkeypatch.setattr(pred, "current_stamp", lambda: dict(NOW))
-    blank = df.assign(duration_lo_s=np.nan, cap_ratio=np.nan)
-    lim = plan_data.plan_limits_from_dataset(blank)
-    assert lim.duration_bounds_s == pytest.approx((6.0, 20.0)) and np.isfinite(lim.cap_ratio)
-    _, warns_blank = plan_data.check_plan_dataset(blank)
-    assert len(warns_blank) == 1 and "duration_lo_s" in warns_blank[0] and "energy_weight" not in warns_blank[0]
-    assert np.isfinite(plan_data.plan_meta_from_dataset(blank)["duration_lo_s"])
     half = df.copy()
-    half.loc[half.index[:2], "energy_weight"] = np.nan          # 일부만 비어 있으면 채워진 값으로 본다
-    assert plan_data.plan_meta_from_dataset(half)["energy_weight"] == pytest.approx(0.03)
+    half.loc[half.index[:2], "energy_weight"] = np.nan
+    for bad, col in ((df.assign(duration_lo_s=np.nan), "duration_lo_s"), (half, "energy_weight"),
+                     (df.assign(candidate_tol=np.nan), "candidate_tol")):
+        for fn in (plan_data.check_plan_dataset, plan_data.plan_meta_from_dataset):
+            with pytest.raises(ValueError, match=f"{col} 에 빈 값"):
+                fn(bad)
+    with pytest.raises(ValueError, match="duration_lo_s 에 빈 값"):
+        plan_data.plan_limits_from_dataset(df.assign(duration_lo_s=np.nan))
+    plan_data.check_plan_dataset(df.assign(energy=np.nan))      # 지표 열은 비어도 된다 (도장이 아니다)
 
     # 도장·한도 열이 없는 데이터셋: 무엇이 없는지 알린다
     _, warns4 = plan_data.check_plan_dataset(plan_df(N, n_bodies=2, stamps=False))

@@ -53,7 +53,8 @@ def plan_df(n_phases: int, n_bodies: int = 40, seed: int = 0, scenarios=("defaul
             if stamps:
                 r.update(nozzle_layout_hash="n0", physics_hash="p0", body_model="capsule", patches_per_m2=400.0,
                          commit="c0", kinetics_enabled=True, time_constant_s=2.0, zone_nozzle_counts="2;2;2;2;4",
-                         n_phases=n_phases, energy_weight=0.03, duration_lo_s=lim.duration_bounds_s[0],
+                         n_phases=n_phases, energy_weight=0.03, candidate_k=16, candidate_tol=0.02,
+                         candidate_min_dist=0.1, warm_start_sigma0=0.2, pose_max_evals=3000, duration_lo_s=lim.duration_bounds_s[0],
                          duration_hi_s=lim.duration_bounds_s[1], min_phase_s=lim.min_phase_s,
                          transition_s=lim.transition_s, s_max=lim.s_max, cap_ratio=lim.cap_ratio)
             rows.append(r)
