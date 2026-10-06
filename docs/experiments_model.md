@@ -157,18 +157,65 @@ worktree에서 돌릴 때는 데이터셋 경로를 본 폴더로 주고, 설치
 
 ## 4. 계획 모델
 
-- `predict_plan`은 flow 샘플과 고정 계획을 전부 C의 `PlanEncoder.clip_plan`(자세·시간·구역 세기, 쾌적 상한,
-  풍량 한도 보수)으로 투영한 뒤 채점한다. 범위는 `physics.yaml`의 `plan.*`·`fan.*`, 풍량 한도의 구역별 노즐 수는
-  실제 장비 구성 `airis.sim.scenario.zone_nozzle_counts()`([2, 2, 2, 2, 4], C의 계획 데이터셋과 같음).
-- 계획 재채점기(`default_rescorer(model, plan=True)`)는 C의 `plan_physics_cfg()`(시간 의존 제거 kinetics 켬)를 쓴다.
-  계획 데이터셋도 같은 함수로 만든다. 자세 재채점은 설정 파일 그대로다(kinetics 는 계획 평가에만 적용).
-- 계획 산출물의 도장에는 `kinetics_enabled`·`time_constant_s`(C의 `plan_kinetics_stamp`)도 들어가고, 로드할 때
-  지금 계획 설정과 비교한다. 자세 산출물에는 이 키가 없어 비교하지 않는다. 계획 모델 학습 스크립트를 만들 때
-  데이터셋의 이 두 열을 meta 에 옮긴다.
-- `PlanSpace`(F)와 `PlanEncoder`(C)의 규격 대조는 `tests/test_model_plan_spec.py`: 같은 설정에서 읽은 범위,
-  K = 1~3 단계 시간 식, normalize·clip 뒤 계획이 `PlanSpace` 범위 안인지, 원래 단위 벡터가 같은지,
-  to_plan 뒤 clip이 쾌적 상한·풍량 한도만 바꾸는지.
-- 비교(혼합·flow·kNN·고정 계획표·국소 탐색)는 계획 데이터셋이 나온 뒤에 한다.
+총괄 2026-10-06: 계획 데이터셋(C, 설계 결정 뒤 생성)이 나오기 전에 학습·추천·평가 코드를 미리 만든다.
+
+### 4.1 혼합 계획 추천 (`predict_plan`)
+
+    후보 = flow 샘플 n_flow 개 (data/models/plan_flow.pt)
+         + 가까운 학습 체형의 최적 계획 n_knn 개 (data/models/plan_knn.parquet, knn.PlanKNN)
+         + 고정 회전 계획 (제안 자세 그대로 회전 / 기본 자세 회전, C 의 rotation_plan, 10단계)
+         + extra_candidates
+    → 패치판 evaluate_plan 재채점 → 가장 높은 계획
+
+- 자세 추천(1절)과 같은 구조다. 한쪽 산출물만 있으면 있는 쪽으로 돌아가고(경고), 둘 다 없으면 FileNotFoundError.
+- **고정 회전 계획**: E7 에서 최적 자세로 도는 회전이 전 시나리오 1위였다. 그래서 모델 후보가 그보다 나쁘면
+  회전 계획이 뽑히게 고정 후보로 넣는다. "제안 자세 그대로 회전"은 호출하는 쪽이 자세 추천 결과를
+  `rotation_pose` 로 넘길 때 들어가고, "기본 자세 회전"은 항상 들어간다. 단계 수는 10(`ROTATION_STEPS`,
+  총괄 2026-10-04: 표준 회전 기준선은 P1_10 · P1opt_10, 단계당 2.0 s)이고 모델의 단계 수와 독립이다.
+- **단계 수 N 은 코드에 고정하지 않는다.** 데이터셋의 `plan_p<k>_torso_yaw` 열 수에서 읽는다(C 의 설계 결정값,
+  5 또는 9 예상). N = 2·5·9 를 테스트한다.
+- **한도는 산출물에서 읽는다**(`plan_limits_for`). 설정 파일의 `plan.n_phases` 는 2 이고, N 단계 실행은 총 시간
+  하한을 N × `min_phase_s` 로 올린다(N = 9 면 18 s). 설정 파일의 한도로는 N 단계 계획을 투영할 수 없다.
+  flow 는 출력 공간(단계 수, 단계 최소 시간, 총 시간 범위, 세기 상한), kNN 표는 표의 한도 열에서 읽는다.
+- **투영**: flow·kNN 후보는 C 의 `PlanEncoder.clip_plan`(자세·시간·구역 세기, 쾌적 상한, 풍량 한도 보수)을 거친다.
+  풍량 한도의 구역별 노즐 수는 실제 장비 구성 `zone_nozzle_counts()`([2, 2, 2, 2, 4]). 고정 회전 계획은
+  `rotation_plan` 이 이미 자세 투영과 세기 한도를 적용하므로 그대로 채점한다(10단계는 단계당 2.0 s 라
+  `PlanEncoder` 가 받지 않는다). 단계 수가 달라도 `evaluate_plan` 은 같은 자로 채점한다(C 확인: 점수 식에 단계
+  수가 직접 들어가지 않는다. 다만 총 시간이 다르면 제거율·에너지가 달라지므로 비교 표에 총 시간을 함께 싣는다).
+- **재채점기**는 C 의 `plan_physics_cfg()`(시간 의존 제거 kinetics 켬)를 쓴다. 계획 데이터셋도 같은 함수로 만든다.
+- 부스 안 판정 여유(7.2절)를 계획에도 쓴다: 단계 중 하나라도 키운 몸에서 부스 밖이면 그 계획을 넘긴다.
+- 후보 수(`n_flow`, `n_knn`)는 인자다. **응답 시간 걱정**: 계획 1개 채점이 단계 수에 비례해 느려지면(2단계
+  1,500/m² 123 ms, #94) N = 9 계획 18개 재채점은 1.5 s 를 크게 넘는다. C 가 1행 실측 때 `evaluate_plan` 1회
+  시간(N = 5·9)을 재 주기로 했고, 그 값으로 후보 수·병렬 채점을 정한다.
+
+### 4.2 계획 데이터셋 스키마 (C 와 합의 2026-10-06)
+
+| 열 | 내용 |
+|---|---|
+| `body_idx`, `scenario`, `body_<값 5개>` | 자세 데이터셋과 같다. **`body_seed` 0 으로 같은 번호 = 같은 체형** (fold 를 맞출 수 있다) |
+| `plan_<키>` | 최적 계획의 원래 단위 벡터, 8N + 5 열. 키 순서는 `PlanSpace.plan_keys(N)`: `p1_<자세 7개>` … `pN_<자세 7개>`, `duration_s`, `share_1` … `share_{N−1}`, `zone_<구역 5개>`. 대칭 정규화를 거친 값(1단계 yaw 0~90°) |
+| `score`, `total_removal`, `discomfort`, `energy` | 최적 계획의 채점 결과 |
+| `cand_plan_raw` | 후보마다 `PlanEncoder.raw_vector`(길이 8N + 5)를 모은 목록 열. (후보 수 × 차원) 2차원, 또는 행 우선 1차원(F 로더가 둘 다 읽는다). 정규화 뒤의 값 |
+| `cand_score`, `n_candidates` | 후보 점수 목록과 개수. 선정 규칙은 자세 데이터셋과 같고 거리는 차원으로 정규화(÷ √차원) |
+| 도장 | `physics_hash`, `nozzle_layout_hash`, `body_model`, `patches_per_m2`, `commit`, `kinetics_enabled`, `time_constant_s`, `zone_nozzle_counts`(문자열 "2;2;2;2;4"), `n_phases`, `energy_weight` |
+| 계획 한도 | `duration_lo_s`, `duration_hi_s`, `min_phase_s`, `transition_s`, `s_max`, `cap_ratio` (데이터셋을 만든 `PlanLimits`) |
+| 기준선 | `score_p1_10`(기본 자세 회전), `score_p1opt_10`(단일 자세 최적 회전), 그 자세 `pose_<값 7개>` |
+
+키가 많아(N = 9 면 77개) 후보는 키마다 열을 두지 않고 벡터 목록 한 열로 둔다. 계획 점수는 에너지 가중과 단계
+수에 따라 달라지므로 `energy_weight` 와 `n_phases` 가 다른 행은 섞지 않는다.
+
+### 4.3 규격 대조
+
+- `PlanSpace`(F)와 `PlanEncoder`(C): `tests/test_model_plan_spec.py`(범위, 단계 시간 식, normalize·clip 뒤 계획이
+  `PlanSpace` 범위 안인지, 원래 단위 벡터가 같은지, to_plan 뒤 clip 이 쾌적 상한·풍량 한도만 바꾸는지).
+- 계획 벡터 ↔ 계획: `tests/test_model_plan_knn.py`(N = 2·5·9 에서 `plan_from_raw` 가 C 의 `raw_vector` 를 되돌리는지).
+- 계획 산출물의 도장에는 `kinetics_enabled`·`time_constant_s` 도 들어가고 로드할 때 지금 계획 설정과 비교한다.
+
+### 4.4 남은 것
+
+- 계획 산출물 갱신 명령(`scripts/train_plan_models.py`: 학습 → kNN 표 → 체형 5-fold → 판정)과 계획 5-fold 평가.
+  합격 기준(완성도 F2·F3): 하위 5% ≥ 0.97, 불가 0, 응답 ≤ 1.5 s. 다음 PR.
+- 비교(혼합·flow·kNN·고정 회전 계획·국소 탐색)는 계획 데이터셋이 나온 뒤에 한다.
 
 ## 5. 재채점 단축 (총괄 2026-09-30)
 
