@@ -1,6 +1,6 @@
 # 계획 안내 화면 설계 초안 (E, 확장 5단계)
 
-> 상태: **초안**. 구현 전이다. 회전 칸 수 N(모드 A)·단계 수(모드 B)와 `scoring.energy_weight`(에너지
+> 상태: **모드 A(제안 자세 + 10방향 회전) 구현됨(#143, `airis/realtime/plan_guide.py`, 대시보드 ④-2). 모드 B(자세를 바꿔 가는 계획) 화면 틀은 진행 중, 모델 연결은 계획 추천 모델(3차) 뒤.** 아래는 설계 당시 초안 그대로다. 회전 칸 수 N(모드 A)·단계 수(모드 B)와 `scoring.energy_weight`(에너지
 > 가중)가 정해지면 그대로 만든다. 기준: `docs/plan_extension.md` 7절 순서 5, `docs/e7_reference.json`
 > (묶음 `e7k14_20261001_012825_948aed`, 물리 k 1.4), `airis/sim/types.py` `Plan`·`Phase`,
 > `airis/sim/scenario.py` `apply_zone_strengths`·`nozzle_zone_index`, `configs/nozzles.yaml` `zones`.
