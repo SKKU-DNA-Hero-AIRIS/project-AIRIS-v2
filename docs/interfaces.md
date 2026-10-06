@@ -120,18 +120,20 @@ def predict_pose(body: BodyParams, scenario: Scenario) -> PoseParams
 - 평가(E5): 예측 자세를 시뮬레이터에 넣은 점수 / 직접 최적화 점수. README H3의 중앙값 95%는 고정 후보표 + 재채점(스텁)이 이미 넘으므로, 채택 기준은 **하위 5% 점수 비율과 0.95 미만 비율**이다. `scripts/run_e5_flow.py`가 flow · flow+stub · flow1(샘플 1개) · kNN + 재채점 · 봉우리별 회귀(clsreg) · HGB·MLP 평균 회귀 · 스텁을 holdout 체형에서 비교하고, 재채점 횟수(`n_evals`)와 경계 구간(wheelchair 키 1.45~1.60 m, 선 자세 키 1.83 m 이상)을 함께 보고한다.
 - 예외 규약(E의 `recommend`가 스텁으로 폴백할 때 구분한다): 모듈이 없거나 쓸 수 있는 백엔드가 없으면(`torch` 없음 + kNN 표 없음) `ImportError`, 산출물이 둘 다 없으면 `FileNotFoundError`, 학습에 없던 시나리오면 `KeyError`. 그 외 예외는 삼키지 않는다. `torch`가 없어도 kNN 백엔드는 동작해야 한다.
 
-## 계획 모델 (C → E, 확장)
+## 계획 모델 (F → E, 확장; 2026-10-06 갱신, PR #151·#152)
 
 ```python
-def predict_plan(body: BodyParams, scenario: Scenario) -> Plan
+def predict_plan(body: BodyParams, scenario: Scenario, *, rotation_pose: PoseParams | None = None, ...) -> Plan
 ```
 
-- 구현: `airis/model/predict.py`의 `predict_plan` (산출물 `data/models/plan_flow.pt`, 데이터셋 열 `plan_<키>`, 키 순서는 `airis/model/flow.PlanSpace.plan_keys`). 대칭 접기는 계획 전체에 함께 적용하므로 1단계 yaw만 0~90°로 접는다.
-- `predict_pose`와 같은 예외 규약·해시 규칙을 따른다. 자세 산출물을 계획 모델로(또는 반대로) 읽으면 `ValueError`. 출력은 C의 `PlanEncoder(scenario).clip_plan()`으로 투영한다(자세 범위, 시간 범위, 구역 세기 범위·풍량 한도·쾌적 상한).
-- 모델은 출력 길이에 묶이지 않게 만든다(임의 길이 벡터 + 시나리오별 마스크). 단일 자세 모델과 계획 모델이 같은 코드를 쓴다.
-- 계획 벡터의 키 순서(데이터셋 열 `plan_<키>`, 후보 목록 `cand_plan_<키>`): `p1_<자세 7개>`, `p2_<자세 7개>`, `duration_s`, `share_1`, `zone_chest_low`, `zone_chest_high`, `zone_back_low`, `zone_back_high`, `zone_top`. 단계 시간 = `plan.min_phase_s + (T − K·plan.min_phase_s)·몫`, 마지막 단계가 나머지 몫을 갖는다. 대칭 정규화는 `00_common.md` 4.7 (계획 전체에 함께, 1단계 yaw만 0~90°).
-- 장비 제어 출력(E): 몸 기준 구역 세기와 함께 단계별 실제 팬 값(노즐 12개 속도 비율 = `apply_zone_strengths(…).strengths`)을 낸다.
-- 평가(E5): 예측 계획의 `evaluate_plan` 점수 / 직접 최적화 점수. 채택 기준은 **하위 5% 점수 비율과 0.95 미만 비율**이 기준선(고정 후보표 + 재채점, kNN + 재채점)보다 나을 것. 재채점 횟수는 같게 맞춘다.
+- 구현: `airis/model/predict.py`의 `predict_plan` / `predict_plan_candidates`. **기본은 혼합**(`backend="hybrid"`): flow 샘플 8 (`plan_flow.pt`) + 가까운 체형의 kNN 계획 8 (`plan_knn.parquet`, `PlanKNN`) + 고정 회전 계획 2 (`airis/optimize/baselines.rotation_plan`, 10단계 × 2 s: **제안 자세 그대로 회전**(`rotation_pose`에 자세 추천 결과를 넘길 때) · 기본 자세 회전) → 패치판 `evaluate_plan`으로 재채점 → 최고. `n_samples`만 주는 옛 호출은 flow 단독(고정 계획 없음)으로 그대로 동작한다. 부스 안 판정 여유(`feasibility_margin`, `feasibility_margin_mode all|reach`)는 자세 경로와 같은 의미로 재사용한다(키운 체형에서도 부스 안인 첫 후보, 점수는 추정 체형 것).
+- **단계 수 N은 코드에 고정하지 않는다.** 산출물(flow의 출력 공간, kNN 표의 열 수)에서 읽고, 둘이 다르면 `ValueError`. 후보 투영 한도도 설정 파일이 아니라 산출물에서 읽는다(`plan_limits_for`: 총 시간 하한은 N × `min_phase_s` 이상으로 올린다).
+- 계획 벡터 키 순서(데이터셋 열 `plan_<키>`, 8N + 5): `p1_<자세 7개>` … `pN_<자세 7개>`, `duration_s`, `share_1` … `share_{N−1}`, `zone_chest_low`, `zone_chest_high`, `zone_back_low`, `zone_back_high`, `zone_top` (`airis/model/flow.PlanSpace.plan_keys`). 단계 시간 = `min_phase_s + (T − N·min_phase_s)·몫`, 마지막 단계가 나머지 몫. 대칭 정규화는 `00_common.md` 4.7(계획 전체에 함께, 1단계 yaw만 0~90°).
+- **계획 데이터셋 스키마**(C 생성, `scripts/run_dataset.py` 계획 모드; C·F 합의 2026-10-06): 한 행 = 체형 1개 × 시나리오 1개. 체형은 `body_seed 0`으로 자세 데이터셋과 같은 `body_idx`. 열: `body_*` 5 + `scenario` + `plan_<키>` 8N+5 + `score`·`total_removal`·`energy`·`duration_s`·`discomfort` + 후보 **`cand_plan_raw`**(정규화 전 raw 벡터 목록; `cand_plan_<키>`로 펴지 않는다) · `cand_score` · `n_candidates` + 도장 10개(`physics_hash`·`nozzle_layout_hash`·`body_model`·`patches_per_m2`·`commit`·`kinetics_enabled`·`time_constant_s`·`zone_nozzle_counts`(문자열)·`n_phases`·`energy_weight`) + 한도 6개(`duration_lo_s`·`duration_hi_s`·`min_phase_s`·`transition_s`·`s_max`·`cap_ratio`; 실행이 하한을 올리므로 설정 파일 값과 다를 수 있다) + 선택 열(기준선 점수 `score_p1_10`·`score_p1opt_10`, 단일 자세 최적 `pose_*`). 후보 선정 거리는 차원으로 정규화한다(÷√dim, 임계값은 C가 1행 실측 뒤 확정). 설정 도장 열이 섞이면 거부, `commit`은 경고 뒤 `a+b`로 잇는다(자세 경로와 같은 규칙).
+- 산출물: `data/models/plan_flow.pt` + `data/models/plan_knn.parquet`(도장·한도 열 포함). 갱신 명령 `scripts/train_plan_models.py`(학습 → kNN 표 → 체형 5-fold → 판정 → 합격 시 설치, `gate.json`에 설치 이력 누적, 시작 시점 커밋 기록). 평가 `scripts/run_e5_plan.py`(체형 K-fold, `run_e5_flow`와 같은 분할 규칙, 방법: hybrid·flow+fixed·knn+fixed·fixed 등).
+- **판정 기준**(완성도 지표 F2·F3): 체형 5-fold에서 추천 계획의 `evaluate_plan` 점수 / 데이터셋 최적 점수의 **하위 5% ≥ 0.97, 불가 0, 평균 응답 ≤ 1.5 s**. 단계 수가 달라도 점수 자는 같다(`score_plan`은 N 무관)지만 총 시간이 다르면 불공정하므로 비교 표에 총 시간을 병기한다.
+- **미결(응답 시간)**: 계획 1개 채점이 단계 수에 비례하면 N=9 후보 18개 재채점은 1.5 s를 넘는다. 재채점은 현재 순차. C가 데이터셋 1행 실측 때 `evaluate_plan` 1회 시간(N=5·9)을 재고, 그 값으로 후보 수·병렬 채점(D의 스레드 안전 확인 필요)·목표 완화 중 하나를 총괄이 정한다.
+- 예외·해시 규약은 `predict_pose`와 같다. 자세 산출물을 계획 모델로(또는 반대로) 읽으면 `ValueError`. 출력은 `PlanEncoder.clip_plan()`으로 투영한다. 장비 제어 출력(E)은 단계별 실제 팬 값(`apply_zone_strengths(…).strengths`)을 단계 안에 둔다.
 
 ## 시각화용 상태 덤프 (A → E)
 
