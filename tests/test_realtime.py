@@ -343,6 +343,173 @@ def test_rotation_plan_rejects_bad_arguments():
         pg.rotation_plan(PoseParams(), step_s=0.0)
 
 
+def _p5_plan(scenario="default", weight=0.1):
+    """C 의 스윕 파일에서 P5(자세를 바꿔 가는 계획) 한 건을 Plan 으로 읽는다 — 가짜 계획이 아니다."""
+    import json
+    from pathlib import Path as P
+
+    from airis.realtime import plan_guide as pg
+    from airis.sim.types import Phase, Plan
+
+    if not pg.SWEEP_REFERENCE.exists():
+        pytest.skip("e7_sweep_reference.json 이 없다 (C 산출물)")
+    rows = json.loads(P(pg.SWEEP_REFERENCE).read_text(encoding="utf-8"))["rows"]
+    hit = [r for r in rows if r["condition"] == "P5" and r["scenario"] == scenario
+           and r["energy_weight"] == weight]
+    assert hit, "P5 행이 없다"
+    doc = hit[0]["plan"]
+    phases = [Phase(PoseParams(**ph["pose"]), float(ph["duration_s"])) for ph in doc["phases"]]
+    zones = np.array([doc["zone_strengths"][z] for z in
+                      __import__("airis.sim.types", fromlist=["ZONE_NAMES"]).ZONE_NAMES], float)
+    return Plan(phases, zones)
+
+
+def test_dashboard_renders_plan_when_model_exists(monkeypatch):
+    """계획이 있으면 ④-2 가 단계 표까지 그린다 — 산출물이 없는 지금도 틀을 확인한다.
+
+    산출물이 나오기 전이라 실제 화면은 "준비 중"만 나온다. 그 틀이 실제로 도는지 보려면 가짜
+    `predict_plan_candidates` 를 꽂는 수밖에 없다 (F 의 계약대로 PlanPrediction 모양을 흉내낸다).
+    """
+    pytest.importorskip("streamlit")
+    from pathlib import Path as P
+
+    from streamlit.testing.v1 import AppTest
+
+    import airis.model.predict as P_
+    plan = _p5_plan()
+
+    class FakePred:
+        def __init__(self):
+            self.plan, self.candidates = plan, [plan, plan]
+            self.source, self.margin_fallback = "flow", False
+
+    monkeypatch.setattr(P_, "predict_plan_candidates", lambda body, scenario, **kw: FakePred())
+
+    path = P(__file__).resolve().parents[1] / "scripts" / "run_dashboard.py"
+    at = AppTest.from_file(str(path), default_timeout=240)
+    at.query_params["model"] = "capsule"          # 캡슐이 빨라 평가 2회가 가볍다
+    at.run()
+    at.sidebar.radio[0].set_value("체형 직접 입력").run()
+    assert not at.exception, [e.value for e in at.exception]
+
+    text = " ".join(str(getattr(m, "value", "")) for m in at.markdown) + " ".join(
+        str(getattr(c, "value", "")) for c in at.caption)
+    assert f"단계 {len(plan.phases)}개" in text, "단계 수를 그대로 써야 한다"
+    assert "처음과 마지막 단계" in text
+    # 내려받기 단추가 두 개 (모드 A·B)
+    assert len(at.get("download_button")) == 2
+
+
+def test_plan_steps_shows_every_phase():
+    """단계 표는 단계 수를 고정으로 가정하지 않는다 (모델 계획 N, 고정 회전 계획 10)."""
+    from airis.realtime import plan_guide as pg
+
+    sc = SCENARIOS["default"]
+    plan = _p5_plan()
+    rows = pg.plan_steps(plan, sc)
+    assert len(rows) == len(plan.phases) != pg.ROTATION_STEPS, "N 과 10 이 우연히 같으면 전제가 약해진다"
+    assert [r["단계"] for r in rows] == list(range(1, len(plan.phases) + 1))
+    for row, ph in zip(rows, plan.phases):
+        assert row["시간"] == f"{ph.duration_s:.1f}초"
+        assert row["자세"], "단계마다 자세 안내 문장이 있어야 한다"
+        for z in pg.ZONE_LABELS.values():                 # 벽별 바람 세기를 쉬운 말로
+            assert z in row["바람 세기"]
+    # 칸 수가 다른 계획도 그대로 그린다
+    assert len(pg.plan_steps(pg.rotation_plan(PoseParams(), steps=3, step_s=4.0), sc)) == 3
+
+
+def test_plan_steps_uses_per_phase_fan_values():
+    """구역 세기는 계획 전체에 하나지만, 가슴 쪽 벽이 바뀌면 분사구에 실리는 값이 달라진다."""
+    import numpy as _np
+
+    from airis.realtime import plan_guide as pg
+    from airis.sim.scenario import apply_zone_strengths, load_nozzles
+    from airis.sim.types import Phase, Plan
+
+    pose = PoseParams(torso_yaw=70.0)
+    plan = Plan([Phase(pose, 5.0), Phase(replace(pose, torso_yaw=-110.0), 5.0)],
+                _np.array([1.0, 1.0, 0.2, 0.2, 0.6]))      # 등 쪽을 약하게
+    nozzle = load_nozzles()
+    rows = pg.plan_steps(plan, SCENARIOS["default"])
+    means = [_np.asarray(apply_zone_strengths(nozzle, plan.zone_strengths, ph.pose.torso_yaw)
+                         .strengths, dtype=float).mean() for ph in plan.phases]
+    for row, m in zip(rows, means):
+        assert row["분사구 평균"] == f"{m:.0%}"
+
+
+def test_plan_model_falls_back_without_artifacts():
+    """계획 산출물이 없으면 plan=None 과 사람이 읽을 이유를 돌려준다 (화면은 모드 A 유지)."""
+    from airis.realtime import plan_guide as pg
+
+    guide = pg.plan_model(MESH_DEFAULT_BODY, SCENARIOS["default"], STUB_TABLE["default"][0].pose)
+    if guide.plan is not None:
+        pytest.skip("계획 산출물이 설치돼 있다 (폴백 경로를 볼 수 없다)")
+    assert guide.n_phases == 0 and guide.note
+    assert "준비 중" in guide.note or "없" in guide.note
+    for jargon in ("FileNotFoundError", "predict_plan", "plan_flow"):
+        assert jargon not in guide.note, f"화면 문구에 내부 용어: {guide.note}"
+
+
+def test_plan_model_reads_prediction(monkeypatch):
+    """계획이 있으면 단계 수·출처·후보 수를 그대로 받아 온다 (가짜 predict_plan_candidates)."""
+    import airis.model.predict as P
+
+    from airis.realtime import plan_guide as pg
+
+    plan = _p5_plan()
+    seen = {}
+
+    class FakePred:
+        def __init__(self):
+            self.plan, self.candidates = plan, [plan, plan, plan]
+            self.source, self.margin_fallback = "flow", True
+
+    def fake(body, scenario, **kw):
+        seen.update(kw)
+        return FakePred()
+
+    monkeypatch.setattr(P, "predict_plan_candidates", fake)
+    pose = STUB_TABLE["default"][0].pose
+    guide = pg.plan_model(MESH_DEFAULT_BODY, SCENARIOS["default"], pose)
+
+    assert guide.plan is plan and guide.n_phases == len(plan.phases)
+    assert guide.source == "flow" and guide.n_candidates == 3 and guide.margin_fallback
+    assert guide.elapsed_s > 0.0 and not guide.note
+    # ④ 의 추천 자세를 넘겨 두 모드가 같은 후보군에서 겨루게 한다
+    assert seen.get("rotation_pose") is pose
+    # 계획 쪽에 아직 없는 인자를 미리 넘기지 않는다 (모르는 인자는 TypeError)
+    for absent in ("dedup_deg", "n_threads"):
+        assert absent not in seen
+
+
+def test_plan_effect_reads_evaluate_plan():
+    """효과 표 값은 evaluate_plan 결과에서 읽는다 (E 가 따로 계산하지 않는다)."""
+    from airis.realtime import plan_guide as pg
+    from airis.realtime.recommend import _nozzles, patch_evaluator
+
+    sc = SCENARIOS["default"]
+    plan = pg.rotation_plan(STUB_TABLE["default"][0].pose, steps=3, step_s=4.0)
+    res = patch_evaluator("mesh").evaluate_plan(plan, _nozzles(), MESH_DEFAULT_BODY, sc)
+    eff = pg.plan_effect(res)
+    assert eff["먼지 제거 효과"] == pytest.approx(res.total_removal)
+    assert eff["자세 불편도"] == pytest.approx(res.discomfort)
+    assert eff["바람 에너지"] == pytest.approx(res.extra["energy"])
+    assert eff["총 시간"] == pytest.approx(12.0) == pytest.approx(plan.duration_s)
+    assert eff["불가"] is False
+
+
+def test_control_json_handles_any_phase_count():
+    """제어 파일은 단계 수와 무관하게 만든다 (모델 계획 N, 회전 10)."""
+    from airis.realtime import plan_guide as pg
+
+    sc = SCENARIOS["default"]
+    plan = _p5_plan()
+    doc = pg.control_json(plan, MESH_DEFAULT_BODY, sc, source="plan: flow", transition_s=1.5)
+    assert len(doc["phases"]) == len(plan.phases) and doc["transition_s"] == 1.5
+    assert doc["duration_s"] == pytest.approx(round(plan.duration_s, 2))
+    assert all(len(ph["fans"]) == len(doc["phases"][0]["fans"]) for ph in doc["phases"])
+
+
 # ---------------------------------------------------------------------------
 # 개인정보: 화면에 원본 영상을 띄우지 않는다 (팀원 제안 3ab035e 를 받은 것)
 # ---------------------------------------------------------------------------
