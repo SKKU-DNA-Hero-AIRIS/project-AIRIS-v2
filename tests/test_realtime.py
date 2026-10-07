@@ -474,12 +474,43 @@ def test_plan_model_reads_prediction(monkeypatch):
 
     assert guide.plan is plan and guide.n_phases == len(plan.phases)
     assert guide.source == "flow" and guide.n_candidates == 3 and guide.margin_fallback
+    # n_rescored 가 없는 예측(옛 모양)이면 후보 수로 본다
+    assert guide.n_rescored == 3 and guide.scoring_text == "후보 3개를 모두 채점했습니다."
     assert guide.elapsed_s > 0.0 and not guide.note
     # ④ 의 추천 자세를 넘겨 두 모드가 같은 후보군에서 겨루게 한다
     assert seen.get("rotation_pose") is pose
     # 계획 쪽에 아직 없는 인자를 미리 넘기지 않는다 (모르는 인자는 TypeError)
     for absent in ("dedup_deg", "n_threads"):
         assert absent not in seen
+
+
+def test_plan_guide_says_how_many_were_scored(monkeypatch):
+    """소수 재채점(rescore_top, F #171)을 쓰면 "전부 채점했다"고 말하면 안 된다.
+
+    쓰지 않은 후보의 점수는 NaN 이고, 화면이 후보 수를 그대로 "재채점했다"고 쓰면 거짓이 된다.
+    """
+    import airis.model.predict as P
+
+    from airis.realtime import plan_guide as pg
+
+    plan = _p5_plan()
+
+    class Pred:
+        def __init__(self, n_rescored):
+            self.plan, self.candidates = plan, [plan] * 18
+            self.source, self.margin_fallback = "flow", False
+            self.n_rescored = n_rescored
+
+    monkeypatch.setattr(P, "predict_plan_candidates", lambda b, s, **kw: Pred(6))
+    g = pg.plan_model(MESH_DEFAULT_BODY, SCENARIOS["default"], STUB_TABLE["default"][0].pose)
+    assert g.n_candidates == 18 and g.n_rescored == 6
+    assert g.scoring_text == "후보 18개 중 6개를 자세히 채점했습니다."
+
+    monkeypatch.setattr(P, "predict_plan_candidates", lambda b, s, **kw: Pred(18))
+    g = pg.plan_model(MESH_DEFAULT_BODY, SCENARIOS["default"], STUB_TABLE["default"][0].pose)
+    assert g.scoring_text == "후보 18개를 모두 채점했습니다."
+
+    assert pg.PlanGuide(None).scoring_text == ""        # 계획이 없으면 할 말이 없다
 
 
 def test_plan_effect_reads_evaluate_plan():

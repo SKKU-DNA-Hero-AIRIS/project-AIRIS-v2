@@ -315,7 +315,7 @@ def render_plan_b(guide, eff_a, eff_b, body, scenario, body_model, booth, scen) 
         file_name=f"airis_plan_b_{scen}.json", mime="application/json")
     over = guide.elapsed_s > RESPONSE_BUDGET_S
     st.caption(("⚠️ " if over else "") + f"응답 시간 {guide.elapsed_s:.2f} s "
-               f"(목표 {RESPONSE_BUDGET_S:.1f} s 이내). 후보 {guide.n_candidates}개를 재채점했습니다.")
+               f"(목표 {RESPONSE_BUDGET_S:.1f} s 이내). {guide.scoring_text}")
     if guide.margin_fallback:
         st.info("후보가 모두 여유 판정에 걸려 **여유 없이** 고른 계획입니다. 체형을 다시 재 보세요.")
 
