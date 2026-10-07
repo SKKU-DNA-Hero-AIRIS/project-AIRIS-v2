@@ -49,7 +49,8 @@ from airis.realtime.recommend import (BASELINE_LABELS, BASELINE_LABELS_SHORT,  #
                                       model_artifacts, pose_instructions, recommend,
                                       scoring_patches_per_m2, source_text)
 from airis.sim.body import build_body                                 # noqa: E402
-from airis.sim.scenario import load_nozzle_layout, load_scenarios     # noqa: E402
+from airis.sim.scenario import (load_nozzle_layout, load_physics,     # noqa: E402
+                                  load_scenarios)
 from airis.sim.types import PART_NAMES, BodyParams, PoseParams       # noqa: E402
 from airis.viz import anim                                            # noqa: E402
 from airis.viz.pose_view import figure_from_pose, pose_label          # noqa: E402
@@ -65,6 +66,8 @@ INPUT_MODES = ["예시 이미지", "이미지 업로드", "브라우저 카메�
 BODY_MODELS = {"사람 메시 (MakeHuman)": "mesh", "캡슐 마네킹": "capsule"}
 #: 분석 결과를 담아 두는 세션 키 (원본 프레임은 넣지 않는다)
 ANALYSIS_KEY = "analysis"
+#: 단계 사이 자세를 바꾸는 시간. 제어 파일에 적는다 (이 동안은 제거 0 으로 본다).
+TRANSITION_S = float(load_physics().get("plan", {}).get("transition_s", 1.5))
 
 
 def _wide_kw() -> dict:
@@ -143,6 +146,27 @@ def artifacts_cached():
 @st.cache_data(show_spinner="추천 자세를 고르는 중 (모델 후보 재채점)…", max_entries=64)
 def recommend_cached(body_t: tuple, scenario: str, body_model: str):
     return recommend(BodyParams(*body_t), get_scenarios()[scenario], model=body_model)
+
+
+@st.cache_data(show_spinner="자세를 바꿔 가는 계획을 계산하는 중…", max_entries=32)
+def plan_cached(body_t: tuple, scenario: str, body_model: str, pose_t: tuple):
+    """계획 추천 + 두 모드 평가. 단계마다 몸을 다시 만들어 무거우므로 캐시한다.
+
+    돌려주는 것: (PlanGuide, 모드 A 효과, 모드 B 효과). 계획이 없으면 뒤 둘은 None 이다.
+    """
+    from airis.realtime.recommend import _nozzles, patch_evaluator
+
+    sc = get_scenarios()[scenario]
+    body = BodyParams(*body_t)
+    pose = PoseParams(*pose_t)
+    ev, nz = patch_evaluator(body_model), _nozzles()
+    guide = plan_guide.plan_model(body, sc, pose, evaluator=ev, nozzle=nz)
+    if guide.plan is None:
+        return guide, None, None
+    rot = plan_guide.rotation_plan(pose)
+    return (guide,
+            plan_guide.plan_effect(ev.evaluate_plan(rot, nz, body, sc)),
+            plan_guide.plan_effect(ev.evaluate_plan(guide.plan, nz, body, sc)))
 
 
 @st.cache_data(show_spinner="기준 자세와 점수를 비교하는 중 (패치판)…", max_entries=64)
@@ -245,6 +269,55 @@ def analyze_frames(frames: list[np.ndarray], desc: str, *, height_m: float | Non
         body=stab.body(), estimate=estimate, caption=desc, warning=warning,
         note=(f"프레임 {stab.n_frames}개 중 {len(stab.bodies)}개 성공, 중앙값 사용"
               if len(frames) > 1 else None))
+
+
+def render_plan_b(guide, eff_a, eff_b, body, scenario, body_model, booth, scen) -> None:
+    """모드 B: 단계 표 · 두 모드 비교 · 3D 두 장 · 장비 제어 파일.
+
+    단계 수는 `len(plan.phases)` 로만 쓴다 (모델 계획은 산출물의 N, 고정 회전 계획은 10 —
+    `docs/interfaces.md` "계획 모델").
+    """
+    plan = guide.plan
+    st.dataframe(plan_guide.plan_steps(plan, scenario), **WIDE, hide_index=True)
+    st.caption(f"단계 {len(plan.phases)}개 · 모두 {plan.duration_s:.0f}초. "
+               f"바람 세기는 계획 전체에 하나지만, 가슴 쪽 벽이 단계마다 바뀌어 분사구에 실리는 값은 "
+               f"단계마다 다릅니다.")
+
+    if eff_a and eff_b:
+        rows = []
+        for name, eff in (("그 자세로 한 바퀴 돌기", eff_a), ("자세를 바꿔 가기", eff_b)):
+            rows.append({
+                "방식": name,
+                "먼지 제거 효과": round(eff["먼지 제거 효과"], 3),
+                "바람 에너지": None if eff["바람 에너지"] is None else round(eff["바람 에너지"], 2),
+                "자세 불편도": round(eff["자세 불편도"], 3),
+                "총 시간": None if eff["총 시간"] is None else f"{eff['총 시간']:.0f}초",
+            })
+        st.dataframe(rows, **WIDE, hide_index=True)
+        st.caption("이 체형으로 직접 계산한 값입니다 (실험 표와 달리 기본 체형이 아닙니다). "
+                   "'바람 에너지' 1.00 = 지금 장비 그대로 20초 운전.")
+
+    f1, f2 = st.columns(2)
+    for col, idx in ((f1, 0), (f2, len(plan.phases) - 1)):
+        ph = plan.phases[idx]
+        with col:
+            st.plotly_chart(figure_from_pose(
+                body, ph.pose, scenario, booth=booth, model=body_model, patches_per_m2=200,
+                title=f"{idx + 1}단계 · {ph.duration_s:.1f}초", height=420), **WIDE)
+    st.caption("처음과 마지막 단계입니다 (가운데 단계는 위 표를 보세요). 여기서는 색을 쓰지 않습니다 — "
+               "먼지 제거 효과는 계획 전체로 계산한 값이라 단계별로 나눌 수 없습니다.")
+
+    st.download_button(
+        "장비 제어 파일 내려받기 (JSON)",
+        data=json.dumps(plan_guide.control_json(
+            plan, body, scenario, source=f"plan: {guide.source or '모델'}",
+            transition_s=TRANSITION_S), ensure_ascii=False, indent=1),
+        file_name=f"airis_plan_b_{scen}.json", mime="application/json")
+    over = guide.elapsed_s > RESPONSE_BUDGET_S
+    st.caption(("⚠️ " if over else "") + f"응답 시간 {guide.elapsed_s:.2f} s "
+               f"(목표 {RESPONSE_BUDGET_S:.1f} s 이내). 후보 {guide.n_candidates}개를 재채점했습니다.")
+    if guide.margin_fallback:
+        st.info("후보가 모두 여유 판정에 걸려 **여유 없이** 고른 계획입니다. 체형을 다시 재 보세요.")
 
 
 # ---------------------------------------------------------------------------
@@ -511,10 +584,19 @@ def main() -> None:
                        "있고, '먼지 제거 효과'는 보정 전 시뮬레이션 값이라 절대 비율이 아닙니다.")
         else:
             st.info("운전 계획 실험 결과 파일이 없어 수치를 보여 주지 못합니다 (안내 자체는 위와 같습니다).")
-        with st.expander("자세를 바꿔 가는 계획 (준비 중)"):
-            st.caption("단계마다 **다른** 자세로 가는 계획입니다. 실험에서는 같은 횟수라면 자세를 "
-                       "바꿔 가는 쪽이 먼지 제거 효과가 7~10% 더 높았고 바람도 조금 덜 썼습니다. "
-                       "다만 사람마다 실시간으로 계획을 내려면 계획 추천 모델이 필요해 준비 중입니다.")
+        plan_b, eff_a, eff_b = plan_cached(tuple(asdict(body).values()), scen, body_model,
+                                           tuple(asdict(rec.pose).values()))
+        label = ("자세를 바꿔 가는 계획" if plan_b.plan is not None
+                 else "자세를 바꿔 가는 계획 (준비 중)")
+        with st.expander(label, expanded=plan_b.plan is not None):
+            st.caption("단계마다 **다른** 자세로 가는 방식입니다. 실험에서는 같은 횟수라면 이쪽이 "
+                       "먼지 제거 효과가 7~10% 더 높았고 바람도 조금 덜 썼습니다.")
+            if plan_b.plan is None:
+                st.info(plan_b.note)
+                st.caption("준비되면 이 자리에 단계별 안내와 장비 제어 파일이 나옵니다. "
+                           "그때까지는 위의 '한 바퀴 돌기'로 안내합니다.")
+            else:
+                render_plan_b(plan_b, eff_a, eff_b, body, scenario, body_model, booth, scen)
 
     # ---------------- ⑤ 입자 애니메이션 ----------------
     st.subheader("⑤ 입자 애니메이션")

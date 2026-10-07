@@ -6,8 +6,12 @@
     모드 A (기본)  제안 자세를 **유지한 채** 제자리에서 N 방향으로 돌아선다 (`rotation_plan`).
                   C 의 단계 수 스윕에서 모든 시나리오 1위였다 (`P1opt_*`). 자세를 바꾸지 않으므로
                   단계 전환 시간(`plan.transition_s`)이 들지 않는다 — 그래서 20초를 10칸으로 쪼갤 수 있다.
-    모드 B        단계마다 **다른** 자세로 가는 계획 (`Plan`/`Phase`, `P5`). 계획 모델 산출물이 있어야
-                  하고, 없으면 화면은 모드 A 만 쓴다.
+    모드 B        단계마다 **다른** 자세로 가는 계획 (`Plan`/`Phase`, `P5`). F 의 `predict_plan` 이
+                  낸다 (`plan_model`). 산출물(`plan_flow.pt`·`plan_knn.parquet`)이 없으면 화면은
+                  "준비 중" 으로 두고 모드 A 만 쓴다.
+
+**단계 수를 고정으로 가정하지 않는다** (`interfaces.md` "계획 모델"). 모델 계획은 산출물의 N, 고정 회전
+계획은 10 이다. 화면은 `len(plan.phases)` 로만 그린다.
 
 장비 제어 JSON (`control_json`) 의 노즐 세기는 E 가 계산하지 않고 B 의 `apply_zone_strengths` 결과를
 그대로 담는다. 단계마다 가슴 쪽 벽이 바뀌면 같은 구역 세기라도 노즐 배정이 달라지므로 **단계 안에** 둔다.
@@ -22,7 +26,7 @@ from pathlib import Path
 import numpy as np
 
 from ..sim.scenario import apply_zone_strengths, load_nozzles
-from ..sim.types import ZONE_NAMES, BodyParams, Phase, Plan, PoseParams, Scenario
+from ..sim.types import ZONE_NAMES, BodyParams, EvalResult, Phase, Plan, PoseParams, Scenario
 from .recommend import pose_instructions
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -139,4 +143,100 @@ def control_json(plan: Plan, body: BodyParams | None, scenario: Scenario, *, sou
         "zones": zones,
         "source": source,
         "reference": reference or {},
+    }
+
+
+# ---------------------------------------------------------------------------
+# 모드 B: 자세를 바꿔 가는 계획
+# ---------------------------------------------------------------------------
+#: 구역 표시 이름 (몸 기준. 화면 문구 규약대로 약어를 쓰지 않는다)
+ZONE_LABELS = {"chest_low": "가슴 쪽 아래", "chest_high": "가슴 쪽 위",
+               "back_low": "등 쪽 아래", "back_high": "등 쪽 위", "top": "천장"}
+
+
+@dataclass
+class PlanGuide:
+    """모드 B 화면에 필요한 것 묶음. 계획이 없으면 `plan is None` 이고 `note` 에 이유가 있다."""
+    plan: Plan | None
+    source: str = ""                      # 고른 후보의 출처 ("flow" | "knn" | "fixed" 등)
+    note: str = ""                        # 못 쓸 때의 이유 (화면에 그대로 띄운다)
+    elapsed_s: float = 0.0
+    n_candidates: int = 0
+    margin_fallback: bool = False
+
+    @property
+    def n_phases(self) -> int:
+        return 0 if self.plan is None else len(self.plan.phases)
+
+
+def plan_model(body: BodyParams | None, scenario: Scenario, rotation_pose: PoseParams, *,
+               evaluator=None, nozzle=None) -> PlanGuide:
+    """F 의 계획 추천을 부른다. 산출물이 없거나 못 쓰면 `plan=None` + 이유.
+
+    `rotation_pose` 에 ④ 의 추천 자세를 넘기면 "제안 자세 그대로 회전"(= 모드 A)이 후보에 들어간다.
+    두 모드가 **같은 후보군에서** 겨루므로, 모드 B 가 뽑혔다는 것은 모드 A 보다 높았다는 뜻이다.
+
+    인자는 `interfaces.md` "계획 모델" 에 있는 것만 넘긴다 — 모르는 인자는 `TypeError` 다
+    (중복 제거·스레드는 계획 쪽에 아직 없다, F 확인 2026-10-06).
+    """
+    import time
+
+    t0 = time.perf_counter()
+    try:
+        from ..model.predict import predict_plan_candidates
+    except ImportError as exc:
+        return PlanGuide(None, note=f"계획 추천을 쓸 수 없습니다 ({exc})")
+    kw = {}
+    if evaluator is not None:
+        kw["evaluator"] = evaluator
+    if nozzle is not None:
+        kw["nozzle"] = nozzle
+    try:
+        pred = predict_plan_candidates(body, scenario, rotation_pose=rotation_pose, **kw)
+    except FileNotFoundError:
+        return PlanGuide(None, note="계획 추천 모델이 아직 준비 중입니다 (학습 산출물 없음).",
+                         elapsed_s=time.perf_counter() - t0)
+    except ImportError as exc:
+        return PlanGuide(None, note=f"계획 추천에 필요한 것이 없습니다 ({exc}).",
+                         elapsed_s=time.perf_counter() - t0)
+    except KeyError:
+        return PlanGuide(None, note=f"계획 추천 모델이 이 유형({scenario.name})을 아직 배우지 않았습니다.",
+                         elapsed_s=time.perf_counter() - t0)
+    return PlanGuide(pred.plan, source=getattr(pred, "source", ""),
+                     elapsed_s=time.perf_counter() - t0,
+                     n_candidates=len(getattr(pred, "candidates", []) or []),
+                     margin_fallback=bool(getattr(pred, "margin_fallback", False)))
+
+
+def plan_steps(plan: Plan, scenario: Scenario) -> list[dict]:
+    """단계 표. 단계마다 자세 안내 문장·시간·그 단계의 벽별 바람 세기.
+
+    구역 세기는 계획 전체에 하나지만 **가슴 쪽 벽이 단계마다 바뀌므로** 노즐에 실제로 실리는 값은
+    단계마다 다르다. 그래서 `apply_zone_strengths` 를 단계마다 다시 불러 그 단계의 값을 보여 준다.
+    """
+    nozzle = load_nozzles()
+    zones = np.asarray(plan.zone_strengths, dtype=np.float64).reshape(-1)
+    rows = []
+    for i, ph in enumerate(plan.phases, start=1):
+        fans = np.asarray(apply_zone_strengths(nozzle, zones, ph.pose.torso_yaw).strengths,
+                          dtype=np.float64).reshape(-1)
+        rows.append({
+            "단계": i,
+            "시간": f"{ph.duration_s:.1f}초",
+            "자세": " / ".join(pose_instructions(ph.pose, scenario)),
+            "바람 세기": " · ".join(f"{ZONE_LABELS[z]} {v:.0%}" for z, v in zip(ZONE_NAMES, zones)),
+            "분사구 평균": f"{fans.mean():.0%}",
+        })
+    return rows
+
+
+def plan_effect(result: EvalResult) -> dict:
+    """`evaluate_plan` 결과 → 화면에 쓸 값. 없는 키는 None 으로 둔다 (평가기가 바뀌어도 안 깨지게)."""
+    extra = getattr(result, "extra", {}) or {}
+    return {
+        "먼지 제거 효과": float(result.total_removal),
+        "바람 에너지": float(extra["energy"]) if "energy" in extra else None,
+        "자세 불편도": float(result.discomfort),
+        "총 시간": float(extra["duration_s"]) if "duration_s" in extra else None,
+        "불가": bool(extra.get("infeasible", False)),
     }
