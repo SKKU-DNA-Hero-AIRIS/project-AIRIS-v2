@@ -61,6 +61,9 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--rotation-pose", choices=ROTATION_POSE_MODES, default="none")
     ap.add_argument("--pose-model", default=None, help="--rotation-pose model 의 자세 flow 산출물")
     ap.add_argument("--pose-knn", default=None, help="--rotation-pose model 의 자세 kNN 표")
+    ap.add_argument("--rescore-top", type=int, default=None,
+                    help="재채점할 후보 수 (기본: 전부). 후보는 그대로 만들고 predict.rescore_subset 이 고른 것만 채점한다")
+    ap.add_argument("--n-threads", type=int, default=1, help="재채점 스레드 수 (결과는 순차와 같다)")
     ap.add_argument("--feasibility-margin", type=float, default=0.0)
     ap.add_argument("--feasibility-margin-mode", choices=("all", "reach"), default="all")
     ap.add_argument("--folds", type=int, default=5)
@@ -130,10 +133,10 @@ def run_split(test, methods, args, evaluator, nozzle, scenarios, limits, *, fold
                     body, scenario, seed=seed, path=model_path, knn_path=knn_path, evaluator=evaluator, nozzle=nozzle,
                     rotation_pose=rot, rotation_steps=steps, limits=limits,
                     feasibility_margin=args.feasibility_margin, feasibility_margin_mode=args.feasibility_margin_mode,
-                    **method_kwargs(m, args))
+                    rescore_top=args.rescore_top, n_threads=args.n_threads, **method_kwargs(m, args))
                 j = next(k for k, c in enumerate(p.candidates) if c is p.plan)
                 plan, score, infeasible, source = p.plan, p.scores[j], p.infeasible[j], p.source
-                n_evals = len(p.candidates) + p.n_margin_checks
+                n_evals = p.n_rescored + p.n_margin_checks
             ms = (time.perf_counter() - t0) * 1000.0
             out = {
                 "body_idx": int(row["body_idx"]), "scenario": scenario.name, "method": m,
@@ -142,6 +145,7 @@ def run_split(test, methods, args, evaluator, nozzle, scenarios, limits, *, fold
                 "infeasible": bool(infeasible), "n_evals": int(n_evals), "ms": ms, "source": source,
                 "plan_duration_s": plan.duration_s, "plan_phases": len(plan.phases),
                 "rotation_pose": args.rotation_pose, "fold": fold,
+                "rescore_top": args.rescore_top, "n_threads": args.n_threads,
             }
             for col in ("score_p1_10", "score_p1opt_10"):       # 데이터셋의 기준선과 나란히 (있으면)
                 if col in row.index and float(row[col]) > 0:

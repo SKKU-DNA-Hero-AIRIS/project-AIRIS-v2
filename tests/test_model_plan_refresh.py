@@ -214,6 +214,19 @@ def test_plan_cv_rerun_in_same_process_reloads_fold_artifacts(dataset_path, tmp_
     assert not set(np.round(on_disk["body_height_m"], 9)) <= set(np.round(first["body_height_m"], 9)), "둘째 데이터셋의 표"
 
 
+def test_plan_cv_rescore_top_counts_only_scored_plans(dataset_path, tmp_path, scorer):
+    model = base_model(dataset_path, tmp_path)
+    out = tmp_path / "top.csv"
+    assert run_e5_plan.main(["--model", str(model), "--dataset", str(dataset_path), "--folds", "2", "--limit", "2",
+                             "--n-flow", "3", "--n-knn", "2", "--methods", "hybrid,hybrid-nofixed,knn+fixed,fixed",
+                             "--rescore-top", "2", "--n-threads", "2", "--out", str(out)]) == 0
+    res = pd.read_csv(out)
+    evals = res.groupby("method")["n_evals"].first().to_dict()
+    assert evals == {"hybrid": 2, "hybrid-nofixed": 2, "knn+fixed": 2, "fixed": 1}, "채점한 수만 센다"
+    assert scorer.calls == int(res["n_evals"].sum())
+    assert (res["rescore_top"] == 2).all() and (res["n_threads"] == 2).all()
+
+
 def test_plan_cv_rotation_pose_and_bad_arguments(dataset_path, tmp_path, scorer, capsys):
     model = base_model(dataset_path, tmp_path)
     common = ["--model", str(model), "--dataset", str(dataset_path), "--folds", "2", "--limit", "2"]
