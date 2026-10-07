@@ -221,6 +221,80 @@ def test_legacy_n_samples_and_no_rescore(artifacts, scenarios):
     assert len(raw.plan.phases) == N and 6.0 - 1e-9 <= raw.plan.duration_s <= 20.0 + 1e-9
 
 
+# ---------- 소수 재채점 (응답 시간) ----------
+
+def test_rescore_subset_rotates_sources_and_keeps_nearest_table_plan():
+    src = ["flow"] * 4 + ["knn"] * 3 + ["fixed"] * 2
+    assert pred.rescore_subset(src, None) == list(range(9)) and pred.rescore_subset(src, 20) == list(range(9))
+    assert pred.rescore_subset(src, 1) == [4], "1개면 가장 가까운 체형의 최적 계획"
+    assert pred.rescore_subset(src, 2) == [4, 7], "2개면 고정 회전 계획 1번이 더해진다"
+    assert pred.rescore_subset(src, 3) == [0, 4, 7], "3개면 flow 1번"
+    assert pred.rescore_subset(src, 5) == [0, 4, 5, 7, 8]
+    assert pred.rescore_subset(src, 8) == [0, 1, 2, 4, 5, 6, 7, 8], "한 출처가 떨어지면 남은 출처에서 채운다"
+    assert pred.rescore_subset(["flow", "knn", "fixed", "extra", "extra"], 1) == [1, 3, 4], "extra 는 항상, 세지 않고"
+    assert pred.rescore_subset(["flow"] * 3, 2) == [0, 1] and pred.rescore_subset(["fixed"], 3) == [0]
+    with pytest.raises(ValueError, match="1 이상"):
+        pred.rescore_subset(src, 0)
+
+
+def test_rescore_top_scores_only_the_subset(artifacts, scenarios):
+    sc = scenarios["default"]
+    best_pose = PoseParams(shoulder_abduction=170.0, torso_yaw=40.0)
+    full_ev = PlanScorer()
+    full = pred.predict_plan_candidates(BodyParams(), sc, evaluator=full_ev, n_flow=4, n_knn=3,
+                                        rotation_pose=best_pose, **kw(artifacts))
+    assert full.n_rescored == 9 and full.rescored.all() and len(full_ev.calls) == 9, "기본은 전부 채점"
+
+    ev = PlanScorer()
+    p = pred.predict_plan_candidates(BodyParams(), sc, evaluator=ev, n_flow=4, n_knn=3, rotation_pose=best_pose,
+                                     rescore_top=3, **kw(artifacts))
+    assert len(ev.calls) == 3 and p.n_rescored == 3
+    assert p.sources == full.sources and len(p.candidates) == 9, "후보는 그대로 만든다"
+    assert list(np.flatnonzero(p.rescored)) == [0, 4, 7]
+    assert np.isnan(p.scores[~p.rescored]).all() and np.isfinite(p.scores[p.rescored]).all()
+    assert not p.infeasible[~p.rescored].any()
+    assert p.plan is p.candidates[0], "동률이면 채점한 후보 가운데 앞"
+
+    # 채점한 것 중 최고를 고른다 (회전 계획은 단계가 10개라 이 평가기에서 가장 높다)
+    q = pred.predict_plan_candidates(BodyParams(), sc, evaluator=PlanScorer(lambda plan: len(plan.phases)),
+                                     n_flow=4, n_knn=3, rotation_pose=best_pose, rescore_top=2, **kw(artifacts))
+    assert q.source == "fixed" and q.plan is q.candidates[7] and q.n_rescored == 2
+    one = pred.predict_plan_candidates(BodyParams(), sc, evaluator=PlanScorer(lambda plan: len(plan.phases)),
+                                       n_flow=4, n_knn=3, rotation_pose=best_pose, rescore_top=1, **kw(artifacts))
+    assert one.source == "knn" and one.plan is one.candidates[4], "1개면 가장 가까운 체형의 최적 계획 그대로"
+
+
+def test_threads_give_the_same_result_as_sequential(artifacts, scenarios):
+    sc = scenarios["default"]
+    score = lambda plan: plan.duration_s + plan.phases[0].pose.shoulder_abduction / 1000.0   # noqa: E731
+    seq = pred.predict_plan_candidates(BodyParams(), sc, evaluator=PlanScorer(score), **kw(artifacts))
+    ev = PlanScorer(score)
+    thr = pred.predict_plan_candidates(BodyParams(), sc, evaluator=ev, n_threads=3, **kw(artifacts))
+    assert np.array_equal(seq.scores, thr.scores) and np.array_equal(seq.infeasible, thr.infeasible)
+    assert seq.candidates.index(seq.plan) == thr.candidates.index(thr.plan) and len(ev.calls) == len(thr.candidates)
+
+    class Batched(PlanScorer):                                  # batch_evaluate 를 재정의한 평가기(입자판 꼴)
+        def batch_evaluate(self, poses, nozzle, body, scenario):
+            raise NotImplementedError
+
+    with pytest.warns(RuntimeWarning, match="순차로 채점"):
+        b = pred.predict_plan_candidates(BodyParams(), sc, evaluator=Batched(score), n_threads=3, **kw(artifacts))
+    assert np.array_equal(b.scores, seq.scores)
+
+
+def test_margin_with_rescore_top_stays_inside_the_scored_subset(artifacts, scenarios):
+    """판정 여유는 채점한 후보 안에서만 본다 (채점하지 않은 후보로 넘어가지 않는다)."""
+    sc = scenarios["default"]
+    body = BodyParams(height_m=1.80)
+    score = lambda plan: plan.phases[0].pose.shoulder_abduction / 180.0          # noqa: E731  만세가 높다
+    ev = PlanScorer(score)
+    p = pred.predict_plan_candidates(body, sc, evaluator=ev, rescore_top=3, feasibility_margin=0.05, **kw(artifacts))
+    picked = p.candidates.index(p.plan)
+    assert p.rescored[picked] and p.n_rescored == 3
+    assert all(ph.pose.shoulder_abduction < 120.0 for ph in p.plan.phases) or p.margin_fallback
+    assert len(ev.calls) == 3 + p.n_margin_checks and p.n_margin_checks <= 3
+
+
 # ---------- 부스 안 판정 여유 ----------
 
 def test_feasibility_margin_applies_to_plans(artifacts, scenarios):
