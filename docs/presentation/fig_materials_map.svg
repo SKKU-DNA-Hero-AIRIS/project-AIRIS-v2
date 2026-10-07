@@ -1,0 +1,147 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1800" height="1060" viewBox="0 0 1800 1060" font-family="Malgun Gothic, 'Noto Sans KR', Arial, sans-serif">
+  <defs>
+    <marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="#37474f"/></marker>
+    <marker id="ab" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="#1565c0"/></marker>
+  </defs>
+  <rect width="1800" height="1060" fill="#fff"/>
+  <text x="900" y="44" text-anchor="middle" font-size="28" font-weight="700" fill="#212121">발표 자료 관계도: 추천 설명 순서(위, 최종 순서는 발표자가 정함)와 자료의 출처(아래)</text>
+  <text x="900" y="72" text-anchor="middle" font-size="15" fill="#616161">화살표 = 통합이 추천하는 설명 순서(참고용). 점선 = 그 자료가 어느 수치 파일·실험에서 나왔는가</text>
+
+  <!-- 발표 흐름 6단계 -->
+  <g font-size="13.5">
+    <!-- 1 문제 -->
+    <rect x="40" y="110" width="270" height="150" rx="10" fill="#f5f7fa" stroke="#607d8b" stroke-width="2"/>
+    <text x="175" y="138" text-anchor="middle" font-size="17" font-weight="700" fill="#263238">① 문제와 목표</text>
+    <text x="175" y="164" text-anchor="middle" fill="#455a64">체형·자세마다 바람이 닿는 곳이 다름</text>
+    <text x="175" y="184" text-anchor="middle" fill="#455a64">일률 안내의 한계 → 사용자별 최적화</text>
+    <text x="175" y="214" text-anchor="middle" font-size="12.5" fill="#1565c0">자료: fig1_booth_nozzles(부스·분사구)</text>
+    <text x="175" y="232" text-anchor="middle" font-size="12.5" fill="#1565c0">screens/pose_*_b0 (안내 없이 선 자세)</text>
+
+    <!-- 2 구조 -->
+    <rect x="340" y="110" width="270" height="150" rx="10" fill="#f5f7fa" stroke="#607d8b" stroke-width="2"/>
+    <text x="475" y="138" text-anchor="middle" font-size="17" font-weight="700" fill="#263238">② 시스템 구조</text>
+    <text x="475" y="164" text-anchor="middle" fill="#455a64">미리 계산(최적화·학습)</text>
+    <text x="475" y="184" text-anchor="middle" fill="#455a64">→ 게이트 앞 실시간 추천</text>
+    <text x="475" y="214" text-anchor="middle" font-size="12.5" fill="#1565c0">자료: fig_system_architecture</text>
+
+    <!-- 3 물리 -->
+    <rect x="640" y="110" width="270" height="150" rx="10" fill="#fff8e1" stroke="#f9a825" stroke-width="2"/>
+    <text x="775" y="138" text-anchor="middle" font-size="17" font-weight="700" fill="#4e342e">③ 바람·먼지 계산 모델</text>
+    <text x="775" y="164" text-anchor="middle" fill="#5d4037">분사구 바람 → 몸 표면 흐름</text>
+    <text x="775" y="184" text-anchor="middle" fill="#5d4037">→ 문지르는 힘 → 제거 효과</text>
+    <text x="775" y="214" text-anchor="middle" font-size="12.5" fill="#1565c0">자료: fig2_jet_impingement_model</text>
+    <text x="775" y="232" text-anchor="middle" font-size="12.5" fill="#1565c0">calibration_notes (상수 근거, 발표 노트)</text>
+
+    <!-- 4 자세 결과 -->
+    <rect x="940" y="110" width="270" height="150" rx="10" fill="#e3f2fd" stroke="#1565c0" stroke-width="2"/>
+    <text x="1075" y="138" text-anchor="middle" font-size="17" font-weight="700" fill="#0d47a1">④ 자세 최적화 결과</text>
+    <text x="1075" y="164" text-anchor="middle" fill="#1a237e">세 유형 모두 "팔 들고 옆으로"</text>
+    <text x="1075" y="184" text-anchor="middle" fill="#1a237e">제조사 안내 대비 +55~63%</text>
+    <text x="1075" y="214" text-anchor="middle" font-size="12.5" fill="#1565c0">자료: fig_e4_scores_by_scenario</text>
+    <text x="1075" y="232" text-anchor="middle" font-size="12.5" fill="#1565c0">fig_e4_optimal_pose_angles, screens/pose_*</text>
+
+    <!-- 5 AI 추천 -->
+    <rect x="1240" y="110" width="270" height="150" rx="10" fill="#e3f2fd" stroke="#1565c0" stroke-width="2"/>
+    <text x="1375" y="138" text-anchor="middle" font-size="17" font-weight="700" fill="#0d47a1">⑤ AI 추천과 시연</text>
+    <text x="1375" y="164" text-anchor="middle" fill="#1a237e">처음 보는 체형에서도 99% 품질</text>
+    <text x="1375" y="184" text-anchor="middle" fill="#1a237e">응답 0.55초, 입력 오차 ±2% 조건</text>
+    <text x="1375" y="214" text-anchor="middle" font-size="12.5" fill="#1565c0">자료: fig_model_quality, fig_response_time,</text>
+    <text x="1375" y="232" text-anchor="middle" font-size="12.5" fill="#1565c0">fig_input_error_robustness, screens/dashboard_*·flow</text>
+
+    <!-- 6 계획·향후 -->
+    <rect x="1540" y="110" width="230" height="150" rx="10" fill="#f1f8f4" stroke="#43a047" stroke-width="2"/>
+    <text x="1655" y="138" text-anchor="middle" font-size="17" font-weight="700" fill="#1b5e20">⑥ 운전 계획·향후</text>
+    <text x="1655" y="164" text-anchor="middle" fill="#2e7d32">도는 횟수가 핵심,</text>
+    <text x="1655" y="184" text-anchor="middle" fill="#2e7d32">자세 변경 계획 +7~13%</text>
+    <text x="1655" y="214" text-anchor="middle" font-size="12.5" fill="#1565c0">자료: fig_e7_* 3장(docs/figures)</text>
+    <text x="1655" y="232" text-anchor="middle" font-size="12.5" fill="#1565c0">screens/dashboard_4_rotation</text>
+  </g>
+  <line x1="310" y1="185" x2="336" y2="185" stroke="#37474f" stroke-width="2.5" marker-end="url(#a)"/>
+  <line x1="610" y1="185" x2="636" y2="185" stroke="#37474f" stroke-width="2.5" marker-end="url(#a)"/>
+  <line x1="910" y1="185" x2="936" y2="185" stroke="#37474f" stroke-width="2.5" marker-end="url(#a)"/>
+  <line x1="1210" y1="185" x2="1236" y2="185" stroke="#37474f" stroke-width="2.5" marker-end="url(#a)"/>
+  <line x1="1510" y1="185" x2="1536" y2="185" stroke="#37474f" stroke-width="2.5" marker-end="url(#a)"/>
+
+  <!-- 한계 띠 -->
+  <rect x="40" y="285" width="1730" height="40" rx="8" fill="#eceff1" stroke="#b0bec5"/>
+  <text x="60" y="310" font-size="13" fill="#37474f"><tspan font-weight="700">⑦ 한계(모든 장에 공통)</tspan>: 점수는 시뮬레이션 안의 상대값(실제 제거율 아님) · 물리 상수는 논문 범위의 작업값(장비 실측 미보정) · 장비 제어 연동 없음 · 입력 오차 ±2% 이내 필요 → README의 "발표에서 쓰지 말 것" 참조</text>
+
+  <!-- 출처 계층 -->
+  <text x="40" y="380" font-size="19" font-weight="700" fill="#37474f">자료의 출처 (수치는 메시지가 아니라 파일에서 읽는다)</text>
+
+  <!-- 열 1: 실험·코드 -->
+  <g font-size="13">
+    <rect x="40" y="400" width="400" height="300" rx="10" fill="#fafafa" stroke="#90a4ae" stroke-width="1.5"/>
+    <text x="240" y="426" text-anchor="middle" font-size="15" font-weight="700" fill="#37474f">실험 (저장소 코드로 재현 가능)</text>
+    <text x="60" y="456" fill="#455a64">• 자세 최적화 실험 (시나리오 3 × 무작위 시작 5)</text>
+    <text x="60" y="478" fill="#455a64">• 운전 계획 실험 (단계 수 2·3·4·6·9, 회전 기준선, 시드 2)</text>
+    <text x="60" y="500" fill="#455a64">• 두 계산 방식 비교 (빠른 계산 vs 정밀 입자)</text>
+    <text x="60" y="522" fill="#455a64">• 물리 상수 민감도 (16개 설정)</text>
+    <text x="60" y="544" fill="#455a64">• AI 추천 품질 (체형 300개, 5-fold)</text>
+    <text x="60" y="566" fill="#455a64">• 응답 시간 (구성 4개, 단독 측정)</text>
+    <text x="60" y="588" fill="#455a64">• 체형 입력 오차 내성 (±0·2·5·10%)</text>
+    <text x="60" y="610" fill="#455a64">• 판정 여유 2% 효과</text>
+    <text x="60" y="650" fill="#78909c" font-size="12">기록: docs/experiments.md (최적화·계획)</text>
+    <text x="60" y="670" fill="#78909c" font-size="12">docs/experiments_model.md (AI 추천)</text>
+  </g>
+
+  <!-- 열 2: 수치 파일 -->
+  <g font-size="13">
+    <rect x="500" y="400" width="400" height="300" rx="10" fill="#fff8e1" stroke="#f9a825" stroke-width="1.5"/>
+    <text x="700" y="426" text-anchor="middle" font-size="15" font-weight="700" fill="#4e342e">수치 원본 파일 (저장소)</text>
+    <text x="520" y="456" fill="#5d4037">docs/e4_reference.json</text>
+    <text x="540" y="474" fill="#8d6e63" font-size="12">자세 최적화 결과·기준 자세 점수·봉우리</text>
+    <text x="520" y="500" fill="#5d4037">docs/e7_reference.json · e7_sweep_reference.json</text>
+    <text x="540" y="518" fill="#8d6e63" font-size="12">운전 계획 2단계 본 실행 72행 · 스윕 139행</text>
+    <text x="520" y="544" fill="#5d4037">docs/experiments_model.md 2.2 · 5.3 · 7.1 · 7.2</text>
+    <text x="540" y="562" fill="#8d6e63" font-size="12">AI 품질 표 · 응답 시간 표 · 오차 내성 표</text>
+    <text x="520" y="588" fill="#5d4037">configs/physics.yaml · nozzles.yaml</text>
+    <text x="540" y="606" fill="#8d6e63" font-size="12">물리 상수·부스·분사구 (설정 식별값 c5aea26d)</text>
+    <text x="520" y="632" fill="#5d4037">docs/completion_criteria.md</text>
+    <text x="540" y="650" fill="#8d6e63" font-size="12">완성도 지표 (발표 범위 97%, 완성품 84%)</text>
+    <text x="520" y="680" fill="#78909c" font-size="12">모두 설정 식별값(도장)으로 현재 물리와 일치 확인</text>
+  </g>
+
+  <!-- 열 3: 그림·캡처 -->
+  <g font-size="13">
+    <rect x="960" y="400" width="810" height="300" rx="10" fill="#e3f2fd" stroke="#1565c0" stroke-width="1.5"/>
+    <text x="1365" y="426" text-anchor="middle" font-size="15" font-weight="700" fill="#0d47a1">발표 그림·캡처 (docs/presentation, docs/figures)</text>
+    <text x="980" y="456" fill="#1a237e">fig_e4_scores_by_scenario · fig_e4_optimal_pose_angles</text>
+    <text x="1430" y="456" fill="#5472d3" font-size="12">← e4_reference.json (스크립트 생성)</text>
+    <text x="980" y="482" fill="#1a237e">fig_e7_phase_count · fig_e7_same_count · fig_e7_rotation_pose</text>
+    <text x="1430" y="482" fill="#5472d3" font-size="12">← e7_sweep_reference.json (scripts/fig_e7_plans.py)</text>
+    <text x="980" y="508" fill="#1a237e">fig_model_quality · fig_response_time · fig_input_error_robustness</text>
+    <text x="1430" y="508" fill="#5472d3" font-size="12">← experiments_model.md 표 (결과 CSV)</text>
+    <text x="980" y="534" fill="#1a237e">fig1_booth_nozzles · fig2_jet_impingement_model</text>
+    <text x="1430" y="534" fill="#5472d3" font-size="12">← physics.yaml · nozzles.yaml · 논문값</text>
+    <text x="980" y="560" fill="#1a237e">fig_system_architecture</text>
+    <text x="1430" y="560" fill="#5472d3" font-size="12">← 코드 구조 (docs/interfaces.md)</text>
+    <text x="980" y="586" fill="#1a237e">screens/pose_* (3D 마네킹 11장)</text>
+    <text x="1430" y="586" fill="#5472d3" font-size="12">← e4_reference.json 자세를 대시보드로 렌더</text>
+    <text x="980" y="612" fill="#1a237e">screens/dashboard_1~4 · dashboard_flow.gif · flow_01~09</text>
+    <text x="1430" y="612" fill="#5472d3" font-size="12">← 실제 대시보드 화면 (설치된 AI 모델, 설정 일치)</text>
+    <text x="980" y="638" fill="#1a237e">screens/particles_*.gif</text>
+    <text x="1430" y="638" fill="#5472d3" font-size="12">← 정밀 입자 시뮬레이션 실제 실행 덤프</text>
+    <text x="980" y="672" fill="#78909c" font-size="12">화면 흐름 GIF는 정지 화면 이어 붙인 것(실제 조작 영상 아님). 실제 녹화는 별도.</text>
+  </g>
+  <line x1="440" y1="550" x2="496" y2="550" stroke="#37474f" stroke-width="2" stroke-dasharray="6 4" marker-end="url(#a)"/>
+  <line x1="900" y1="550" x2="956" y2="550" stroke="#1565c0" stroke-width="2" stroke-dasharray="6 4" marker-end="url(#ab)"/>
+
+  <!-- 같은 수치가 여러 자료에 -->
+  <text x="40" y="750" font-size="19" font-weight="700" fill="#37474f">같은 수치가 여러 자료에 나올 때 맞춰야 하는 것</text>
+  <g font-size="13.5" fill="#455a64">
+    <text x="60" y="782">• <tspan font-weight="700">+62% / +55% / +63%</tspan> (제조사 안내 대비): fig_e4_scores, dashboard_2(+135/+57/+109%는 "안내 없이" 대비·예시 체형이라 다름), README 현재 상태 — 기준 자세가 다르면 숫자가 다르다는 점을 캡션에 명시</text>
+    <text x="60" y="806">• <tspan font-weight="700">하위 5% 0.993 / 0.95 미만 0.33%</tspan>: fig_model_quality, experiments_model.md 2.2, completion_criteria C1 — 이전 물리(k=1) 값 0.995·0.67%와 섞지 말 것</text>
+    <text x="60" y="830">• <tspan font-weight="700">응답 0.55초(평균)·0.78초(95%)</tspan>: fig_response_time, dashboard_2의 0.96 s(혼잡 중 한 번 측정) — 발표는 "약 1초 안"으로 통일</text>
+    <text x="60" y="854">• <tspan font-weight="700">운전 계획 점수</tspan>: 단계 수 스윕(가중 0.01)과 9단계 비교(가중 0.1)는 가중이 달라 한 축에 놓지 않는다 — fig_e7_phase_count와 fig_e7_same_count가 분리된 이유</text>
+    <text x="60" y="878">• <tspan font-weight="700">3D 마네킹의 "몸 돌리기" 점수</tspan>: 12방향 중 한 방향(옆)이라 표의 평균 점수와 다르다 — 캡션 "회전 중 한 방향"</text>
+  </g>
+
+  <!-- 아직 없는 것 -->
+  <rect x="40" y="910" width="1730" height="110" rx="10" fill="#f5f5f5" stroke="#bdbdbd"/>
+  <text x="60" y="938" font-size="15" font-weight="700" fill="#37474f">아직 없는 자료 (시점)</text>
+  <text x="60" y="964" font-size="13" fill="#455a64">• 학습 곡선(체형 수별 AI 품질): 1,000체형 데이터셋 완료 → F 계산 중(10-07) → fig_learning_curve 추가 예정</text>
+  <text x="60" y="986" font-size="13" fill="#455a64">• 계획 추천 모델 품질·응답(3차): 계획 데이터셋 생성 중(10-07~10-09) → 학습·판정 뒤. 발표가 그 전이면 "향후 계획"으로</text>
+  <text x="60" y="1008" font-size="13" fill="#455a64">• 실제 조작 녹화 영상: 총괄 직접(대본은 저장소 밖). 실제 장비·실제 사람 검증: 범위 밖</text>
+  <text x="1760" y="1050" text-anchor="end" font-size="11" fill="#9e9e9e">AIRIS v2 · 2026-10-07</text>
+</svg>
