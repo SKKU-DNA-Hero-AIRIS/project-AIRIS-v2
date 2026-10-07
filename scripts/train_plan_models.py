@@ -68,6 +68,8 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--methods", default=METHODS, help=f"5-fold 비교 방법 (판정은 {GATE_METHOD})")
     ap.add_argument("--n-flow", type=int, default=8)
     ap.add_argument("--n-knn", type=int, default=8)
+    ap.add_argument("--rescore-top", type=int, default=None, help="재채점할 후보 수 (기본: 전부). run_e5_plan.py 와 같다")
+    ap.add_argument("--n-threads", type=int, default=1, help="재채점 스레드 수")
     ap.add_argument("--rotation-pose", default="none", help="run_e5_plan.py 의 --rotation-pose (none | dataset | model)")
     ap.add_argument("--pose-model", default=None)
     ap.add_argument("--pose-knn", default=None)
@@ -240,7 +242,8 @@ def main(argv: list[str] | None = None) -> int:
                    "--methods", args.methods, "--n-flow", str(args.n_flow), "--n-knn", str(args.n_knn),
                    "--rotation-pose", args.rotation_pose, "--out", str(out_dir / "e5plan.csv")]
         for flag, value in (("--pose-model", args.pose_model), ("--pose-knn", args.pose_knn),
-                            ("--limit", args.limit)):
+                            ("--limit", args.limit), ("--rescore-top", args.rescore_top),
+                            ("--n-threads", args.n_threads if args.n_threads > 1 else None)):
             if value:
                 cv_args += [flag, str(value)]
         rc = run_e5_plan.main(cv_args)

@@ -89,6 +89,10 @@ class PlanPrediction:
     infeasible: np.ndarray | None
     sources: list[str] = field(default_factory=list)   # 후보마다 "flow" | "knn" | "fixed" | "extra"
     source: str = ""                                   # 고른 후보의 출처
+    #: 소수 재채점(rescore_top)을 썼을 때의 기록. 기본 동작에서는 n_rescored = 후보 수, rescored 는 전부 True.
+    #: 채점하지 않은 후보의 scores 는 NaN, infeasible 는 False 다 (모른다는 뜻이지 부스 안이라는 뜻이 아니다).
+    n_rescored: int = 0                                # evaluate_plan 으로 채점한 후보 수
+    rescored: np.ndarray | None = None                 # 후보마다 채점했는가 (rescore=False 면 None)
     n_margin_checks: int = 0                           # 부스 안 판정 여유: 키운 체형으로 다시 채점한 횟수
     n_margin_rejected: int = 0                         # 키운 체형에서 불가라 넘긴 후보 수
     margin_fallback: bool = False                      # 전부 걸려서 여유 없이 고른 후보를 돌려줬는가
@@ -567,11 +571,27 @@ def predict_pose(body: BodyParams, scenario: Scenario, **kwargs) -> PoseParams:
 
 
 def score_plans(evaluator: Evaluator, plans: Sequence[Plan], nozzle: NozzleConfig, body: BodyParams,
-                scenario: Scenario) -> tuple[np.ndarray, np.ndarray]:
-    """계획 목록을 evaluate_plan 으로 채점. (점수 (n,), 불가 (n,) bool)."""
+                scenario: Scenario, *, n_threads: int = 1) -> tuple[np.ndarray, np.ndarray]:
+    """계획 목록을 evaluate_plan 으로 채점. (점수 (n,), 불가 (n,) bool). n_threads > 1 이면 계획마다 스레드로 (순서 유지).
+
+    D 확인(2026-10-06, main 4974df0): 패치판은 같은 인스턴스로 계획을 여러 스레드가 동시에 채점해도 결과가 비트
+    단위로 같다. 속도는 스레드 2~3개에서 포화한다 (혼잡한 CPU 에서 1.37배). batch_evaluate 를 재정의한
+    평가기(입자판)는 확인하지 않았으므로 순차로 채점한다 (경고, score_candidates 와 같은 규칙).
+    """
     from airis.optimize.cmaes_runner import is_infeasible
 
-    results = [evaluator.evaluate_plan(p, nozzle, body, scenario) for p in plans]
+    plans = list(plans)
+    if n_threads > 1 and type(evaluator).batch_evaluate is not Evaluator.batch_evaluate:
+        warnings.warn(f"{type(evaluator).__name__} 는 batch_evaluate 를 재정의한 평가기라 스레드 채점의 동일성이 "
+                      "확인되지 않았다. 순차로 채점한다.", RuntimeWarning)
+        n_threads = 1
+    if n_threads > 1 and len(plans) > 1:
+        from concurrent.futures import ThreadPoolExecutor
+
+        with ThreadPoolExecutor(max_workers=int(n_threads)) as pool:
+            results = list(pool.map(lambda p: evaluator.evaluate_plan(p, nozzle, body, scenario), plans))
+    else:
+        results = [evaluator.evaluate_plan(p, nozzle, body, scenario) for p in plans]
     return (np.array([r.score for r in results], dtype=np.float64),
             np.array([is_infeasible(r) for r in results], dtype=bool))
 
@@ -741,6 +761,40 @@ def _gather_plans(body: BodyParams, scenario: Scenario, *, backend: str, n_flow:
     return candidates, sources, model, knn
 
 
+#: 소수 재채점에서 출처를 돌아가며 고르는 순서. 가장 가까운 체형의 최적 계획(kNN 1등)이 늘 먼저다.
+RESCORE_SOURCE_ORDER = ("knn", "fixed", "flow")
+
+
+def rescore_subset(sources: Sequence[str], top: int | None) -> list[int]:
+    """재채점할 후보의 자리 (오름차순). top 이 None 이거나 후보 수 이상이면 전부.
+
+    계획 1개 채점은 단계 수에 비례해 느리다 (C 실측 2026-10-07: 단계 9개, 1,500/m² 에서 0.47 s). 후보를 전부
+    채점하면 응답 시간을 못 맞추므로, 후보는 그대로 만들되 채점은 top 개만 한다.
+
+    flow 샘플에는 순위를 매길 점수가 없다. 그래서 출처를 돌아가며(RESCORE_SOURCE_ORDER) 각 출처의 앞에서부터 고른다:
+    kNN 1등(가장 가까운 체형의 최적 계획) → 고정 회전 계획 1번(제안 자세 회전, 없으면 기본 자세 회전) → flow 1번 →
+    kNN 2등 → … 이렇게 하면 top ≥ 1 에서 "가장 가까운 체형의 최적 계획보다 나빠지지 않는다"가, top ≥ 2 에서
+    "그냥 회전보다 나빠지지 않는다"가 유지된다 (자세 추천에서 선별만 쓰면 표 보장이 깨졌다, 5.2절).
+    extra 후보는 부른 쪽이 직접 넣은 것이라 항상 채점하고 top 에 세지 않는다.
+    """
+    n = len(sources)
+    if top is None or int(top) >= n:
+        return list(range(n))
+    if int(top) < 1:
+        raise ValueError(f"rescore_top 은 1 이상: {top}")
+    queues = {s: [i for i, src in enumerate(sources) if src == s] for s in RESCORE_SOURCE_ORDER}
+    other = [i for i, src in enumerate(sources) if src not in RESCORE_SOURCE_ORDER and src != "extra"]
+    keep = [i for i, src in enumerate(sources) if src == "extra"]
+    picked: list[int] = []
+    while len(picked) < int(top) and (any(queues.values()) or other):
+        for s in RESCORE_SOURCE_ORDER:
+            if queues[s] and len(picked) < int(top):
+                picked.append(queues[s].pop(0))
+        if not any(queues.values()) and other and len(picked) < int(top):
+            picked.append(other.pop(0))
+    return sorted(keep + picked)
+
+
 def margin_pick_plans(evaluator: Evaluator, candidates: Sequence[Plan], scores: np.ndarray, infeasible: np.ndarray,
                       nozzle: NozzleConfig, body: BodyParams, scenario: Scenario, margin: float,
                       mode: str = "all") -> tuple[int, int, int, bool]:
@@ -769,7 +823,8 @@ def predict_plan_candidates(body: BodyParams, scenario: Scenario, *, backend: st
                             rotation_pose: PoseParams | None = None, rotation_steps: int = ROTATION_STEPS,
                             limits=None, zone_nozzle_counts: Sequence[float] | None = None,
                             feasibility_margin: float = 0.0,
-                            feasibility_margin_mode: str = "all") -> PlanPrediction:
+                            feasibility_margin_mode: str = "all",
+                            rescore_top: int | None = None, n_threads: int = 1) -> PlanPrediction:
     """계획 후보까지 돌려주는 예측. predict 의 계획 버전 (혼합 추천).
 
         후보 = flow 샘플 n_flow 개 (data/models/plan_flow.pt)
@@ -788,6 +843,9 @@ def predict_plan_candidates(body: BodyParams, scenario: Scenario, *, backend: st
       자세 투영과 세기 한도를 적용했고, 단계 수가 달라도 evaluate_plan 은 같은 자로 채점한다).
     - limits: 주지 않으면 산출물의 한도 (plan_limits_for). 설정 파일의 n_phases 가 아니다.
     - feasibility_margin: predict 와 같다 (기본 0 이면 추가 채점 없음).
+    - rescore_top: 재채점할 후보 수 (기본 None = 전부). 후보는 그대로 만들고 rescore_subset 이 고른 것만 채점한다.
+      채점하지 않은 후보는 scores NaN 이고 고르지 않는다. 판정 여유도 채점한 후보 안에서만 본다.
+    - n_threads: 재채점 스레드 수 (기본 1 = 순차). 결과는 순차와 같다 (score_plans).
     """
     if n_samples is not None:
         backend = backend or "flow"
@@ -823,15 +881,22 @@ def predict_plan_candidates(body: BodyParams, scenario: Scenario, *, backend: st
     if evaluator is None or nozzle is None:
         ev, nz = default_rescorer(model if model is not None else knn, plan=True)
         evaluator, nozzle = evaluator or ev, nozzle or nz
-    scores, infeasible = score_plans(evaluator, candidates, nozzle, body, scenario)
-    i = _pick(scores, infeasible)
-    out = PlanPrediction(candidates[i], candidates, scores, infeasible, sources, sources[i])
+    idx = rescore_subset(sources, rescore_top)
+    chosen = [candidates[k] for k in idx]
+    sub_scores, sub_bad = score_plans(evaluator, chosen, nozzle, body, scenario, n_threads=n_threads)
+    scores = np.full(len(candidates), np.nan, dtype=np.float64)
+    infeasible = np.zeros(len(candidates), dtype=bool)
+    rescored = np.zeros(len(candidates), dtype=bool)
+    scores[idx], infeasible[idx], rescored[idx] = sub_scores, sub_bad, True
+    i = idx[_pick(sub_scores, sub_bad)]
+    out = PlanPrediction(candidates[i], candidates, scores, infeasible, sources, sources[i],
+                         n_rescored=len(idx), rescored=rescored)
     if feasibility_margin_mode not in MARGIN_MODES:
         raise ValueError(f"여유 방식은 {tuple(MARGIN_MODES)} 중 하나: {feasibility_margin_mode!r}")
     if feasibility_margin and feasibility_margin > 0:
-        j, checks, rejected, fallback = margin_pick_plans(evaluator, candidates, scores, infeasible, nozzle, body,
+        j, checks, rejected, fallback = margin_pick_plans(evaluator, chosen, sub_scores, sub_bad, nozzle, body,
                                                           scenario, feasibility_margin, feasibility_margin_mode)
-        out.plan, out.source = candidates[j], sources[j]
+        out.plan, out.source = candidates[idx[j]], sources[idx[j]]
         out.n_margin_checks, out.n_margin_rejected, out.margin_fallback = checks, rejected, fallback
     return out
 
