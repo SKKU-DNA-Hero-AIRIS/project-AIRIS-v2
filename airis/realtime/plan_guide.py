@@ -162,11 +162,23 @@ class PlanGuide:
     note: str = ""                        # 못 쓸 때의 이유 (화면에 그대로 띄운다)
     elapsed_s: float = 0.0
     n_candidates: int = 0
+    #: 실제로 채점한 후보 수. F 의 `rescore_top`(소수 재채점)을 쓰면 후보 수보다 적다 (#171).
+    #: 화면이 "후보 N개를 재채점했다" 고 잘못 말하지 않도록 따로 받는다.
+    n_rescored: int = 0
     margin_fallback: bool = False
 
     @property
     def n_phases(self) -> int:
         return 0 if self.plan is None else len(self.plan.phases)
+
+    @property
+    def scoring_text(self) -> str:
+        """채점한 후보를 사람이 읽을 한 줄. 전부 채점했으면 수를 하나만 말한다."""
+        if not self.n_candidates:
+            return ""
+        if self.n_rescored and self.n_rescored < self.n_candidates:
+            return f"후보 {self.n_candidates}개 중 {self.n_rescored}개를 자세히 채점했습니다."
+        return f"후보 {self.n_candidates}개를 모두 채점했습니다."
 
 
 def plan_model(body: BodyParams | None, scenario: Scenario, rotation_pose: PoseParams, *,
@@ -202,9 +214,11 @@ def plan_model(body: BodyParams | None, scenario: Scenario, rotation_pose: PoseP
     except KeyError:
         return PlanGuide(None, note=f"계획 추천 모델이 이 유형({scenario.name})을 아직 배우지 않았습니다.",
                          elapsed_s=time.perf_counter() - t0)
+    n_cand = len(getattr(pred, "candidates", []) or [])
     return PlanGuide(pred.plan, source=getattr(pred, "source", ""),
                      elapsed_s=time.perf_counter() - t0,
-                     n_candidates=len(getattr(pred, "candidates", []) or []),
+                     n_candidates=n_cand,
+                     n_rescored=int(getattr(pred, "n_rescored", 0) or n_cand),
                      margin_fallback=bool(getattr(pred, "margin_fallback", False)))
 
 
