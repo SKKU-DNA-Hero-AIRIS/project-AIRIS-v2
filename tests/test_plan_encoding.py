@@ -757,3 +757,73 @@ def test_plan_dataset_rejects_file_without_stamp_columns(tmp_path):
         build_plan_dataset(out, n_bodies=1, scenarios=["default"],
                            cfg=PlanDatasetConfig(n_phases=3, evaluator="dummy"),
                            processes=1, log=lambda *a: None)
+
+
+def test_candidate_filter_compares_canonical_plans(scenarios):
+    """탐색 공간에서 멀어 보여도 **같은 계획이면** 후보 하나만 남는다 (60행 실측에서 발견).
+
+    `run_cmaes` 가 남기는 x 는 [-1, 1] 밖으로도 나가고 `decode` 가 그것을 잘라 낸다. 그래서
+    x 끼리 재면 멀지만 계획은 똑같은 쌍이 생긴다(저장된 쌍거리 최소 0.097 < 임계 0.15).
+    거리는 `encode(decode(x))` 정규 형태로 재야 한다.
+    """
+    import numpy as np
+
+    from airis.optimize.plan_dataset import candidate_columns, plan_from_raw, refilter_candidates
+    from airis.optimize.plan_encoding import PlanEncoder, PlanLimits
+
+    enc = PlanEncoder(scenarios["default"], PlanLimits(n_phases=3, duration_bounds_s=(6.0, 20.0)))
+    near = np.full(enc.dim, 1.5)                 # 범위 밖 — decode 가 1.0 으로 자른다
+    far_out = np.full(enc.dim, 3.0)              # 더 밖이지만 잘리면 같은 계획
+    raw_gap = float(np.linalg.norm(near - far_out)) / np.sqrt(enc.dim)
+    assert raw_gap > 0.15, f"x 끼리는 멀어 보인다 ({raw_gap:.3f}) — 이 테스트의 전제"
+    assert np.allclose(enc.raw_vector(enc.decode(near)), enc.raw_vector(enc.decode(far_out)))
+
+    out = candidate_columns(
+        [{"x": near, "score": 1.0, "infeasible": False},
+         {"x": far_out, "score": 0.99, "infeasible": False}],
+        enc, 1.0, k=4, tol=0.05, min_dist=0.15)
+    assert out["n_candidates"] == 1, "같은 계획은 하나만 남아야 한다"
+    assert out["cand_score"] == [1.0], "점수가 높은 쪽을 남긴다"
+
+    # 읽는 쪽 재필터도 같은 결과 (옛 파일 보정용).
+    raws = [[float(v) for v in enc.raw_vector(enc.decode(x))] for x in (near, far_out)]
+    again = refilter_candidates(raws, [1.0, 0.99], enc, min_dist=0.15)
+    assert again["n_candidates"] == 1 and again["cand_score"] == [1.0], again
+
+    # 멀리 떨어진 후보는 둘 다 남는다 (과하게 거르지 않는지).
+    other = enc.raw_vector(enc.decode(np.full(enc.dim, -1.0)))
+    keep = refilter_candidates([raws[0], [float(v) for v in other]], [1.0, 0.9], enc, min_dist=0.15)
+    assert keep["n_candidates"] == 2, keep
+
+    # plan_from_raw 는 raw_vector 의 역이다.
+    assert np.allclose(enc.raw_vector(plan_from_raw(enc, raws[0])), raws[0], atol=1e-9)
+
+def test_refilter_candidate_frame(tmp_path):
+    """DataFrame 단위 재필터 — 세 열을 함께 갱신하고 원본은 바꾸지 않는다 (F 사용 형태)."""
+    import pandas as pd
+
+    from airis.optimize.plan_dataset import (
+        PlanDatasetConfig, build_plan_dataset, refilter_candidate_frame,
+    )
+
+    out = tmp_path / "plan.parquet"
+    cfg = PlanDatasetConfig(n_phases=3, max_evals=300, pose_max_evals=150, popsize=10,
+                            evaluator="dummy", candidate_k=8, candidate_min_dist=0.0)
+    build_plan_dataset(out, n_bodies=2, scenarios=["default"], cfg=cfg,
+                       processes=1, flush_every=1, log=lambda *a: None)
+    df = pd.read_parquet(out)
+    before = df["n_candidates"].tolist()
+
+    tight = refilter_candidate_frame(df, min_dist=0.30)       # 빡빡하게 걸러 본다
+    assert tight["n_candidates"].tolist() <= before, (tight["n_candidates"].tolist(), before)
+    assert (tight["n_candidates"] > 0).all(), "후보가 0개가 되는 행은 없다"
+    for _, row in tight.iterrows():
+        # 세 열이 함께 갱신된다.
+        assert len(row["cand_plan_raw"]) == row["n_candidates"] == len(row["cand_score"])
+        assert list(row["cand_score"]) == sorted(row["cand_score"], reverse=True)
+    assert df["n_candidates"].tolist() == before, "원본 DataFrame 은 바뀌지 않는다"
+    assert list(tight.columns) == list(df.columns)
+
+    # 임계 0 이면 그대로다.
+    same = refilter_candidate_frame(df, min_dist=0.0)
+    assert same["n_candidates"].tolist() == before

@@ -29,7 +29,7 @@ from pathlib import Path
 
 import numpy as np
 
-from airis.sim import BodyParams, PoseParams
+from airis.sim import ZONE_NAMES, BodyParams, PoseParams
 
 from .dataset import BODY_KEYS, POSE_KEYS, configured_body_model, sample_bodies
 
@@ -123,23 +123,110 @@ def candidate_columns(candidates: list[dict], encoder, best_score: float, *,
     chosen: list[dict] = []
     picked: list[np.ndarray] = []
     for cand in pool:
-        # run_cmaes 가 남기는 후보는 **이미 encode 공간 벡터**(x)다 — 그대로 거리에 쓴다.
-        x = np.asarray(cand["x"], dtype=np.float64)
+        # run_cmaes 가 남긴 x 는 **탐색 공간 값**이고 [-1, 1] 밖으로도 나간다. decode 가 그것을
+        # 잘라 내므로 x 끼리는 멀어 보여도 **계획은 같은** 쌍이 생긴다. 대칭 정규화(거울·앞뒤·
+        # 정면 동률)도 x 에는 안 들어가 있다. 그래서 둘 다 남고, 저장할 때 정규화되면서 거의
+        # 같은 값이 된다 (60행 실측: 저장된 쌍거리 최소 0.097 < 임계 0.15).
+        # encode() 가 clip + normalize 를 하므로 **정규 형태로 바꿔** 거리를 잰다.
+        x = encoder.encode(encoder.decode(np.asarray(cand["x"], dtype=np.float64)))
         if any(float(np.linalg.norm(x - px)) / math.sqrt(dim) < min_dist for px in picked):
             continue
         chosen.append(cand)
         picked.append(x)
         if len(chosen) >= k:
             break
-    # 저장은 원래 단위. **decode 는 clip 만 하므로 normalize 를 다시 거친다** — 1단계 yaw 가
-    # 정면(0°) 경계면 chest/back 구역을 맞바꾸는 규칙(plan_encoding.normalize)이 decode 에는
-    # 없어서, 그냥 decode 하면 같은 계획이 구역 순서만 다른 값으로 저장된다 (통합 검토 10-07).
+    # 저장도 같은 정규 형태를 원래 단위로 되돌린 값이다 (decode 는 encode 의 역이라 추가
+    # normalize 가 필요 없다 — x 가 이미 정규 형태다).
     return {
-        "cand_plan_raw": [[float(v) for v in encoder.raw_vector(encoder.normalize(encoder.decode(x)))]
-                          for x in picked],
+        "cand_plan_raw": [[float(v) for v in encoder.raw_vector(encoder.decode(x))] for x in picked],
         "cand_score": [float(c["score"]) for c in chosen],
         "n_candidates": len(chosen),
     }
+
+
+def plan_from_raw(encoder, raw):
+    """`cand_plan_raw` 한 줄(원래 단위 벡터) → Plan. `raw_vector` 의 역이다."""
+    from airis.sim import Phase, Plan
+
+    from .plan_encoding import plan_keys
+
+    n = encoder.limits.n_phases
+    v = dict(zip(plan_keys(n), (float(x) for x in raw)))
+    poses = [PoseParams(**{p: v[f"p{k}_{p}"] for p in POSE_KEYS}) for k in range(1, n + 1)]
+    times = encoder.durations(v["duration_s"], [v[f"share_{k}"] for k in range(1, n)])
+    return Plan([Phase(p, t) for p, t in zip(poses, times)], [v[f"zone_{z}"] for z in ZONE_NAMES])
+
+
+def refilter_candidates(raws, scores, encoder, *, min_dist: float, k: int | None = None) -> dict:
+    """저장된 후보를 **읽는 쪽에서 다시 거른다** (점수 높은 쪽을 남긴다).
+
+    2026-10-08 이전에 만든 파일은 거리 필터가 정규화 전 값으로 돌아 거울상 중복이 남아 있을 수
+    있다(위 `candidate_columns` 주석). 저장된 벡터는 이미 정규 형태라 **다시 encode 해 같은
+    임계로 거르면** 새 코드와 같은 결과가 된다 — 파일을 다시 만들 필요가 없다.
+    """
+    order = sorted(range(len(raws)), key=lambda i: -float(scores[i]))
+    keep: list[int] = []
+    picked: list[np.ndarray] = []
+    for i in order:
+        x = encoder.encode(plan_from_raw(encoder, raws[i]))
+        if any(float(np.linalg.norm(x - px)) / math.sqrt(encoder.dim) < min_dist for px in picked):
+            continue
+        keep.append(i)
+        picked.append(x)
+        if k is not None and len(keep) >= k:
+            break
+    return {
+        "cand_plan_raw": [[float(v) for v in raws[i]] for i in keep],
+        "cand_score": [float(scores[i]) for i in keep],
+        "n_candidates": len(keep),
+    }
+
+
+def encoder_for_row(row):
+    """데이터셋 행 하나가 쓴 `PlanEncoder`. 한도는 **행의 열에서** 읽는다(설정 파일이 아니라).
+
+    실행이 총 시간 하한을 `N × min_phase_s` 로 올리므로 설정 파일 값과 다를 수 있다.
+    """
+    import dataclasses
+
+    from airis.sim.scenario import load_scenarios
+
+    from .plan_encoding import PlanEncoder, PlanLimits
+
+    limits = PlanLimits(
+        n_phases=int(row["n_phases"]),
+        duration_bounds_s=(float(row["duration_lo_s"]), float(row["duration_hi_s"])),
+        min_phase_s=float(row["min_phase_s"]), transition_s=float(row["transition_s"]),
+        s_max=float(row["s_max"]), cap_ratio=float(row["cap_ratio"]))
+    return PlanEncoder(load_scenarios()[str(row["scenario"])], dataclasses.replace(limits))
+
+
+def refilter_candidate_frame(df, *, min_dist: float = 0.15, k: int | None = None):
+    """데이터셋 DataFrame → **후보를 다시 거른 새 DataFrame** (원본은 바꾸지 않는다).
+
+    `cand_plan_raw`·`cand_score`·`n_candidates` 세 열을 **함께** 갱신한다. 점수가 높은 후보를
+    남기므로 **최적 계획은 항상 남고**, 후보가 0개가 되는 행은 생기지 않는다(원래 0개였던
+    행은 그대로 0개다).
+
+    2026-10-08 이전에 만든 파일은 거리 필터가 탐색 공간 값으로 돌아 **같은 계획이 중복으로**
+    남아 있다(60행 기준 후보의 약 1/3). 읽은 직후 한 번 부르면 새 코드와 같은 결과가 된다.
+    한도·시나리오는 행의 열에서 읽으므로 파일마다 N 이 달라도 된다.
+    """
+    out = df.copy()
+    cache: dict = {}
+    raws, scores, counts = [], [], []
+    for _, row in df.iterrows():
+        key = (str(row["scenario"]), int(row["n_phases"]), float(row["duration_lo_s"]))
+        enc = cache.get(key) or cache.setdefault(key, encoder_for_row(row))
+        got = refilter_candidates(list(row["cand_plan_raw"]), list(row["cand_score"]), enc,
+                                  min_dist=min_dist, k=k)
+        raws.append(got["cand_plan_raw"])
+        scores.append(got["cand_score"])
+        counts.append(got["n_candidates"])
+    out["cand_plan_raw"] = raws
+    out["cand_score"] = scores
+    out["n_candidates"] = counts
+    return out
 
 
 def _worker_init(cfg: PlanDatasetConfig) -> None:
