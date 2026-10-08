@@ -74,6 +74,8 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--pose-model", default=None)
     ap.add_argument("--pose-knn", default=None)
     ap.add_argument("--limit", type=int, default=None, help="fold 마다 평가 행 상한 (빠른 점검용, 판정 무효)")
+    ap.add_argument("--no-refilter", action="store_true",
+                    help="읽은 직후의 후보 재필터(plan_data.read_plan_dataset)를 끈다")
     ap.add_argument("--skip-cv", action="store_true", help="5-fold 와 판정을 건너뛴다 (--install 또는 --no-install 필요)")
     inst = ap.add_mutually_exclusive_group()
     inst.add_argument("--install", action="store_true", help="판정과 무관하게 설치")
@@ -104,7 +106,8 @@ def markdown_table(stats, verdict: dict, info: dict) -> str:
     """docs/experiments_model.md 에 붙일 표."""
     lines = [f"데이터 `{info['dataset']}` ({info['rows']}행, 단계 {info['n_phases']}개, 에너지 가중 {info['energy_weight']}), "
              f"커밋 `{info['commit']}`, {info['folds']}-fold, 제안 자세 {info['rotation_pose']}, "
-             f"학습 장치 {info.get('device') or '기록 없음'}, 결과 `{info['out_dir']}`",
+             f"학습 장치 {info.get('device') or '기록 없음'}, 결과 `{info['out_dir']}`"
+             + (f", {info['refilter']}" if info.get("refilter") else ""),
              "",
              "| 방법 | 채점 수 | 중앙값 | 하위 5% | 최솟값 | 0.95 미만 | 불가 | 평균 응답 | 95% 응답 | 고른 계획의 총 시간 | 회전 계획이 뽑힌 비율 |",
              "|---|---|---|---|---|---|---|---|---|---|---|"]
@@ -192,7 +195,8 @@ def main(argv: list[str] | None = None) -> int:
     from airis.sim.scenario import load_scenarios
 
     dataset = Path(args.dataset).resolve()
-    df = pd.read_parquet(dataset)
+    df, refilter = plan_data.read_plan_dataset(dataset, refilter=not args.no_refilter)
+    print(f"[plan-refresh] {plan_data.refilter_message(refilter)}")
     try:
         stamp, warns = plan_data.check_plan_dataset(df)
         limits = plan_data.plan_limits_from_dataset(df)
@@ -246,6 +250,8 @@ def main(argv: list[str] | None = None) -> int:
                             ("--n-threads", args.n_threads if args.n_threads > 1 else None)):
             if value:
                 cv_args += [flag, str(value)]
+        if args.no_refilter:
+            cv_args.append("--no-refilter")
         rc = run_e5_plan.main(cv_args)
         timings["cv_s"] = time.perf_counter() - t0
         if rc:
@@ -255,12 +261,14 @@ def main(argv: list[str] | None = None) -> int:
         if args.limit:
             verdict = {**verdict, "passed": False, "reason": f"--limit {args.limit} 빠른 점검 (판정 무효)"}
         info = {"dataset": dataset.name, "rows": len(df), "commit": start_commit, "folds": args.folds,
+                "refilter": plan_data.refilter_message(refilter),
                 "n_phases": limits.n_phases, "energy_weight": meta.get("energy_weight", "기록 없음"),
                 "rotation_pose": args.rotation_pose, "device": device,
                 "out_dir": out_dir.relative_to(ROOT).as_posix() if out_dir.is_relative_to(ROOT) else str(out_dir)}
         (out_dir / "gate.md").write_text(markdown_table(stats, verdict, info), encoding="utf-8")
 
     report = {"commit": start_commit, "dataset": str(dataset), "dataset_stamp": stamp, "warnings": warns,
+              "candidate_refilter": refilter,
               "limits": asdict(limits), "space_dim": space.dim, "gate": asdict(PlanGate()), "verdict": verdict,
               "installed": [], "install_error": None, "model_dir": str(model_dir), "device": device,
               "timings": {k: round(v, 1) for k, v in timings.items()}, "args": vars(args)}
