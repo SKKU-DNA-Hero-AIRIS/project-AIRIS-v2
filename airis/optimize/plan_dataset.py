@@ -160,9 +160,14 @@ def plan_from_raw(encoder, raw):
 def refilter_candidates(raws, scores, encoder, *, min_dist: float, k: int | None = None) -> dict:
     """저장된 후보를 **읽는 쪽에서 다시 거른다** (점수 높은 쪽을 남긴다).
 
-    2026-10-08 이전에 만든 파일은 거리 필터가 정규화 전 값으로 돌아 거울상 중복이 남아 있을 수
-    있다(위 `candidate_columns` 주석). 저장된 벡터는 이미 정규 형태라 **다시 encode 해 같은
-    임계로 거르면** 새 코드와 같은 결과가 된다 — 파일을 다시 만들 필요가 없다.
+    2026-10-08 이전에 만든 파일은 거리를 **탐색 공간 값**으로 재서 중복이 남아 있을 수 있다.
+    `run_cmaes` 의 x 는 [-1, 1] 밖으로도 나가고 `decode` 가 그것을 자르므로, x 끼리는 멀어
+    보여도 잘린 뒤에는 같은 계획인 쌍이 생긴다(위 `candidate_columns` 주석).
+
+    저장된 벡터는 이미 정규 형태라 다시 encode 해 같은 임계로 거르면 새 코드와 같은 결과가
+    된다 — **단, 후보가 `candidate_k` 상한에 닿았던 행은 예외다.** 그런 행은 상한 때문에
+    버려진 후보가 있어, 새로 만들었다면 중복 대신 다른 후보가 들어왔을 수 있다. 중복이
+    사라지는 것은 같고 **개수만 적을 수 있다.**
     """
     order = sorted(range(len(raws)), key=lambda i: -float(scores[i]))
     keep: list[int] = []
@@ -198,7 +203,12 @@ def encoder_for_row(row):
         duration_bounds_s=(float(row["duration_lo_s"]), float(row["duration_hi_s"])),
         min_phase_s=float(row["min_phase_s"]), transition_s=float(row["transition_s"]),
         s_max=float(row["s_max"]), cap_ratio=float(row["cap_ratio"]))
-    return PlanEncoder(load_scenarios()[str(row["scenario"])], dataclasses.replace(limits))
+    # 구역 노즐 수도 행의 도장에서 읽는다 ("한도는 행에서 읽는다"와 같은 이유). 풍량 한도
+    # (Σ s_m ≤ cap_ratio · M)가 이 값에 걸리므로, 배치가 바뀐 파일을 지금 설정으로 읽으면
+    # 다른 계획이 된다. 지금 설정에서는 값이 같아 결과가 바뀌지 않는다.
+    counts = [float(v) for v in str(row["zone_nozzle_counts"]).split(";") if v]
+    return PlanEncoder(load_scenarios()[str(row["scenario"])], dataclasses.replace(limits),
+                       zone_nozzle_counts=counts or None)
 
 
 def refilter_candidate_frame(df, *, min_dist: float = 0.15, k: int | None = None):
@@ -216,7 +226,8 @@ def refilter_candidate_frame(df, *, min_dist: float = 0.15, k: int | None = None
     cache: dict = {}
     raws, scores, counts = [], [], []
     for _, row in df.iterrows():
-        key = (str(row["scenario"]), int(row["n_phases"]), float(row["duration_lo_s"]))
+        key = (str(row["scenario"]), int(row["n_phases"]), float(row["duration_lo_s"]),
+               str(row["zone_nozzle_counts"]))
         enc = cache.get(key) or cache.setdefault(key, encoder_for_row(row))
         got = refilter_candidates(list(row["cand_plan_raw"]), list(row["cand_score"]), enc,
                                   min_dist=min_dist, k=k)
