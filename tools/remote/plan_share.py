@@ -4,12 +4,13 @@
 
     python tools/remote/plan_share.py setup                 # 가상환경 + 실행 폴더 + 점검
     python tools/remote/plan_share.py bench                 # 이 노트북의 예상 속도
-    python tools/remote/plan_share.py run --scenario wheelchair --seed-file <받은 파일>
+    python tools/remote/plan_share.py run --segment W2       # 구간표(docs/remote_plan_board.md)의 구간 하나
     python tools/remote/plan_share.py status                # 진행 확인
     python tools/remote/plan_share.py stop --yes            # 멈춤 (저장된 행은 남는다)
 
 기준 노트북(총괄)에서 쓰는 것:
 
+    python tools/remote/plan_share.py segments <파일 ...>    # 구간별 완료 행 수
     python tools/remote/plan_share.py export-seed --from <데이터셋> --scenario wheelchair --out <파일>
     python tools/remote/plan_share.py merge --out <합친 파일> <파일 1> <파일 2> ...
 
@@ -35,8 +36,18 @@ EXPECT_HEIGHTS = (1.6913157198984052, 1.7125435549418535, 1.6239052983716382)
 #: 기준 노트북과 같은 생성 설정 (총괄 채택 10-06). 바꾸면 합칠 수 없다.
 RUN_ARGS = ["--n-phases", "9", "--energy-weight", "0.1", "--warm-start-sigma0", "0.2",
             "--max-evals", "12000", "--tol-stagnation-gens", "30", "--pose-max-evals", "3000",
-            "--patches-per-m2", "1500", "--candidate-k", "16", "--candidate-min-dist", "0.15",
-            "--flush-every", "5"]
+            "--patches-per-m2", "1500", "--candidate-k", "16", "--candidate-min-dist", "0.15"]
+#: 몇 행마다 저장할지 (끊겼을 때 잃는 양을 줄이려고 기준 노트북의 20 보다 작게 잡았다).
+FLUSH_EVERY = 5
+#: 구간표. 이름 → (사용자 유형, 체형 번호 처음, 끝(포함)). docs/remote_plan_board.md 와 같아야 한다.
+#: 2026-10-09 기준: 선 자세 0~20, 임산부 0~19, 휠체어 0~18 은 이미 끝나 있어 구간에 넣지 않았다.
+SEGMENTS = {
+    "D1": ("default", 21, 99),
+    "P1": ("pregnant", 20, 39), "P2": ("pregnant", 40, 59),
+    "P3": ("pregnant", 60, 79), "P4": ("pregnant", 80, 99),
+    "W1": ("wheelchair", 19, 39), "W2": ("wheelchair", 40, 59),
+    "W3": ("wheelchair", 60, 79), "W4": ("wheelchair", 80, 99),
+}
 SCENARIOS = ("default", "pregnant", "wheelchair")
 SCENARIO_KO = {"default": "선 자세", "pregnant": "임산부", "wheelchair": "휠체어"}
 #: 행 하나의 평가 횟수 (기준 노트북 60행 평균: 계획 11,378 + 단일 자세 3,000).
@@ -94,8 +105,36 @@ def inner(*args: str, timeout: float | None = None) -> dict:
     fail(f"보조 코드가 결과를 내지 않았다 ({' '.join(args)}):\n{got.stdout[-1500:]}\n{got.stderr[-3000:]}")
 
 
-def out_path(scenario: str) -> Path:
-    return WORK / f"plan_dataset_n9_{scenario}.parquet"
+def out_path(label: str) -> Path:
+    return WORK / f"plan_dataset_n9_{label}.parquet"
+
+
+def parse_bodies(text: str) -> tuple[int, int]:
+    try:
+        lo, hi = (int(v) for v in text.split("-"))
+    except ValueError:
+        fail(f"체형 구간은 '40-59' 처럼 적는다: {text!r}")
+    if not 0 <= lo <= hi:
+        fail(f"체형 구간이 이상하다: {text!r}")
+    return lo, hi
+
+
+def resolve_target(args) -> tuple[str, int, int, str]:
+    """(사용자 유형, 체형 처음, 끝, 파일 이름에 쓸 표지)."""
+    if getattr(args, "segment", None):
+        name = args.segment.upper()
+        if name not in SEGMENTS:
+            fail(f"없는 구간: {args.segment} (가능: {', '.join(SEGMENTS)})")
+        if args.scenario or args.bodies:
+            fail("--segment 를 쓰면 --scenario·--bodies 는 주지 않는다.")
+        scenario, lo, hi = SEGMENTS[name]
+        return scenario, lo, hi, name
+    if not args.scenario:
+        fail("--segment 또는 --scenario 중 하나를 준다.")
+    if args.bodies:
+        lo, hi = parse_bodies(args.bodies)
+        return args.scenario, lo, hi, f"{args.scenario}_b{lo}-{hi}"
+    return args.scenario, 0, args.n_bodies - 1, args.scenario
 
 
 # --------------------------------------------------------------------------------------- setup
@@ -150,19 +189,19 @@ def cmd_check(args) -> int:
     tmp = WORK / "_smoke.parquet"
     tmp.unlink(missing_ok=True)
     t0 = time.perf_counter()
-    got = run([venv_python(), "-u", "scripts/run_plan_dataset.py", "--n-bodies", "1", "--scenarios",
-               "default", "--n-phases", "2", "--max-evals", "200", "--pose-max-evals", "100",
-               "--popsize", "10", "--patches-per-m2", "300", "--candidate-k", "4", "--processes", "1",
-               "--out", tmp], cwd=RUN_DIR, env=inner_env(), capture_output=True, text=True,
+    got = run([venv_python(), "-u", HERE / "_inner.py", "run-range", tmp, "default", "1", "1", "1", "1",
+               "--", "--n-phases", "2", "--max-evals", "200", "--pose-max-evals", "100",
+               "--popsize", "10", "--patches-per-m2", "300", "--candidate-k", "4"],
+              cwd=RUN_DIR, env=inner_env(), capture_output=True, text=True,
               encoding="utf-8", errors="replace")
     if got.returncode != 0 or not tmp.exists():
         fail(f"작은 실행이 실패했다:\n{got.stdout[-1500:]}\n{got.stderr[-3000:]}")
     import pandas as pd
 
-    n = len(pd.read_parquet(tmp))
+    small = pd.read_parquet(tmp)
     tmp.unlink(missing_ok=True)
-    if n != 1:
-        fail(f"작은 실행의 행 수가 1 이 아니다: {n}")
+    if len(small) != 1 or int(small["body_idx"].iloc[0]) != 1:
+        fail(f"작은 실행의 결과가 이상하다: 행 {len(small)}, 체형 번호 {list(small['body_idx'])}")
     say(f"  작은 실행 통과 ({time.perf_counter() - t0:.0f}초).")
     say("\n[통과] 이 노트북에서 돌릴 수 있다. 다음: python tools/remote/plan_share.py bench")
     return 0
@@ -227,16 +266,19 @@ def cmd_run(args) -> int:
 
     if not (RUN_DIR / "scripts" / "run_plan_dataset.py").exists():
         fail("실행 폴더가 없다. 먼저: python tools/remote/plan_share.py setup")
+    scenario, lo, hi, label = resolve_target(args)
     state = read_state()
     if alive(state):
-        fail(f"이미 실행 중이다 (pid {state['pid']}, {state['scenario']}). 상태: status / 멈춤: stop --yes")
+        fail(f"이미 실행 중이다 (pid {state['pid']}, {state.get('label', state['scenario'])}). "
+             "상태: status / 멈춤: stop --yes")
 
     WORK.mkdir(parents=True, exist_ok=True)
-    out = out_path(args.scenario)
+    out = out_path(label)
     if args.seed_file:
         seed = pd.read_parquet(args.seed_file)
         check_frame(seed, "받은 파일")
-        seed = seed[seed["scenario"].astype(str) == args.scenario]
+        seed = seed[(seed["scenario"].astype(str) == scenario)
+                    & seed["body_idx"].astype(int).between(lo, hi)]
         if out.exists():
             have = pd.read_parquet(out)
             keys = set(zip(have["body_idx"].astype(int), have["scenario"].astype(str)))
@@ -245,19 +287,19 @@ def cmd_run(args) -> int:
             say(f"받은 파일에서 {len(add)}행을 더했다 (이미 있던 {len(have)}행은 그대로).")
         else:
             merged = seed
-            say(f"받은 파일의 {args.scenario} {len(seed)}행을 건너뛸 목록으로 넣었다.")
+            say(f"받은 파일의 {scenario} 체형 {lo}~{hi} {len(seed)}행을 건너뛸 목록으로 넣었다.")
         merged = merged.sort_values(list(KEY_COLS), kind="mergesort").reset_index(drop=True)
         tmp = out.with_suffix(".parquet.tmp")
         merged.to_parquet(tmp, index=False)
         os.replace(tmp, out)
-    elif not out.exists():
+    elif not out.exists() and not getattr(args, "segment", None):
         say("주의: 받은 파일(--seed-file) 없이 시작한다. 기준 노트북이 이미 만든 행도 다시 계산한다.")
 
-    log, err = WORK / f"run_{args.scenario}.log", WORK / f"run_{args.scenario}.err"
+    log, err = WORK / f"run_{label}.log", WORK / f"run_{label}.err"
     if log.exists():
-        shutil.copyfile(log, WORK / f"run_{args.scenario}_{time.strftime('%m%d_%H%M%S')}.log")
-    cmd = [str(venv_python()), "-u", "scripts/run_plan_dataset.py", "--n-bodies", str(args.n_bodies),
-           "--scenarios", args.scenario, *RUN_ARGS, "--processes", str(args.processes), "--out", str(out)]
+        shutil.copyfile(log, WORK / f"run_{label}_{time.strftime('%m%d_%H%M%S')}.log")
+    cmd = [str(venv_python()), "-u", str(HERE / "_inner.py"), "run-range", str(out), scenario,
+           str(lo), str(hi), str(args.processes), str(FLUSH_EVERY), "--", *RUN_ARGS]
     flags = {}
     if IS_WIN:
         flags["creationflags"] = subprocess.CREATE_NO_WINDOW | subprocess.CREATE_NEW_PROCESS_GROUP
@@ -267,11 +309,13 @@ def cmd_run(args) -> int:
         proc = subprocess.Popen(cmd, cwd=RUN_DIR, env=inner_env(), stdout=fo, stderr=fe,
                                 stdin=subprocess.DEVNULL, **flags)
     state = {"pid": proc.pid, "create_time": psutil.Process(proc.pid).create_time(),
-             "scenario": args.scenario, "out": str(out), "log": str(log), "err": str(err),
-             "processes": args.processes, "n_bodies": args.n_bodies,
+             "scenario": scenario, "label": label, "lo": lo, "hi": hi,
+             "out": str(out), "log": str(log), "err": str(err),
+             "processes": args.processes, "n_bodies": hi - lo + 1,
              "started": time.strftime("%Y-%m-%d %H:%M:%S")}
     STATE.write_text(json.dumps(state, ensure_ascii=False, indent=1), encoding="utf-8")
-    say(f"시작했다 (pid {proc.pid}). 이 창을 닫아도 계속 돈다. 40초 뒤 첫 줄을 확인한다...")
+    say(f"시작했다: {label} — {SCENARIO_KO[scenario]}, 체형 {lo}~{hi}번 (pid {proc.pid}). "
+        "이 창을 닫아도 계속 돈다. 40초 뒤 첫 줄을 확인한다...")
     time.sleep(40)
     if not alive(state):
         fail(f"시작 직후 끝났다. 오류:\n{err.read_text(encoding='utf-8', errors='replace')[-3000:]}\n"
@@ -291,13 +335,17 @@ def cmd_status(args) -> int:
         say("실행 기록이 없다. 시작: python tools/remote/plan_share.py run --scenario <유형>")
         return 0
     p = alive(state)
-    say(f"사용자 유형: {state['scenario']} ({SCENARIO_KO.get(state['scenario'], '')}), 시작 {state['started']}")
+    lo, hi = int(state.get("lo", 0)), int(state.get("hi", state["n_bodies"] - 1))
+    label = state.get("label", state["scenario"])
+    say(f"구간: {label} — {SCENARIO_KO.get(state['scenario'], state['scenario'])}, 체형 {lo}~{hi}번, "
+        f"시작 {state['started']}")
     say(f"실행 상태: {'도는 중 (pid %s)' % state['pid'] if p else '멈춰 있음'}")
     out = Path(state["out"])
     n = 0
     if out.exists():
         df = pd.read_parquet(out)
-        n = int((df["scenario"].astype(str) == state["scenario"]).sum())
+        n = int(((df["scenario"].astype(str) == state["scenario"])
+                 & df["body_idx"].astype(int).between(lo, hi)).sum())
         say(f"저장된 행: {n} / {state['n_bodies']}  (파일 {out}, 수정 {time.strftime('%m-%d %H:%M', time.localtime(out.stat().st_mtime))})")
     else:
         say("저장된 행: 아직 없음 (5행마다 저장한다)")
@@ -323,10 +371,12 @@ def cmd_status(args) -> int:
         if "Traceback" in text or "Error" in text:        # 경고(UserWarning)만 있으면 보이지 않는다
             say("오류 로그 끝:\n" + text[-1500:])
     if not p and n < state["n_bodies"]:
-        say(f"\n이어서 돌리기: python tools/remote/plan_share.py run --scenario {state['scenario']}"
-            f" --processes {state['processes']}")
+        target = (f"--segment {label}" if label in SEGMENTS else
+                  f"--scenario {state['scenario']} --bodies {lo}-{hi}")
+        say(f"\n이어서 돌리기: python tools/remote/plan_share.py run {target} --processes {state['processes']}")
     if n >= state["n_bodies"]:
         say(f"\n끝났다. 이 파일을 총괄에게 보낸다: {out}")
+        say("보낸 뒤 구간표(docs/remote_plan_board.md)에서 다음 구간을 받아 run 을 다시 하면 된다.")
     return 0
 
 
@@ -359,10 +409,35 @@ def cmd_export_seed(args) -> int:
 
     df = pd.read_parquet(args.src)
     check_frame(df, str(args.src))
-    part = df[df["scenario"].astype(str) == args.scenario].reset_index(drop=True)
+    part = df[df["scenario"].astype(str) == args.scenario]
+    if args.bodies:
+        lo, hi = parse_bodies(args.bodies)
+        part = part[part["body_idx"].astype(int).between(lo, hi)]
+    part = part.reset_index(drop=True)
     Path(args.out).parent.mkdir(parents=True, exist_ok=True)
     part.to_parquet(args.out, index=False)
     say(f"{args.scenario} {len(part)}행 → {args.out} (체형 번호 {sorted(part['body_idx'].astype(int))[:5]} ...)")
+    return 0
+
+
+def cmd_segments(args) -> int:
+    """구간표와, 파일을 주면 구간별 완료 행 수."""
+    done: set = set()
+    if args.files:
+        import pandas as pd
+
+        for f in args.files:
+            df = pd.read_parquet(f)
+            check_frame(df, str(f))
+            done |= set(zip(df["scenario"].astype(str), df["body_idx"].astype(int)))
+    say("구간  사용자 유형        체형 번호   행 수" + ("   완료" if args.files else ""))
+    for name, (scenario, lo, hi) in SEGMENTS.items():
+        total = hi - lo + 1
+        line = f"{name:<4}  {scenario:<10} {SCENARIO_KO[scenario]:<4}  {lo:>3}~{hi:<3}    {total:>3}"
+        if args.files:
+            n = sum((scenario, i) in done for i in range(lo, hi + 1))
+            line += f"    {n:>3}" + ("  끝" if n == total else "")
+        say(line)
     return 0
 
 
@@ -422,7 +497,9 @@ def build_parser() -> argparse.ArgumentParser:
     b.add_argument("--n-pose", type=int, default=60)
     b.set_defaults(fn=cmd_bench)
     r = sub.add_parser("run", help="사용자 유형 하나를 맡아 돌린다 (창을 닫아도 계속 돈다)")
-    r.add_argument("--scenario", choices=SCENARIOS, required=True)
+    r.add_argument("--segment", default=None, help="구간표의 구간 이름 (예: W2). docs/remote_plan_board.md")
+    r.add_argument("--scenario", choices=SCENARIOS, default=None, help="구간표에 없는 범위를 직접 줄 때")
+    r.add_argument("--bodies", default=None, help="체형 번호 구간 '40-59' (--scenario 와 함께)")
     r.add_argument("--seed-file", default=None, help="총괄에게 받은 파일 (이미 만든 행을 건너뛴다)")
     r.add_argument("--processes", type=int, default=8)
     r.add_argument("--n-bodies", type=int, default=100)
@@ -434,8 +511,12 @@ def build_parser() -> argparse.ArgumentParser:
     e = sub.add_parser("export-seed", help="[기준 노트북] 한 유형의 완료 행을 떼어 낸다")
     e.add_argument("--from", dest="src", required=True)
     e.add_argument("--scenario", choices=SCENARIOS, required=True)
+    e.add_argument("--bodies", default=None, help="체형 번호 구간 '40-59'")
     e.add_argument("--out", required=True)
     e.set_defaults(fn=cmd_export_seed)
+    g = sub.add_parser("segments", help="구간표를 보여 준다 (파일을 주면 구간별 완료 행 수)")
+    g.add_argument("files", nargs="*")
+    g.set_defaults(fn=cmd_segments)
     m = sub.add_parser("merge", help="[기준 노트북] 여러 파일을 하나로 합친다")
     m.add_argument("--out", required=True)
     m.add_argument("files", nargs="+")

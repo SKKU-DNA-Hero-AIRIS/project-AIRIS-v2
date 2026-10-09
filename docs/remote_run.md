@@ -1,6 +1,6 @@
 # 다른 노트북에서 계획 데이터셋 나눠 돌리기
 
-계획 데이터셋(체형 100개 × 사용자 유형 3개 = 300행)은 한 행에 약 2시간이 걸린다. 행끼리 서로 독립이라 **사용자 유형 하나를 다른 노트북이 맡아** 돌리고, 끝나면 파일을 합친다. 이 문서는 맡는 사람(팀원)과 합치는 사람(총괄)이 할 일을 순서대로 적은 것이다.
+계획 데이터셋(체형 100개 × 사용자 유형 3개 = 300행)은 한 행에 약 2시간이 걸린다. 행끼리 서로 독립이라 **구간(사용자 유형 하나의 체형 20개)을 노트북마다 하나씩 맡아** 돌리고, 끝나면 파일을 합친다. 어떤 구간이 비어 있는지는 구간표 `docs/remote_plan_board.md`에 있다. 이 문서는 맡는 사람(팀원)과 합치는 사람(총괄)이 할 일을 순서대로 적은 것이다.
 
 - GPU는 필요 없다. CPU만 쓴다.
 - 도구는 `tools/remote/plan_share.py` 하나다. 가상환경(venv)을 따로 만들어 쓰므로 노트북에 이미 깔린 Python 패키지를 건드리지 않는다.
@@ -15,7 +15,7 @@
 | git | 저장소를 `git clone`으로 받아야 한다 (zip 내려받기는 안 된다) |
 | CPU·메모리 | 코어 8개 이상, 메모리 16 GB 이상 권장 |
 | 디스크 | 약 3 GB (패키지 포함) |
-| 시간 | 사용자 유형 하나에 하루~이틀. 그동안 노트북이 느려지고, 절전·종료하면 멈춘다 |
+| 시간 | 구간 하나(20행)에 5~6시간(기준 노트북 속도). 그동안 노트북이 느려지고, 절전·종료하면 멈춘다 |
 
 Python 버전 확인:
 
@@ -86,15 +86,18 @@ python tools/remote/plan_share.py bench --processes 4
 
 ### 4.2 시작
 
-총괄에게 **맡을 사용자 유형**과 **이미 만든 행이 든 파일**(`plan_seed_<유형>.parquet`)을 받는다. 이 파일이 있어야 이미 끝난 행을 다시 계산하지 않는다.
+`git pull`로 구간표(`docs/remote_plan_board.md`)를 최신으로 받고, 담당이 비어 있는 "대기" 구간 하나를 총괄에게 말한 뒤 시작한다.
 
 ```bash
-python tools/remote/plan_share.py run --scenario wheelchair --seed-file plan_seed_wheelchair.parquet
+python tools/remote/plan_share.py run --segment P4
 ```
 
-- `--scenario`: `default`(선 자세), `pregnant`(임산부), `wheelchair`(휠체어) 중 맡은 것 하나.
+- `--segment`: 구간표의 구간 이름(P1~P4 임산부, W1~W4 휠체어). 구간 목록은 `python tools/remote/plan_share.py segments`로도 볼 수 있다.
 - `--processes`: 기본 8. 3절에서 더 빨랐던 값을 쓴다.
 - 시작하면 40초 뒤 첫 줄(`작업 ○개 (건너뜀 ○)`)을 보여 준다. **명령 창을 닫아도 계속 돈다.**
+- 한 노트북에서는 한 번에 구간 하나만 돈다.
+- 다른 사람이 하다 만 구간을 이어받을 때는 받은 파일을 함께 준다: `run --segment P4 --seed-file <받은 파일>`.
+- 구간표에 없는 범위를 총괄이 따로 정해 줄 때: `run --scenario pregnant --bodies 40-49`.
 
 ### 4.3 진행 확인
 
@@ -113,7 +116,7 @@ python tools/remote/plan_share.py stop --yes
 멈추면 저장 전이던 계산(최대 몇 시간 분량)은 사라지고, 저장된 행은 남는다. 노트북이 꺼졌거나 멈춘 뒤에는 같은 명령으로 이어 돌린다. `--seed-file`은 다시 줄 필요가 없다.
 
 ```bash
-python tools/remote/plan_share.py run --scenario wheelchair
+python tools/remote/plan_share.py run --segment P4
 ```
 
 ### 4.5 끝나면
@@ -121,29 +124,35 @@ python tools/remote/plan_share.py run --scenario wheelchair
 `status`가 "끝났다"를 보여 주면 그 줄에 적힌 파일 하나를 총괄에게 보낸다.
 
 ```text
-project-AIRIS-v2/outputs/remote_share/plan_dataset_n9_<유형>.parquet
+project-AIRIS-v2/outputs/remote_share/plan_dataset_n9_<구간>.parquet
 ```
 
-다 끝나지 않았어도 중간에 보낼 수 있다(저장된 행까지만 들어 있다). 보낸 뒤 지워도 되는 것: `project-AIRIS-v2` 폴더와 옆의 `project-AIRIS-v2-run-4f9f310` 폴더 전체.
+보낸 뒤 구간표에서 다음 "대기" 구간을 받아 4.2부터 다시 한다. 다 끝나지 않았어도 중간에 보낼 수 있다(저장된 행까지만 들어 있다). 모든 일이 끝난 뒤 지워도 되는 것: `project-AIRIS-v2` 폴더와 옆의 `project-AIRIS-v2-run-4f9f310` 폴더 전체.
 
 ## 5. 총괄이 할 일 (기준 노트북)
 
-### 5.1 넘겨줄 파일 만들기
+### 5.1 구간표 관리
 
-기준 노트북의 데이터셋에서 맡길 유형의 완료 행만 떼어 낸다. 실행 중인 파일을 읽기만 하므로 실행에 영향이 없다.
+구간을 누가 맡았는지, 어디까지 받았는지는 `docs/remote_plan_board.md`에 적고 구간이 끝날 때마다 고친다. 받은 파일의 구간별 완료 행 수는 이렇게 본다.
 
 ```bash
-python tools/remote/plan_share.py export-seed --from ../airis-v2-e4bound/data/datasets/plan_dataset_n9.parquet --scenario wheelchair --out outputs/remote_share/plan_seed_wheelchair.parquet
+python tools/remote/plan_share.py segments ../airis-v2-e4bound/data/datasets/plan_dataset_n9.parquet outputs/remote_share/plan_dataset_n9_P4.parquet
 ```
 
-### 5.2 기준 노트북은 그 유형을 빼고 돌리기
+하다 만 구간을 다른 사람에게 넘길 때는 받은 파일을 그대로 `--seed-file`로 쓰게 한다. 기준 노트북의 데이터셋에서 특정 범위만 떼어 줄 때:
 
-팀원 노트북이 `status`에서 정상 진행을 보이면, 기준 노트북의 실행을 멈추고 `--scenarios default pregnant`를 붙여 다시 띄운다(저장된 행은 건너뛴다). 그러지 않으면 두 노트북이 같은 행을 계산한다. 겹친 행은 합칠 때 하나만 남으므로 결과가 틀리지는 않고 시간만 버린다.
+```bash
+python tools/remote/plan_share.py export-seed --from ../airis-v2-e4bound/data/datasets/plan_dataset_n9.parquet --scenario wheelchair --bodies 19-39 --out outputs/remote_share/plan_seed_W1.parquet
+```
+
+### 5.2 기준 노트북의 범위
+
+기준 노트북은 체형 번호 순서대로 세 유형을 함께 채운다. 다른 노트북은 뒤쪽 구간부터 맡으므로 한동안 겹치지 않는다. 다른 노트북들이 임산부·휠체어의 남은 구간을 모두 맡으면, 기준 노트북의 실행을 저장 직후에 멈추고 `--scenarios default`를 붙여 다시 띄운다(저장된 행은 건너뛴다). 겹친 행은 합칠 때 하나만 남으므로 결과가 틀리지는 않고 시간만 버린다.
 
 ### 5.3 합치기
 
 ```bash
-python tools/remote/plan_share.py merge --out outputs/remote_share/plan_dataset_n9_merged.parquet ../airis-v2-e4bound/data/datasets/plan_dataset_n9.parquet plan_dataset_n9_wheelchair.parquet
+python tools/remote/plan_share.py merge --out outputs/remote_share/plan_dataset_n9_merged.parquet ../airis-v2-e4bound/data/datasets/plan_dataset_n9.parquet outputs/remote_share/plan_dataset_n9_P4.parquet outputs/remote_share/plan_dataset_n9_W4.parquet
 ```
 
 - 설정 도장 열(물리·분사구 식별값, 단계 수, 평가 예산 등 21개)이 파일마다 같은지 검사하고, 다르면 합치지 않는다.
