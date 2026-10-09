@@ -155,6 +155,68 @@ def test_stamp_check_and_meta(monkeypatch):
     assert len(warns4) == 1 and "energy_weight" in warns4[0] and "duration_lo_s" in warns4[0]
 
 
+# ---------- 후보 재필터 (C 의 PR #176) ----------
+
+def with_candidates(df):
+    """행마다 후보 3개: 최적 계획, 그 복사본(중복), 같은 유형의 다른 체형 계획(멀다). 점수는 그 순서로 낮아진다."""
+    keys = [f"plan_{k}" for k in flow.PlanSpace.plan_keys(N)]
+    raws, scores = [], []
+    for i, row in df.iterrows():
+        same = df[(df["scenario"] == row["scenario"]) & (df["body_idx"] % 2 != row["body_idx"] % 2)]
+        own, far = row[keys].to_numpy(dtype=float), same.iloc[0][keys].to_numpy(dtype=float)
+        raws.append([list(own), list(own), list(far)])
+        scores.append([row["score"], row["score"] - 0.001, row["score"] - 0.002])
+    return df.assign(cand_plan_raw=raws, cand_score=scores, n_candidates=3)
+
+
+def test_candidates_are_refiltered_on_read(tmp_path):
+    df = with_candidates(plan_df(N, n_bodies=6))
+    out, info = plan_data.refilter_plan_candidates(df)
+    assert info["applied"] and info["min_dist"] == pytest.approx(0.1), "임계는 데이터셋 도장(candidate_min_dist)"
+    assert (info["before"], info["after"], info["rows_changed"]) == (36, 24, 12)
+    assert (out["n_candidates"] == 2).all() and (df["n_candidates"] == 3).all(), "원본은 그대로"
+    for (_, a), (_, b) in zip(df.iterrows(), out.iterrows()):
+        assert b["cand_score"][0] == pytest.approx(a["score"]), "최적 계획은 항상 남는다"
+        assert len(b["cand_plan_raw"]) == 2 and len(b["cand_plan_raw"][0]) == 8 * N + 5
+    again, info2 = plan_data.refilter_plan_candidates(out)
+    assert info2["rows_changed"] == 0 and info2["after"] == 24, "이미 거른 파일에는 아무 일도 하지 않는다"
+
+    # flow 학습 표본: 중복이 빠진 만큼 줄고, 행마다 가중 합은 1 그대로
+    scs = load_scenarios()
+    space = plan_data.plan_space_from_dataset(out, [scs[n] for n in ("default", "wheelchair")])
+    arr = flow.training_arrays(out, space, scs)
+    assert arr["x"].shape == (24, 8 * N + 5)
+    assert np.allclose(np.bincount(arr["group"], weights=arr["weight"]), 1.0)
+
+    # 후보 열이나 임계 도장이 없으면 거르지 않고 이유를 남긴다
+    plain, info3 = plan_data.refilter_plan_candidates(plan_df(N, n_bodies=2))
+    assert not info3["applied"] and "cand_plan_raw" in info3["reason"]
+    _, info4 = plan_data.refilter_plan_candidates(df.drop(columns=["candidate_min_dist"]))
+    assert not info4["applied"] and "candidate_min_dist" in info4["reason"]
+
+    path = tmp_path / "cand.parquet"
+    df.to_parquet(path)
+    read, info5 = plan_data.read_plan_dataset(path)
+    assert (read["n_candidates"] == 2).all() and info5["after"] == 24, "parquet 을 거쳐도 같다"
+    raw, info6 = plan_data.read_plan_dataset(path, refilter=False)
+    assert (raw["n_candidates"] == 3).all() and not info6["applied"]
+    assert "36 → 24" in plan_data.refilter_message(info5) and "안 함" in plan_data.refilter_message(info6)
+
+
+def test_refresh_records_candidate_refilter(tmp_path, scorer):
+    path = tmp_path / "cand.parquet"
+    with_candidates(plan_df(N, n_bodies=6)).to_parquet(path)
+    for flags, applied, rows in (((), True, 24), (("--no-refilter",), False, 36)):
+        out_dir = tmp_path / ("run" + "".join(flags))
+        assert tpl.main(["--dataset", str(path), "--out-dir", str(out_dir), "--model-dir", str(tmp_path / "m"),
+                         "--steps", "30", "--hidden", "16", "--layers", "1", "--skip-cv", "--no-install",
+                         *flags]) == 0
+        report = json.loads((out_dir / "gate.json").read_text(encoding="utf-8"))
+        assert report["candidate_refilter"]["applied"] is applied
+        assert pred.load_model(out_dir / tpl.FLOW_FILE, kind="plan").meta["train_rows"] == 12
+        assert (report["candidate_refilter"]["after"] or 36) == rows
+
+
 # ---------- 체형 K-fold 평가 ----------
 
 def base_model(dataset_path, out_dir):

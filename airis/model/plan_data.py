@@ -6,6 +6,7 @@ C 의 설계 결정값이라 코드에 고정하지 않고 데이터셋에서 �
     plan_limits_from_dataset(df)    데이터셋을 만든 한도 (C 의 PlanLimits)
     plan_space_from_dataset(df, …)  그 한도로 만든 출력 공간 (flow.PlanSpace)
     check_plan_dataset(df)          도장 확인: 설정 도장이 한 값인지, 지금 설정과 같은지
+    read_plan_dataset(path)         파일을 읽고 후보를 다시 거른다 (학습·평가는 이 함수로 읽는다)
     plan_meta_from_dataset(df)      산출물 meta 에 옮길 도장·한도
 """
 from __future__ import annotations
@@ -39,6 +40,59 @@ def _single(df, col: str):
         raise ValueError(f"계획 데이터셋의 {col} 가 여러 값이다 {values}. 한 조건(물리·단계 수·에너지 가중·한도)의 "
                          "행만 쓴다.")
     return filled.iloc[0]
+
+
+#: 후보를 다시 거르는 데 필요한 열 (C 의 plan_dataset.refilter_candidate_frame 이 행에서 읽는다).
+REFILTER_COLS = ("cand_plan_raw", "cand_score", "candidate_min_dist", "n_phases") + PLAN_LIMIT_COLS
+
+
+def refilter_plan_candidates(df):
+    """(후보를 다시 거른 DataFrame, 기록). 거를 수 없으면 df 를 그대로 돌려주고 기록에 이유를 적는다.
+
+    2026-10-08 이전에 만든 계획 데이터셋은 후보 거리 필터가 탐색 공간 값으로 돌아, 저장된 후보에 거의 같은 계획이
+    섞여 있다 (첫 60행 기준 후보의 약 1/3. C 의 PR #176). C 의 `refilter_candidate_frame` 으로 읽은 직후 한 번
+    거르면 새 코드로 만든 파일과 같아진다. 새 파일에는 아무 일도 하지 않는다 (같은 임계로 다시 거르는 것이라).
+
+    임계는 데이터셋의 `candidate_min_dist` 도장이다 (값을 코드에 고정하지 않는다). kNN 표는 후보 열을 쓰지 않아
+    영향이 없고, flow 학습만 달라진다 (행 안에서 중복된 계획이 두 번 세어지지 않는다).
+    기록: {"applied", "reason", "min_dist", "before", "after", "rows_changed"} (before·after 는 전체 후보 수).
+    """
+    info = {"applied": False, "reason": "", "min_dist": None, "before": None, "after": None, "rows_changed": 0}
+    missing = [c for c in REFILTER_COLS if c not in df.columns]
+    if missing:
+        info["reason"] = f"열 없음: {missing}"
+        return df, info
+    if not len(df):
+        info["reason"] = "행 없음"
+        return df, info
+    from airis.optimize.plan_dataset import refilter_candidate_frame
+
+    min_dist = float(_single(df, "candidate_min_dist"))
+    before = df["cand_score"].map(len)
+    out = refilter_candidate_frame(df, min_dist=min_dist)
+    after = out["cand_score"].map(len)
+    info.update(applied=True, min_dist=min_dist, before=int(before.sum()), after=int(after.sum()),
+                rows_changed=int((before.to_numpy() != after.to_numpy()).sum()))
+    return out, info
+
+
+def read_plan_dataset(path, *, refilter: bool = True):
+    """(계획 데이터셋 DataFrame, 후보 재필터 기록). 학습·평가 스크립트는 이 함수로 읽는다."""
+    import pandas as pd
+
+    df = pd.read_parquet(path)
+    if not refilter:
+        return df, {"applied": False, "reason": "끔 (--no-refilter)", "min_dist": None, "before": None,
+                    "after": None, "rows_changed": 0}
+    return refilter_plan_candidates(df)
+
+
+def refilter_message(info: dict) -> str:
+    """재필터 기록 한 줄."""
+    if not info.get("applied"):
+        return f"후보 재필터 안 함 ({info.get('reason')})"
+    return (f"후보 재필터: {info['before']} → {info['after']}개 (임계 {info['min_dist']:g}, "
+            f"바뀐 행 {info['rows_changed']})")
 
 
 def plan_limits_from_dataset(df):
