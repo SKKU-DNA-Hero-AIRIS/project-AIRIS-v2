@@ -61,6 +61,8 @@ CONSISTENCY_COLS = ("nozzle_layout_hash", "physics_hash", "body_seed", "max_eval
                     "warm_start_sigma0", "pose_max_evals")
 KEY_COLS = ("body_idx", "scenario")
 
+#: 기본 프로세스 수: 논리 코어의 3/4 (기준 노트북 16코어에서 12가 가장 빨랐고 16은 같았다).
+DEFAULT_PROCESSES = max(2, (os.cpu_count() or 4) * 3 // 4)
 ROOT = Path(__file__).resolve().parents[2]
 HERE = Path(__file__).resolve().parent
 VENV = ROOT / ".venv-remote"
@@ -92,6 +94,11 @@ def inner_env() -> dict:
     env["PYTHONPATH"] = str(RUN_DIR)
     env["PYTHONUTF8"] = "1"
     env["PYTHONIOENCODING"] = "utf-8"
+    # 수학 라이브러리(OpenBLAS)가 프로세스마다 코어 수만큼 스레드를 띄워 서로 다툰다. 작업 프로세스를
+    # 여러 개 쓰므로 프로세스당 1스레드가 맞다. 기준 노트북 실측(10-09, 16논리코어): 기본 8프로세스
+    # 3.7행/시간 → 스레드 1 + 12프로세스 4.4행/시간 (+19%). 결과 정확도는 바뀌지 않는다.
+    for k in ("OPENBLAS_NUM_THREADS", "OMP_NUM_THREADS", "MKL_NUM_THREADS"):
+        env[k] = "1"
     return env
 
 
@@ -221,8 +228,9 @@ def cmd_bench(args) -> int:
     say(f"  예상: 행 하나 약 {row_min:.0f}분, 시간당 약 {per_hour:.1f}행 (프로세스 {args.processes}개)")
     say(f"  100행(사용자 유형 하나 전체)이면 약 {100 / per_hour:.0f}시간")
     say("  어림값이다 (실제와 수십 % 다를 수 있다). 다른 프로그램을 닫고 재야 한다.")
-    say("  참고: 기준 노트북 실측은 행 하나 122분, 시간당 3.9행 (프로세스 8개).")
-    say("  프로세스 수를 바꿔 다시 재 볼 수 있다: bench --processes 4  (많다고 빨라지지 않는다)")
+    say("  참고: 기준 노트북 실측은 행 하나 약 125분, 시간당 4.4행 (16논리코어, 프로세스 12개).")
+    say(f"  프로세스 수를 바꿔 다시 재 볼 수 있다: bench --processes {max(2, args.processes // 2)}"
+        "  (논리 코어의 3/4 정도가 보통 가장 빠르다)")
     return 0
 
 
@@ -492,7 +500,7 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("check", help="설정이 기준 노트북과 같은지, 작은 실행이 되는지 본다").set_defaults(fn=cmd_check)
     b = sub.add_parser("bench", help="이 노트북의 예상 속도를 잰다")
     b.add_argument("--scenario", choices=SCENARIOS, default="wheelchair")
-    b.add_argument("--processes", type=int, default=8)
+    b.add_argument("--processes", type=int, default=DEFAULT_PROCESSES)
     b.add_argument("--n-plan", type=int, default=30)
     b.add_argument("--n-pose", type=int, default=60)
     b.set_defaults(fn=cmd_bench)
@@ -501,7 +509,7 @@ def build_parser() -> argparse.ArgumentParser:
     r.add_argument("--scenario", choices=SCENARIOS, default=None, help="구간표에 없는 범위를 직접 줄 때")
     r.add_argument("--bodies", default=None, help="체형 번호 구간 '40-59' (--scenario 와 함께)")
     r.add_argument("--seed-file", default=None, help="총괄에게 받은 파일 (이미 만든 행을 건너뛴다)")
-    r.add_argument("--processes", type=int, default=8)
+    r.add_argument("--processes", type=int, default=DEFAULT_PROCESSES)
     r.add_argument("--n-bodies", type=int, default=100)
     r.set_defaults(fn=cmd_run)
     sub.add_parser("status", help="진행 확인").set_defaults(fn=cmd_status)
