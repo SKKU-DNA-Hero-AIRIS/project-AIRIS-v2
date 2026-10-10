@@ -203,10 +203,32 @@ def test_candidates_are_refiltered_on_read(tmp_path):
     assert "36 → 24" in plan_data.refilter_message(info5) and "안 함" in plan_data.refilter_message(info6)
 
 
+def test_refilter_threshold_can_be_overridden(tmp_path):
+    """임계를 주면 파일 도장 대신 그 값으로 거른다 (총괄 2026-10-10: 0.15 와 0.12 비교). 기본은 도장 그대로."""
+    df = with_candidates(plan_df(N, n_bodies=6))
+    base, info = plan_data.refilter_plan_candidates(df)
+    assert (info["min_dist"], info["stamp_min_dist"], info["after"]) == (pytest.approx(0.1), pytest.approx(0.1), 24)
+    assert "파일 도장" not in plan_data.refilter_message(info)
+    wide, info_w = plan_data.refilter_plan_candidates(df, 5.0)          # 아주 넓게: 행마다 최적 계획만 남는다
+    assert (wide["n_candidates"] == 1).all() and info_w["after"] == 12
+    assert (info_w["min_dist"], info_w["stamp_min_dist"]) == (5.0, pytest.approx(0.1))
+    assert "임계 5, 파일 도장 0.1" in plan_data.refilter_message(info_w)
+    tiny, info_t = plan_data.refilter_plan_candidates(df, 1e-9)         # 아주 좁게: 완전히 같은 복사본만 빠진다
+    assert info_t["after"] == 24 and (tiny["n_candidates"] == 2).all()
+    with pytest.raises(ValueError, match="0 보다 커야"):
+        plan_data.refilter_plan_candidates(df, 0.0)
+    path = tmp_path / "cand.parquet"
+    df.to_parquet(path)
+    assert plan_data.read_plan_dataset(path, min_dist=5.0)[1]["after"] == 12
+    with pytest.raises(ValueError, match="끄면서"):
+        plan_data.read_plan_dataset(path, refilter=False, min_dist=5.0)
+
+
 def test_refresh_records_candidate_refilter(tmp_path, scorer):
     path = tmp_path / "cand.parquet"
     with_candidates(plan_df(N, n_bodies=6)).to_parquet(path)
-    for flags, applied, rows in (((), True, 24), (("--no-refilter",), False, 36)):
+    for flags, applied, rows in (((), True, 24), (("--no-refilter",), False, 36),
+                                 (("--refilter-min-dist", "5"), True, 12)):
         out_dir = tmp_path / ("run" + "".join(flags))
         assert tpl.main(["--dataset", str(path), "--out-dir", str(out_dir), "--model-dir", str(tmp_path / "m"),
                          "--steps", "30", "--hidden", "16", "--layers", "1", "--skip-cv", "--no-install",
@@ -215,6 +237,13 @@ def test_refresh_records_candidate_refilter(tmp_path, scorer):
         assert report["candidate_refilter"]["applied"] is applied
         assert pred.load_model(out_dir / tpl.FLOW_FILE, kind="plan").meta["train_rows"] == 12
         assert (report["candidate_refilter"]["after"] or 36) == rows
+        used = report["candidate_refilter"]["min_dist"]
+        assert used == {24: pytest.approx(0.1), 36: None, 12: 5.0}[rows], "쓴 임계를 기록한다"
+        assert pred.load_model(out_dir / tpl.FLOW_FILE, kind="plan").meta["candidate_refilter_min_dist"] == used
+    assert tpl.main(["--dataset", str(path), "--out-dir", str(tmp_path / "bad"), "--skip-cv", "--no-install",
+                     "--no-refilter", "--refilter-min-dist", "0.12"]) == 2
+    assert run_e5_plan.main(["--model", str(out_dir / tpl.FLOW_FILE), "--dataset", str(path), "--no-refilter",
+                             "--refilter-min-dist", "0.12"]) == 2
 
 
 # ---------- 체형 K-fold 평가 ----------

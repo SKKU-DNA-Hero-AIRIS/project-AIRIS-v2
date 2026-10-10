@@ -74,6 +74,8 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--pose-model", default=None)
     ap.add_argument("--pose-knn", default=None)
     ap.add_argument("--limit", type=int, default=None, help="fold 마다 평가 행 상한 (빠른 점검용, 판정 무효)")
+    ap.add_argument("--refilter-min-dist", type=float, default=None,
+                    help="후보 재필터 임계 (기본: 파일의 candidate_min_dist 도장). 옛 파일은 낮추면 후보가 더 남는다")
     ap.add_argument("--no-refilter", action="store_true",
                     help="읽은 직후의 후보 재필터(plan_data.read_plan_dataset)를 끈다")
     ap.add_argument("--skip-cv", action="store_true", help="5-fold 와 판정을 건너뛴다 (--install 또는 --no-install 필요)")
@@ -195,7 +197,12 @@ def main(argv: list[str] | None = None) -> int:
     from airis.sim.scenario import load_scenarios
 
     dataset = Path(args.dataset).resolve()
-    df, refilter = plan_data.read_plan_dataset(dataset, refilter=not args.no_refilter)
+    try:
+        df, refilter = plan_data.read_plan_dataset(dataset, refilter=not args.no_refilter,
+                                                   min_dist=args.refilter_min_dist)
+    except ValueError as exc:
+        print(exc, file=sys.stderr)
+        return 2
     print(f"[plan-refresh] {plan_data.refilter_message(refilter)}")
     try:
         stamp, warns = plan_data.check_plan_dataset(df)
@@ -232,6 +239,8 @@ def main(argv: list[str] | None = None) -> int:
                                   "trained_at": time.strftime("%Y-%m-%d %H:%M:%S")})
     timings["train_s"] = time.perf_counter() - t0
     model.meta["train_rows"] = int(len(df))
+    # 어느 재필터 임계로 학습한 flow 인지 (두 벌을 비교해 하나를 설치할 때 구분한다). 재필터를 안 했으면 None.
+    model.meta["candidate_refilter_min_dist"] = refilter.get("min_dist")
     model.save(out_dir / FLOW_FILE)
     device = model.meta.get("device")
 
@@ -252,6 +261,8 @@ def main(argv: list[str] | None = None) -> int:
                 cv_args += [flag, str(value)]
         if args.no_refilter:
             cv_args.append("--no-refilter")
+        if args.refilter_min_dist is not None:
+            cv_args += ["--refilter-min-dist", str(args.refilter_min_dist)]
         rc = run_e5_plan.main(cv_args)
         timings["cv_s"] = time.perf_counter() - t0
         if rc:
