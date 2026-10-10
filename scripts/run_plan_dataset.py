@@ -16,6 +16,10 @@
 
 중단되면 같은 명령을 다시 돌린다 — 끝난 행은 건너뛴다. 긴 실행은 셸과 분리해 띄운다
 (PowerShell `Start-Process -WindowStyle Hidden -RedirectStandardOutput`).
+
+**BLAS 스레드를 1 로 묶고 띄운다**: `OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 MKL_NUM_THREADS=1`.
+없으면 작업 프로세스마다 OpenBLAS 가 코어 수만큼 스레드를 띄워 서로 다툰다(실측: 12프로세스가
+8프로세스보다 느렸다). 묶으면 12프로세스가 가장 빠르다. 결과 값은 바뀌지 않는다.
 """
 from __future__ import annotations
 
@@ -56,8 +60,12 @@ def build_parser() -> argparse.ArgumentParser:
                     help="encode 공간 거리 ÷√dim 기준. 자세(7차원 0.1)와 다르다")
     ap.add_argument("--no-baselines", action="store_true",
                     help="score_p1_10 · score_p1opt_10 · pose_* 를 넣지 않는다 (행당 계획 평가 2회 절약)")
-    ap.add_argument("--processes", type=int, default=8,
-                    help="8 이 가장 빨랐다 (12 는 2.5배 느림, 메모리 대역폭 경합)")
+    ap.add_argument("--processes", type=int, default=12,
+                    help="BLAS 스레드를 1 로 묶고 띄우면 12 가 가장 빠르다 "
+                         "(단독 측정: 8프로세스 3.85행/시 → 12 4.36 → 16 4.38). "
+                         "환경 변수 OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 "
+                         "을 **반드시** 함께 준다 — 없으면 프로세스마다 OpenBLAS 가 16스레드를 "
+                         "띄워 서로 다투고 8프로세스(3.66행/시)보다도 느려진다")
     ap.add_argument("--flush-every", type=int, default=20, help="몇 행마다 저장할지 (중단 대비)")
     ap.add_argument("--out", default=str(ROOT / "data" / "datasets" / "plan_dataset.parquet"))
     return ap

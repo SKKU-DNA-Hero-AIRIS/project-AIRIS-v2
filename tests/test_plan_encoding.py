@@ -827,3 +827,28 @@ def test_refilter_candidate_frame(tmp_path):
     # 임계 0 이면 그대로다.
     same = refilter_candidate_frame(df, min_dist=0.0)
     assert same["n_candidates"].tolist() == before
+
+
+def test_encoder_for_row_reads_zone_counts_from_stamp():
+    """행의 구역 노즐 수 도장을 인코더에 넘긴다 — 풍량 한도가 그 값에 걸린다."""
+    import numpy as np
+
+    from airis.optimize.plan_dataset import encoder_for_row
+
+    row = {"scenario": "default", "n_phases": 3, "duration_lo_s": 6.0, "duration_hi_s": 20.0,
+           "min_phase_s": 2.0, "transition_s": 1.5, "s_max": 1.0, "cap_ratio": 0.5,
+           "zone_nozzle_counts": "9;1;1;1;1"}
+    odd = encoder_for_row(row)
+    normal = encoder_for_row({**row, "zone_nozzle_counts": "2;2;2;2;4"})
+
+    z = np.array([1.0, 1.0, 1.0, 1.0, 0.2])
+    a, b = odd.clip_zone_strengths(z), normal.clip_zone_strengths(z)
+    assert not np.allclose(a, b), (a, b)          # 배치가 다르면 한도도 다르다
+    assert a[0] < b[0], "노즐이 몰린 구역이 더 깎인다"
+
+    # 설정 파일 기본 배치와 같은 도장이면 기본값을 쓴 것과 같다.
+    from airis.optimize.plan_encoding import PlanEncoder, PlanLimits
+    same = PlanEncoder(normal.scenario if hasattr(normal, "scenario") else
+                       __import__("airis.sim.scenario", fromlist=["x"]).load_scenarios()["default"],
+                       PlanLimits(n_phases=3, duration_bounds_s=(6.0, 20.0), cap_ratio=0.5))
+    assert np.allclose(normal.clip_zone_strengths(z), same.clip_zone_strengths(z))
