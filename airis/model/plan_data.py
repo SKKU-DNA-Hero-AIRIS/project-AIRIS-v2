@@ -46,18 +46,26 @@ def _single(df, col: str):
 REFILTER_COLS = ("cand_plan_raw", "cand_score", "candidate_min_dist", "n_phases") + PLAN_LIMIT_COLS
 
 
-def refilter_plan_candidates(df):
+def refilter_plan_candidates(df, min_dist: float | None = None):
     """(후보를 다시 거른 DataFrame, 기록). 거를 수 없으면 df 를 그대로 돌려주고 기록에 이유를 적는다.
 
     2026-10-08 이전에 만든 계획 데이터셋은 후보 거리 필터가 탐색 공간 값으로 돌아, 저장된 후보에 거의 같은 계획이
     섞여 있다 (첫 60행 기준 후보의 약 1/3. C 의 PR #176). C 의 `refilter_candidate_frame` 으로 읽은 직후 한 번
-    거르면 새 코드로 만든 파일과 같아진다. 새 파일에는 아무 일도 하지 않는다 (같은 임계로 다시 거르는 것이라).
+    거르면 중복이 없어진다. 다만 후보가 `candidate_k` 에 닿은 행은 새 코드로 다시 만든 결과와 후보 구성이 다를 수
+    있다 (interfaces.md). 새 코드로 만든 파일에는 아무 일도 하지 않는다 (같은 임계로 다시 거르는 것이라).
 
-    임계는 데이터셋의 `candidate_min_dist` 도장이다 (값을 코드에 고정하지 않는다). kNN 표는 후보 열을 쓰지 않아
-    영향이 없고, flow 학습만 달라진다 (행 안에서 중복된 계획이 두 번 세어지지 않는다).
-    기록: {"applied", "reason", "min_dist", "before", "after", "rows_changed"} (before·after 는 전체 후보 수).
+    임계는 주지 않으면 데이터셋의 `candidate_min_dist` 도장이다 (값을 코드에 고정하지 않는다). min_dist 를 주면 그
+    값으로 거른다: 옛 파일의 저장 후보는 생성 때 잘못된 거리로 걸러진 것이라, 도장보다 낮은 임계를 주면 다시 만들지
+    않고도 후보가 더 남는다 (총괄 2026-10-10: 0.15 와 0.12 를 비교). 새 코드로 만든 파일은 이미 도장 임계로 걸러져
+    있어 더 낮은 임계를 줘도 달라지지 않는다.
+    kNN 표는 후보 열을 쓰지 않아 영향이 없고, flow 학습만 달라진다 (행 안에서 중복된 계획이 두 번 세어지지 않는다).
+    기록: {"applied", "reason", "min_dist"(쓴 임계), "stamp_min_dist"(파일 도장), "before", "after", "rows_changed"}
+    (before·after 는 전체 후보 수).
     """
-    info = {"applied": False, "reason": "", "min_dist": None, "before": None, "after": None, "rows_changed": 0}
+    info = {"applied": False, "reason": "", "min_dist": None, "stamp_min_dist": None, "before": None, "after": None,
+            "rows_changed": 0}
+    if min_dist is not None and not float(min_dist) > 0:
+        raise ValueError(f"재필터 임계는 0 보다 커야 한다: {min_dist}")
     missing = [c for c in REFILTER_COLS if c not in df.columns]
     if missing:
         info["reason"] = f"열 없음: {missing}"
@@ -67,31 +75,40 @@ def refilter_plan_candidates(df):
         return df, info
     from airis.optimize.plan_dataset import refilter_candidate_frame
 
-    min_dist = float(_single(df, "candidate_min_dist"))
+    stamp = float(_single(df, "candidate_min_dist"))
+    min_dist = stamp if min_dist is None else float(min_dist)
     before = df["cand_score"].map(len)
     out = refilter_candidate_frame(df, min_dist=min_dist)
     after = out["cand_score"].map(len)
-    info.update(applied=True, min_dist=min_dist, before=int(before.sum()), after=int(after.sum()),
+    info.update(applied=True, min_dist=min_dist, stamp_min_dist=stamp, before=int(before.sum()),
+                after=int(after.sum()),
                 rows_changed=int((before.to_numpy() != after.to_numpy()).sum()))
     return out, info
 
 
-def read_plan_dataset(path, *, refilter: bool = True):
-    """(계획 데이터셋 DataFrame, 후보 재필터 기록). 학습·평가 스크립트는 이 함수로 읽는다."""
+def read_plan_dataset(path, *, refilter: bool = True, min_dist: float | None = None):
+    """(계획 데이터셋 DataFrame, 후보 재필터 기록). 학습·평가 스크립트는 이 함수로 읽는다.
+
+    min_dist: 재필터 임계 (기본 None = 파일의 candidate_min_dist 도장). refilter_plan_candidates 참고.
+    """
     import pandas as pd
 
     df = pd.read_parquet(path)
     if not refilter:
-        return df, {"applied": False, "reason": "끔 (--no-refilter)", "min_dist": None, "before": None,
-                    "after": None, "rows_changed": 0}
-    return refilter_plan_candidates(df)
+        if min_dist is not None:
+            raise ValueError("재필터를 끄면서 임계(min_dist)를 줄 수는 없다")
+        return df, {"applied": False, "reason": "끔 (--no-refilter)", "min_dist": None, "stamp_min_dist": None,
+                    "before": None, "after": None, "rows_changed": 0}
+    return refilter_plan_candidates(df, min_dist)
 
 
 def refilter_message(info: dict) -> str:
     """재필터 기록 한 줄."""
     if not info.get("applied"):
         return f"후보 재필터 안 함 ({info.get('reason')})"
-    return (f"후보 재필터: {info['before']} → {info['after']}개 (임계 {info['min_dist']:g}, "
+    stamp = info.get("stamp_min_dist")
+    note = "" if stamp is None or stamp == info["min_dist"] else f", 파일 도장 {stamp:g}"
+    return (f"후보 재필터: {info['before']} → {info['after']}개 (임계 {info['min_dist']:g}{note}, "
             f"바뀐 행 {info['rows_changed']})")
 
 

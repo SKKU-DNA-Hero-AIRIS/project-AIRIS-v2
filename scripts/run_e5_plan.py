@@ -71,6 +71,8 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--fold-rule", choices=run_e5_flow.FOLD_RULES, default="permutation")
     ap.add_argument("--seed", type=int, default=e5.get_default("seed"))
     ap.add_argument("--limit", type=int, default=None, help="fold 마다 평가 행 상한 (빠른 점검용)")
+    ap.add_argument("--refilter-min-dist", type=float, default=None,
+                    help="후보 재필터 임계 (기본: 파일의 candidate_min_dist 도장). 옛 파일은 낮추면 후보가 더 남는다")
     ap.add_argument("--no-refilter", action="store_true",
                     help="읽은 직후의 후보 재필터(plan_data.read_plan_dataset)를 끈다")
     ap.add_argument("--out", default=None, help="기본값: outputs/e5plan_<시각>.csv")
@@ -190,7 +192,12 @@ def main(argv: list[str] | None = None) -> int:
     from airis.model.knn import PlanKNN
     from airis.sim.scenario import load_scenarios
 
-    df, refilter = plan_data.read_plan_dataset(args.dataset, refilter=not args.no_refilter)
+    try:
+        df, refilter = plan_data.read_plan_dataset(args.dataset, refilter=not args.no_refilter,
+                                                   min_dist=args.refilter_min_dist)
+    except ValueError as exc:
+        print(exc, file=sys.stderr)
+        return 2
     print(f"[e5plan] {plan_data.refilter_message(refilter)}")
     try:
         limits = plan_data.plan_limits_from_dataset(df)
