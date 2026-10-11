@@ -59,6 +59,11 @@ ROTATION_STEPS = 10
 N_SAMPLES = 16
 N_FLOW = 8
 N_KNN = 8
+#: 계획 추천의 기본 후보 수 (총괄 2026-10-11): 가까운 체형의 최적 계획 16개 + 고정 회전 계획, flow 는 쓰지 않는다.
+#: 300행 5-fold 에서 flow 샘플이 뽑힌 행이 없었고 같은 채점 수에서 kNN 16개가 flow 8 + kNN 8 보다 높았다
+#: (하위 5% 0.9923 대 0.9867, docs/experiments_model.md 4.6절). flow 는 n_flow 를 주면 예전처럼 쓴다.
+PLAN_N_FLOW = 0
+PLAN_N_KNN = 16
 BACKENDS = ("hybrid", "flow", "knn")
 POSE_YAW_INDEX = [f.name for f in fields(PoseParams)].index("torso_yaw")
 
@@ -729,6 +734,13 @@ def _gather_plans(body: BodyParams, scenario: Scenario, *, backend: str, n_flow:
             knn = load_plan_knn(knn_path)
         except FileNotFoundError as exc:
             missing.append(f"kNN 표 없음({exc})")
+    if backend == "hybrid" and knn is None and not want_flow and n_flow <= 0:
+        # 기본 구성(kNN + 회전)인데 kNN 표가 없다: flow 산출물이 있으면 그쪽으로 돌아간다 (있는 쪽으로, 경고)
+        try:
+            model = load_model(path, kind="plan")
+            n_flow = N_FLOW
+        except (FileNotFoundError, ImportError) as exc:
+            missing.append(f"flow 산출물도 쓸 수 없음({exc})")
     if model is None and knn is None:
         if backend == "flow":                       # 한 쪽만 쓰라고 했으면 그 실패를 그대로 올린다
             load_model(path, kind="plan")
@@ -775,6 +787,9 @@ def rescore_subset(sources: Sequence[str], top: int | None) -> list[int]:
     kNN 1등(가장 가까운 체형의 최적 계획) → 고정 회전 계획 1번(제안 자세 회전, 없으면 기본 자세 회전) → flow 1번 →
     kNN 2등 → … 이렇게 하면 top ≥ 1 에서 "가장 가까운 체형의 최적 계획보다 나빠지지 않는다"가, top ≥ 2 에서
     "그냥 회전보다 나빠지지 않는다"가 유지된다 (자세 추천에서 선별만 쓰면 표 보장이 깨졌다, 5.2절).
+    고정 회전 계획은 1번만 돌아가는 순서에 넣고, 2번(제안 자세가 있을 때의 기본 자세 회전)부터는 다른 출처가 다
+    떨어진 뒤에 고른다: 300행 모두에서 제안 자세 회전이 기본 자세 회전보다 높았고(4.6절), 채점 수가 적을 때 그 자리는
+    kNN 후보에 쓰는 편이 낫다 (kNN 후보가 1개 늘 때마다 하위 5% 가 오른다).
     extra 후보는 부른 쪽이 직접 넣은 것이라 항상 채점하고 top 에 세지 않는다.
     """
     n = len(sources)
@@ -786,12 +801,13 @@ def rescore_subset(sources: Sequence[str], top: int | None) -> list[int]:
     other = [i for i, src in enumerate(sources) if src not in RESCORE_SOURCE_ORDER and src != "extra"]
     keep = [i for i, src in enumerate(sources) if src == "extra"]
     picked: list[int] = []
-    while len(picked) < int(top) and (any(queues.values()) or other):
+    late = queues["fixed"][1:]                                  # 고정 회전 계획 2번부터는 맨 뒤로
+    queues["fixed"] = queues["fixed"][:1]
+    while len(picked) < int(top) and any(queues.values()):
         for s in RESCORE_SOURCE_ORDER:
             if queues[s] and len(picked) < int(top):
                 picked.append(queues[s].pop(0))
-        if not any(queues.values()) and other and len(picked) < int(top):
-            picked.append(other.pop(0))
+    picked += (late + other)[:max(0, int(top) - len(picked))]
     return sorted(keep + picked)
 
 
@@ -815,7 +831,7 @@ def margin_pick_plans(evaluator: Evaluator, candidates: Sequence[Plan], scores: 
 
 
 def predict_plan_candidates(body: BodyParams, scenario: Scenario, *, backend: str | None = None,
-                            n_flow: int = N_FLOW, n_knn: int = N_KNN, n_samples: int | None = None,
+                            n_flow: int = PLAN_N_FLOW, n_knn: int = PLAN_N_KNN, n_samples: int | None = None,
                             rescore: bool = True, seed: int = 0, path: Path | str | None = None,
                             knn_path: Path | str | None = None,
                             evaluator: Evaluator | None = None, nozzle: NozzleConfig | None = None,
@@ -827,15 +843,17 @@ def predict_plan_candidates(body: BodyParams, scenario: Scenario, *, backend: st
                             rescore_top: int | None = None, n_threads: int = 1) -> PlanPrediction:
     """계획 후보까지 돌려주는 예측. predict 의 계획 버전 (혼합 추천).
 
-        후보 = flow 샘플 n_flow 개 (data/models/plan_flow.pt)
-             + 가까운 학습 체형의 최적 계획 n_knn 개 (data/models/plan_knn.parquet, knn.PlanKNN)
+        후보 = 가까운 학습 체형의 최적 계획 n_knn 개 (기본 16, data/models/plan_knn.parquet, knn.PlanKNN)
+             + flow 샘플 n_flow 개 (기본 0 = 쓰지 않는다. 주면 data/models/plan_flow.pt 에서 뽑는다)
              + 고정 회전 계획 (fixed_plans: rotation_pose 가 있으면 그 자세 회전, 그리고 기본 자세 회전)
              + extra_candidates
         → 패치판 evaluate_plan 으로 재채점 → 가장 높은 계획
 
     후보 수는 인자로 정한다 (계획 1개 채점이 단계 수에 비례해 느려 응답 시간에 맞춰 줄일 수 있어야 한다).
 
-    - backend: "hybrid"(기본) | "flow" | "knn". 한쪽 산출물만 있으면 있는 쪽으로 돌아간다 (경고).
+    - backend: "hybrid"(기본) | "flow" | "knn". "hybrid" 는 n_flow·n_knn 이 0 이 아닌 쪽을 함께 쓴다는 뜻이고,
+      기본 후보 수(n_flow 0)에서는 kNN + 고정 회전 계획이다 (총괄 2026-10-11). 한쪽 산출물만 있으면 있는 쪽으로
+      돌아간다 (경고): kNN 표가 없고 flow 산출물만 있으면 flow 샘플 N_FLOW 개를 쓴다.
     - n_samples 를 주면 예전 동작이다: 한쪽만 그 수만큼 쓰고(backend 기본 "flow") 고정 회전 계획은 넣지 않는다.
     - fixed: 고정 회전 계획을 넣을지. 기본은 혼합일 때만 넣는다. rescore=False 면 넣지 않는다.
     - 투영: flow·kNN 후보와 단계 수가 산출물과 같은 extra 후보는 PlanEncoder.clip_plan 을 거친다

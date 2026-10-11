@@ -44,6 +44,7 @@ import numpy as np                                           # noqa: E402
 from airis.optimize import cli, explog                       # noqa: E402
 
 METHODS = ("hybrid", "hybrid-nofixed", "flow+fixed", "knn+fixed", "fixed")
+FLOW_METHODS = ("hybrid", "hybrid-nofixed", "flow+fixed")
 ROTATION_POSE_MODES = ("none", "dataset", "model")
 
 
@@ -52,9 +53,12 @@ def build_parser() -> argparse.ArgumentParser:
 
     e5 = run_e5_flow.build_parser()
     ap = argparse.ArgumentParser(description="계획 추천 체형 K-fold 평가")
-    ap.add_argument("--model", required=True, help="학습 설정을 읽을 계획 flow 산출물 (fold 마다 같은 설정으로 다시 학습)")
+    ap.add_argument("--model", default=None,
+                    help="학습 설정을 읽을 계획 flow 산출물 (fold 마다 같은 설정으로 다시 학습). flow 를 쓰는 방법"
+                         "(hybrid, hybrid-nofixed, flow+fixed)을 비교할 때만 필요하다")
     ap.add_argument("--dataset", required=True)
-    ap.add_argument("--methods", default="hybrid,hybrid-nofixed,knn+fixed,fixed")
+    ap.add_argument("--methods", default="knn+fixed,fixed",
+                    help="기본은 기본 구성(kNN + 고정 회전 계획)과 회전만. flow 를 쓰는 방법은 --model 과 함께 준다")
     ap.add_argument("--n-flow", type=int, default=e5.get_default("n_flow"))
     ap.add_argument("--n-knn", type=int, default=e5.get_default("n_knn"))
     ap.add_argument("--rotation-steps", type=int, default=None, help="고정 회전 계획의 단계 수 (기본: predict 의 값)")
@@ -182,6 +186,11 @@ def main(argv: list[str] | None = None) -> int:
     if args.folds < 2:
         print("--folds 는 2 이상이어야 한다", file=sys.stderr)
         return 2
+    uses_flow = any(m in FLOW_METHODS for m in methods)
+    if uses_flow and not args.model:
+        print(f"flow 를 쓰는 방법({', '.join(m for m in methods if m in FLOW_METHODS)})에는 --model 이 필요하다",
+              file=sys.stderr)
+        return 2
 
     import pandas as pd
 
@@ -205,11 +214,12 @@ def main(argv: list[str] | None = None) -> int:
     except ValueError as exc:
         print(exc, file=sys.stderr)
         return 2
-    base = pred.load_model(args.model, kind="plan")
+    base = pred.load_model(args.model, kind="plan") if uses_flow else None
     scenarios = load_scenarios()
     names = sorted(set(df["scenario"].astype(str)))
     space = plan_data.plan_space_from_dataset(df, [scenarios[n] for n in names])
-    evaluator, nozzle = pred.default_rescorer({**dict(base.meta), **meta}, plan=True)
+    base_meta = dict(base.meta) if base is not None else {}
+    evaluator, nozzle = pred.default_rescorer({**base_meta, **meta}, plan=True)
 
     out = Path(args.out) if args.out else ROOT / "outputs" / f"{explog.new_exp_id('e5plan')}.csv"
     work = out.parent
