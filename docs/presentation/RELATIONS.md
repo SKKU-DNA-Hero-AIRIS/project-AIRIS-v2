@@ -11,7 +11,7 @@
 | ③ 바람·먼지 계산 모델 | 분사구 바람 → 몸 표면 흐름 → 문지르는 힘 → 제거 효과 | `fig2_jet_impingement_model.png`, `calibration_notes.md`(발표 노트) | 모델의 세 단계와 보정 계수의 근거·한계 |
 | ④ 자세 최적화 결과 | 세 유형 모두 "팔 들고 옆으로", 제조사 안내 대비 +55~63% | `fig_e4_scores_by_scenario.png`, `fig_e4_optimal_pose_angles.png`, `screens/pose_*_{b1,rec}_*.png`, `screens/pose_default_rec_h1{60,85}.png` | 점수 비교, 자세 각도, 3D 마네킹, 체형이 바뀌면 제안이 바뀌는 예 |
 | ⑤ AI 추천과 시연 | 처음 보는 체형에서도 99% 품질, 응답 약 1초, 입력 오차 ±2% 조건 | `fig_model_quality.png`, `fig_response_time.png`, `fig_input_error_robustness.png`, `fig_learning_curve.png`, `screens/dashboard_1~3_*.png`, `screens/dashboard_flow.gif`, `screens/flow_01~09.png`, `screens/particles_*.gif` | 품질·속도·내성 수치, 학습 데이터 양의 영향, 실제 화면(뼈대 표시·추천·모델 상태), 화면 흐름, 입자 시뮬레이션 |
-| ⑥ 운전 계획·향후 | 도는 횟수가 핵심, 같은 횟수면 자세 변경 계획이 +7~13%, 실시간은 "최적 자세 + 회전 안내" | `../figures/fig_e7_phase_count.png`, `fig_e7_same_count.png`, `fig_e7_rotation_pose.png`, `screens/dashboard_4_rotation.png` | 단계 수 효과, 같은 9단계 비교, 회전 기준 자세 비교, 회전 안내 화면 |
+| ⑥ 운전 계획·향후 | 도는 횟수가 핵심, 같은 횟수면 자세 변경 계획이 +7~13%, 실시간은 "최적 자세 + 회전 안내" | `../figures/fig_e7_phase_count.png`, `fig_e7_same_count.png`, `fig_e7_rotation_pose.png`, `screens/dashboard_4_rotation.png`, `screens/dashboard_5_plan_b*.png` | 단계 수 효과, 같은 9단계 비교, 회전 기준 자세 비교, 회전 안내 화면, 자세를 바꿔 가는 계획 화면(모드 B, 3장) |
 | ⑦ 한계 | 모든 장에 공통 | `README.md` "발표에서 쓰지 말 것" | 상대값·미보정·장비 연동 없음·입력 오차 조건 |
 
 ## 2. 자료의 출처 (수치는 메시지가 아니라 파일에서 읽는다)
@@ -44,5 +44,5 @@
 
 ## 4. 아직 없는 자료 (시점)
 
-- 계획 추천 모델 품질·응답(3차): 계획 데이터셋 생성 중(10-07~10-09) → 학습·판정 뒤. 발표가 그 전이면 "향후 계획"으로.
+- ~~계획 추천 모델 품질·응답(3차)~~ 10-11 완료·설치(`docs/experiments_model.md` 4.5·4.6, 완성도 F1~F3). 발표용 그래프는 미제작. 모드 B 캡처 3장은 재촬영 예정(응답 시간 표기만 바뀜).
 - 실제 조작 녹화 영상: 총괄 직접(대본은 저장소 밖). 실제 장비·실제 사람 검증: 범위 밖.
