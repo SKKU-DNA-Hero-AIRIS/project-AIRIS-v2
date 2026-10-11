@@ -364,6 +364,16 @@ def _p5_plan(scenario="default", weight=0.1):
     return Plan(phases, zones)
 
 
+def _clear_streamlit_caches() -> None:
+    """대시보드의 st.cache_data 는 **프로세스 전역**이라 테스트끼리 샌다.
+
+    계획 화면 테스트 둘이 같은 (체형·시나리오·몸 모델·자세) 키를 쓰므로, 지우지 않으면 뒤 테스트가
+    앞 테스트의 계획을 그대로 받아 가짜 predict 가 무시된다 (혼자 돌리면 통과, 같이 돌리면 실패).
+    """
+    import streamlit as st
+    st.cache_data.clear()
+
+
 def test_dashboard_renders_plan_when_model_exists(monkeypatch):
     """계획이 있으면 ④-2 가 단계 표까지 그린다 — 산출물이 없는 지금도 틀을 확인한다.
 
@@ -384,6 +394,7 @@ def test_dashboard_renders_plan_when_model_exists(monkeypatch):
             self.source, self.margin_fallback = "flow", False
 
     monkeypatch.setattr(P_, "predict_plan_candidates", lambda body, scenario, **kw: FakePred())
+    _clear_streamlit_caches()
 
     path = P(__file__).resolve().parents[1] / "scripts" / "run_dashboard.py"
     at = AppTest.from_file(str(path), default_timeout=240)
@@ -484,6 +495,78 @@ def test_plan_model_reads_prediction(monkeypatch):
         assert absent not in seen
 
 
+def test_plan_guide_spots_a_rotation_only_plan():
+    """후보군의 기본 회전 계획이 이기면 '자세를 바꿔 가는 계획'이라고 부르면 안 된다.
+
+    `predict_plan` 후보에 고정 회전 계획이 들어 있어(기본) 그것이 뽑힐 수 있다. 그때 모드 B 자리에
+    단계 표를 펼치면 ④-2 위쪽 회전 안내와 **같은 것이 두 번, 다른 이름으로** 나온다.
+    판정은 출처 문자열이 아니라 **자세**로 한다 (출처 이름이 바뀌어도 깨지지 않게).
+    """
+    from airis.realtime import plan_guide as pg
+
+    rot = pg.rotation_plan(STUB_TABLE["default"][0].pose)
+    assert pg.PlanGuide(rot, source="fixed").is_rotation_only
+    assert pg.PlanGuide(rot, source="이름이 바뀐 출처").is_rotation_only, "출처에 기대면 안 된다"
+
+    plan = _p5_plan()                                  # 단계마다 자세가 다른 진짜 계획
+    assert not pg.PlanGuide(plan, source="knn").is_rotation_only
+
+    # 자세가 하나뿐이거나 계획이 없으면 "돌기만" 이 아니다
+    from airis.sim.types import Phase, Plan
+    one = Plan([Phase(PoseParams(), 20.0)], np.ones(5))
+    assert not pg.PlanGuide(one).is_rotation_only and not pg.PlanGuide(None).is_rotation_only
+
+    # 몸 방향 말고 한 군데라도 다르면 "돌기만" 이 아니다
+    mixed = Plan([rot.phases[0], Phase(replace(rot.phases[1].pose, knee_flexion=30.0), 2.0)],
+                 np.ones(5))
+    assert not pg.PlanGuide(mixed).is_rotation_only
+
+
+def test_plan_guide_source_text_is_plain():
+    """출처는 쉬운 말로. 모르는 값은 그대로 돌려준다 (새 방식이 생겨도 화면이 비지 않게)."""
+    from airis.realtime import plan_guide as pg
+
+    plan = _p5_plan()
+    assert pg.PlanGuide(plan, source="knn").source_text == "비슷한 체형 참조"
+    assert pg.PlanGuide(plan, source="fixed").source_text == "기본 회전 계획"
+    assert pg.PlanGuide(plan, source="새 방식").source_text == "새 방식"
+    assert pg.PlanGuide(plan).source_text == ""
+    for shown in pg.PLAN_SOURCE_LABELS.values():
+        assert "knn" not in shown and "flow" not in shown
+
+
+def test_dashboard_folds_step_table_for_rotation_plan(monkeypatch):
+    """회전 계획이 뽑히면 모드 B 자리에 안내 한 줄을 띄우고 단계 표는 접는다."""
+    pytest.importorskip("streamlit")
+    from pathlib import Path as P
+
+    from streamlit.testing.v1 import AppTest
+
+    import airis.model.predict as P_
+    from airis.realtime import plan_guide as pg
+
+    rot = pg.rotation_plan(STUB_TABLE["default"][0].pose)
+
+    class Pred:
+        def __init__(self):
+            self.plan, self.candidates = rot, [rot] * 17
+            self.source, self.margin_fallback, self.n_rescored = "fixed", False, 17
+
+    monkeypatch.setattr(P_, "predict_plan_candidates", lambda b, s, **kw: Pred())
+    _clear_streamlit_caches()
+    path = P(__file__).resolve().parents[1] / "scripts" / "run_dashboard.py"
+    at = AppTest.from_file(str(path), default_timeout=240)
+    at.query_params["model"] = "capsule"
+    at.run()
+    at.sidebar.radio[0].set_value("체형 직접 입력").run()
+    assert not at.exception, [e.value for e in at.exception]
+
+    said = " ".join(str(getattr(m, "value", "")) for m in at.success)
+    assert "돌기만 하는 쪽이 가장 좋았습니다" in said
+    caps = " ".join(str(getattr(c, "value", "")) for c in at.caption)
+    assert "출처: 기본 회전 계획" in caps
+
+
 def test_plan_guide_says_how_many_were_scored(monkeypatch):
     """소수 재채점(rescore_top, F #171)을 쓰면 "전부 채점했다"고 말하면 안 된다.
 
@@ -577,7 +660,7 @@ def test_render_plotly_png_renders_3d():
     out = P(tempfile.gettempdir()) / "airis_render_test.png"
     out.unlink(missing_ok=True)
     try:
-        mod.render_figure(fig, out, width=420, height=320, port=9407)
+        mod.render_figure(fig, out, width=420, height=320)   # 포트는 스크립트가 빈 것을 고른다
         assert out.exists() and out.stat().st_size > 3000
         from PIL import Image
         img = Image.open(out).convert("RGB")
@@ -677,6 +760,7 @@ def test_dashboard_does_not_show_original_frames():
 
 def test_uploaded_video_file_is_deleted(tmp_path):
     """업로드한 영상은 프레임을 뽑은 뒤 임시 파일을 지운다 (열지 못해 실패해도 지운다)."""
+    import os
     import tempfile
     from pathlib import Path as P
 
@@ -684,7 +768,9 @@ def test_uploaded_video_file_is_deleted(tmp_path):
     from airis.realtime.camera import frames_from_video_bytes
 
     def leftovers():
-        return set(P(tempfile.gettempdir()).glob("airis_upload_*"))
+        # **이 프로세스가 만든 것만** 센다. 다른 세션의 pytest 가 같은 임시 폴더를 함께 쓰므로,
+        # 폴더 전체를 비교하면 남의 파일이 생겼다 사라지는 것만으로 깨진다 (실제로 깨졌다).
+        return set(P(tempfile.gettempdir()).glob(f"airis_upload_{os.getpid()}_*"))
 
     before = leftovers()
     src = tmp_path / "source.mp4"

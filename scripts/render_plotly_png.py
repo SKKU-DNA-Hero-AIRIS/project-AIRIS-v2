@@ -64,6 +64,15 @@ class _Page:
         return r.get("result", {}).get("value")
 
 
+def _free_port() -> int:
+    """비어 있는 포트 하나. 고정 포트를 쓰면 다른 세션이 동시에 찍을 때 충돌한다."""
+    import socket
+
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        return int(sock.getsockname()[1])
+
+
 def _launch(edge: str, port: int, profile: Path) -> subprocess.Popen:
     return subprocess.Popen([edge, "--headless=new", f"--remote-debugging-port={port}",
                              f"--user-data-dir={profile}", "--no-first-run", "--hide-scrollbars",
@@ -127,8 +136,13 @@ async def _shoot(jobs: list[tuple[Path, Path, int, int]], *, edge: str, port: in
 
 
 def render_html(html_paths, out_paths=None, *, width: int = 1600, height: int = 1200,
-                edge: str = DEFAULT_EDGE, port: int = 9400, settle_s: float = 1.2) -> list[Path]:
-    """plotly 그림이 담긴 HTML 들을 PNG 로 찍는다. 브라우저는 한 번만 띄운다."""
+                edge: str = DEFAULT_EDGE, port: int | None = None,
+                settle_s: float = 1.2) -> list[Path]:
+    """plotly 그림이 담긴 HTML 들을 PNG 로 찍는다. 브라우저는 한 번만 띄운다.
+
+    `port` 를 주지 않으면 **빈 포트를 골라 쓴다** — 고정 포트면 다른 세션이 동시에 찍을 때 충돌한다.
+    """
+    port = _free_port() if port is None else int(port)
     htmls = [Path(p) for p in html_paths]
     outs = ([Path(p) for p in out_paths] if out_paths
             else [h.with_suffix(".png") for h in htmls])
@@ -156,7 +170,7 @@ def main(argv=None) -> int:
     ap.add_argument("--width", type=int, default=1600)
     ap.add_argument("--height", type=int, default=1200)
     ap.add_argument("--edge", default=DEFAULT_EDGE)
-    ap.add_argument("--port", type=int, default=9400)
+    ap.add_argument("--port", type=int, default=None, help="기본값: 빈 포트를 골라 쓴다")
     a = ap.parse_args(argv)
 
     if len(a.paths) == 2 and a.paths[1].lower().endswith(".png"):

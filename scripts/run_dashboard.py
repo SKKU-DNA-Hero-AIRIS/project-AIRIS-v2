@@ -278,10 +278,17 @@ def render_plan_b(guide, eff_a, eff_b, body, scenario, body_model, booth, scen) 
     `docs/interfaces.md` "계획 모델").
     """
     plan = guide.plan
-    st.dataframe(plan_guide.plan_steps(plan, scenario), **WIDE, hide_index=True)
-    st.caption(f"단계 {len(plan.phases)}개 · 모두 {plan.duration_s:.0f}초. "
-               f"바람 세기는 계획 전체에 하나지만, 가슴 쪽 벽이 단계마다 바뀌어 분사구에 실리는 값은 "
-               f"단계마다 다릅니다.")
+    if guide.is_rotation_only:
+        # 후보군에 들어 있는 기본 회전 계획이 이겼다. 위 ④-2 의 안내와 같은 것이므로 두 번 보여 주지 않는다.
+        st.success("이 체형에서는 한 자세로 돌기만 하는 쪽이 가장 좋았습니다. "
+                   "위의 회전 안내를 그대로 쓰세요.")
+        st.caption("자세를 바꿔 가는 후보들보다 이 쪽 점수가 높았습니다 (드문 경우입니다). "
+                   "아래 표는 참고용으로 접어 두었습니다.")
+    with st.expander("단계별 안내", expanded=not guide.is_rotation_only):
+        st.dataframe(plan_guide.plan_steps(plan, scenario), **WIDE, hide_index=True)
+        st.caption(f"단계 {len(plan.phases)}개 · 모두 {plan.duration_s:.0f}초. "
+                   f"바람 세기는 계획 전체에 하나지만, 가슴 쪽 벽이 단계마다 바뀌어 분사구에 실리는 "
+                   f"값은 단계마다 다릅니다.")
 
     if eff_a and eff_b:
         rows = []
@@ -314,6 +321,8 @@ def render_plan_b(guide, eff_a, eff_b, body, scenario, body_model, booth, scen) 
             transition_s=TRANSITION_S), ensure_ascii=False, indent=1),
         file_name=f"airis_plan_b_{scen}.json", mime="application/json")
     over = guide.elapsed_s > RESPONSE_BUDGET_S
+    if guide.source_text:
+        st.caption(f"출처: {guide.source_text}")
     st.caption(("⚠️ " if over else "") + f"응답 시간 {guide.elapsed_s:.2f} s "
                f"(목표 {RESPONSE_BUDGET_S:.1f} s 이내). {guide.scoring_text}")
     if guide.margin_fallback:

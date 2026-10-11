@@ -19,7 +19,7 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from functools import lru_cache
 from pathlib import Path
 
@@ -149,6 +149,11 @@ def control_json(plan: Plan, body: BodyParams | None, scenario: Scenario, *, sou
 # ---------------------------------------------------------------------------
 # 모드 B: 자세를 바꿔 가는 계획
 # ---------------------------------------------------------------------------
+#: 계획 출처 표시 이름 (화면용. 내부 식별자는 그대로 둔다)
+PLAN_SOURCE_LABELS = {"knn": "비슷한 체형 참조", "flow": "AI 추천 후보",
+                      "fixed": "기본 회전 계획", "rotation": "기본 회전 계획",
+                      "extra": "고정 후보"}
+
 #: 구역 표시 이름 (몸 기준. 화면 문구 규약대로 약어를 쓰지 않는다)
 ZONE_LABELS = {"chest_low": "가슴 쪽 아래", "chest_high": "가슴 쪽 위",
                "back_low": "등 쪽 아래", "back_high": "등 쪽 위", "top": "천장"}
@@ -170,6 +175,27 @@ class PlanGuide:
     @property
     def n_phases(self) -> int:
         return 0 if self.plan is None else len(self.plan.phases)
+
+    @property
+    def is_rotation_only(self) -> bool:
+        """고른 계획이 '한 자세로 돌기만' 하는 것인가 (= 모드 A 와 같은 것).
+
+        후보군에 고정 회전 계획이 들어 있어(`predict_plan` 기본) 그것이 이길 수 있다. 그때 이 계획을
+        "자세를 바꿔 가는 계획" 으로 보여 주면 같은 안내가 두 번, 서로 다른 이름으로 나온다.
+        **출처 문자열이 아니라 자세로 판정한다** — 출처 이름이 바뀌어도 깨지지 않게.
+        """
+        if self.plan is None or len(self.plan.phases) < 2:
+            return False
+        first = self.plan.phases[0].pose
+        return all(replace(ph.pose, torso_yaw=first.torso_yaw) == first
+                   for ph in self.plan.phases[1:])
+
+    @property
+    def source_text(self) -> str:
+        """고른 계획의 출처를 사람이 읽을 한 줄. 모르는 값은 그대로 돌려준다."""
+        if not self.source:
+            return ""
+        return PLAN_SOURCE_LABELS.get(self.source, self.source)
 
     @property
     def scoring_text(self) -> str:
