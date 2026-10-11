@@ -534,10 +534,13 @@ def test_predict_plan_contract_and_rescoring(plan_model, model, scenarios, tmp_p
     assert np.allclose(again.sample(BodyParams(), "default", 8, seed=3),
                        plan_model.sample(BodyParams(), "default", 8, seed=3))
 
+    # 계획 kNN 표의 경로를 늘 넘긴다: 기본 경로(data/models/plan_knn.parquet)에 산출물이 설치돼 있어도 같은 결과가
+    # 나오게 (설치된 worktree 에서 이 테스트가 깨졌다, 2026-10-11).
+    no_knn = tmp_path / "none.parquet"
     with pytest.raises(FileNotFoundError):
-        pred.predict_plan(BodyParams(), sc, path=tmp_path / "none.pt")
+        pred.predict_plan(BodyParams(), sc, path=tmp_path / "none.pt", knn_path=no_knn)
     with pytest.raises(ValueError, match="pose 모델"):
-        pred.predict_plan(BodyParams(), sc, path=model.save(tmp_path / "pose.pt"))
+        pred.predict_plan(BodyParams(), sc, path=model.save(tmp_path / "pose.pt"), knn_path=no_knn)
     with pytest.raises(ValueError, match="plan 모델"):
         pred.predict_pose(BodyParams(), sc, path=path)
 
@@ -545,8 +548,9 @@ def test_predict_plan_contract_and_rescoring(plan_model, model, scenarios, tmp_p
                                      evaluator=_PlanEvaluator(), nozzle=object())
     assert p.plan.phases[0].pose.shoulder_abduction <= 45 and p.plan.zone_strengths[2] > 0.8
     assert len(p.candidates) == 32 and p.scores.shape == (32,)
-    assert isinstance(pred.predict_plan(BodyParams(), sc, path=path, evaluator=_PlanEvaluator(),
-                                        nozzle=object()), Plan)
+    with pytest.warns(RuntimeWarning, match="kNN 표 없음"):      # kNN 표가 없으면 flow 로 돌아간다
+        assert isinstance(pred.predict_plan(BodyParams(), sc, path=path, knn_path=no_knn,
+                                            evaluator=_PlanEvaluator(), nozzle=object()), Plan)
 
     # 고정 계획을 함께 재채점: 평가기의 이상형을 넣으면 그것이 뽑힌다
     ideal = _plan(DOWN, ZONES_B)
@@ -566,9 +570,9 @@ def test_predict_plan_contract_and_rescoring(plan_model, model, scenarios, tmp_p
             return DummyEvaluator(PoseParams(), sc).evaluate(pose, nozzle, body, scenario)
 
     with pytest.raises(NotImplementedError):
-        pred.predict_plan(BodyParams(), sc, path=path, evaluator=_PoseOnly(), nozzle=object())
+        pred.predict_plan(BodyParams(), sc, path=path, knn_path=no_knn, evaluator=_PoseOnly(), nozzle=object())
     with pytest.raises(KeyError):
-        pred.predict_plan(BodyParams(), replace(sc, name="stroller"), path=path,
+        pred.predict_plan(BodyParams(), replace(sc, name="stroller"), path=path, knn_path=no_knn,
                           evaluator=_PlanEvaluator(), nozzle=object())
 
 
