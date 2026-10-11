@@ -32,6 +32,9 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from airis.optimize import cli                                      # noqa: E402
+from airis.optimize.dataset import (                                # noqa: E402
+    configured_body_model, sample_bodies_taller_than,
+)
 from airis.optimize.plan_dataset import (                           # noqa: E402
     PlanDatasetConfig, build_plan_dataset,
 )
@@ -41,6 +44,13 @@ from airis.sim.scenario import load_scenarios                       # noqa: E402
 def build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(description="계획 데이터셋 만들기")
     ap.add_argument("--n-bodies", type=int, required=True, help="체형 수 (0..n-1 번). 늘리면 뒷부분만 추가")
+    ap.add_argument("--tall-bodies", type=int, default=0, metavar="N",
+                    help="꼬리 보강: 키 하한 이상인 체형만 N 개 만든다 (--n-bodies 구간 뒤에서 "
+                         "고른다). 체형 번호는 시드 수열의 진짜 번호라 기존 행과 겹치지 않고 "
+                         "'같은 body_idx = 같은 체형'이 유지된다. **조건부 표본이라 전체 통계에 "
+                         "섞으면 편향이 생긴다 — 다른 --out 파일에 쓰기를 권한다**")
+    ap.add_argument("--tall-min-height", type=float, default=1.85, metavar="M",
+                    help="--tall-bodies 의 키 하한 (m). 기본 1.85 = 100체형에 2명뿐인 구간")
     ap.add_argument("--scenarios", nargs="*", default=None)
     ap.add_argument("--evaluator", choices=cli.EVALUATOR_CHOICES, default="patch")
     ap.add_argument("--n-phases", type=int, default=9, help="계획 단계 수 (N × min_phase_s < 총 시간 상한)")
@@ -91,9 +101,19 @@ def main(argv: list[str] | None = None) -> int:
         candidate_tol=args.candidate_tol, candidate_min_dist=args.candidate_min_dist,
         baselines=not args.no_baselines,
     )
+    bodies = None
+    if args.tall_bodies > 0:
+        # 꼬리 보강: --n-bodies 뒤 번호에서 키 하한을 넘는 체형만 고른다.
+        bodies = sample_bodies_taller_than(
+            args.tall_bodies, args.body_seed, configured_body_model(),
+            min_height_m=args.tall_min_height, start_idx=args.n_bodies)
+        print(f"꼬리 보강 {len(bodies)}체형 (키 {args.tall_min_height:g} m 이상): "
+              f"번호 {', '.join(str(i) for i, _ in bodies)}")
+
     try:
         out = build_plan_dataset(args.out, n_bodies=args.n_bodies, scenarios=names, cfg=cfg,
-                                 processes=args.processes, flush_every=args.flush_every)
+                                 processes=args.processes, flush_every=args.flush_every,
+                                 bodies=bodies)
     except (ValueError, cli.TrackNotMerged) as exc:
         print(str(exc), file=sys.stderr)
         return 2

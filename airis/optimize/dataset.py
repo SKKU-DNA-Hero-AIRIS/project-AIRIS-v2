@@ -97,6 +97,36 @@ def sample_bodies(n: int, seed: int, model: str = "capsule") -> list[BodyParams]
     return bodies
 
 
+def sample_bodies_taller_than(n: int, seed: int, model: str = "capsule", *,
+                              min_height_m: float, start_idx: int = 0,
+                              max_scan: int = 200000) -> list[tuple[int, BodyParams]]:
+    """같은 시드 수열에서 **키가 하한 이상인 체형만** n 개 — `(수열 번호, 체형)` 쌍.
+
+    꼬리(아주 큰 체형)는 분포상 드물어 100체형에 2~3명뿐이다. 모델이 그 구간에서 쓸 이웃이
+    없을 때 그쪽만 보강하려고 쓴다 (F 보고 10-11: 키 1.93 m 체형에서 이웃 계획이 전부 부스 밖).
+
+    번호는 `sample_bodies` 수열의 **진짜 번호**다(1000 같은 별도 번호를 쓰지 않는다) — 그래야
+    "같은 body_idx = 같은 체형"이 유지되고, 나중에 자세·계획 데이터셋을 늘려도 충돌하지 않는다.
+    `start_idx` 앞쪽(이미 만든 구간)은 건너뛴다. 뽑히는 표본은 **조건부 분포**라 전체 통계에
+    그대로 섞으면 편향이 생긴다 — 별도 파일로 두거나 번호로 구분해 쓴다.
+    """
+    if n <= 0:
+        return []
+    picked: list[tuple[int, BodyParams]] = []
+    scanned = 0
+    block = max(200, n * 50)
+    while len(picked) < n and scanned < max_scan:
+        scanned = min(scanned + block, max_scan)
+        bodies = sample_bodies(scanned, seed, model)      # 앞부분이 고정이라 다시 뽑아도 같다
+        picked = [(i, b) for i, b in enumerate(bodies)
+                  if i >= start_idx and b.height_m >= min_height_m][:n]
+    if len(picked) < n:
+        raise ValueError(
+            f"수열 {max_scan}개를 봐도 키 {min_height_m:g} m 이상 체형이 {len(picked)}개뿐이다 "
+            f"(요청 {n}개). 하한을 낮춰라.")
+    return picked
+
+
 def candidate_columns(candidates: list[dict], scenario, best_score: float, *,
                       k: int, tol: float, min_dist: float) -> dict:
     """run_cmaes(record_candidates=True) 의 후보 → cand_* 목록 열 (위 모듈 설명).
