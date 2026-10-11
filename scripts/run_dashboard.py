@@ -287,10 +287,13 @@ def render_plan_b(guide, eff_a, eff_b, body, scenario, body_model, booth, scen) 
         st.caption("자세를 바꿔 가는 후보들보다 이 쪽 점수가 높았습니다 (드문 경우입니다). "
                    "아래 표는 참고용으로 접어 두었습니다.")
     with st.expander("단계별 안내", expanded=not guide.is_rotation_only):
-        st.dataframe(plan_guide.plan_steps(plan, scenario), **WIDE, hide_index=True)
+        # 단계 표만 st.dataframe 이 아니라 **st.table** 이다. '자세' 가 두세 문장이라 dataframe 의
+        # 한 줄 칸에서는 끝이 잘린다 (칸 너비를 키워도 마찬가지). st.table 은 글을 접어서 다 보여 준다.
+        st.table(plan_guide.plan_steps(plan, scenario))
         st.caption(f"단계 {len(plan.phases)}개 · 모두 {plan.duration_s:.0f}초. "
-                   f"바람 세기는 계획 전체에 하나지만, 가슴 쪽 벽이 단계마다 바뀌어 분사구에 실리는 "
-                   f"값은 단계마다 다릅니다.")
+                   f"**바람 세기(계획 전체 공통): {plan_guide.zone_text(plan)}.** "
+                   f"가슴 쪽 벽이 단계마다 바뀌어 분사구에 실리는 값은 단계마다 다릅니다 "
+                   f"('분사구 평균' 칸).")
 
     if eff_a and eff_b:
         if not guide.is_rotation_only and eff_b["먼지 제거 효과"] < eff_a["먼지 제거 효과"]:
@@ -305,13 +308,10 @@ def render_plan_b(guide, eff_a, eff_b, body, scenario, body_model, booth, scen) 
                 "먼지 제거 효과": round(eff["먼지 제거 효과"], 3),
                 "바람 에너지": None if eff["바람 에너지"] is None else round(eff["바람 에너지"], 2),
                 "자세 불편도": round(eff["자세 불편도"], 3),
+                "총 시간": None if eff["총 시간"] is None else f"{eff['총 시간']:.0f}초",
             })
         st.dataframe(rows, **WIDE, hide_index=True)
-        # 칸이 좁아 다섯 번째 칸(총 시간)이 잘렸다. 두 값뿐이라 글로 쓴다.
-        times = " · ".join(f"{r['방식']} {e['총 시간']:.0f}초"
-                           for r, e in zip(rows, (eff_a, eff_b)) if e["총 시간"] is not None)
-        st.caption(f"{'총 시간: ' + times + '. ' if times else ''}"
-                   "이 체형으로 직접 계산한 값입니다 (실험 표와 달리 기본 체형이 아닙니다). "
+        st.caption("이 체형으로 직접 계산한 값입니다 (실험 표와 달리 기본 체형이 아닙니다). "
                    "'바람 에너지' 1.00 = 지금 장비 그대로 20초 운전.")
 
     f1, f2 = st.columns(2)
@@ -603,19 +603,22 @@ def main() -> None:
                        "있고, '먼지 제거 효과'는 보정 전 시뮬레이션 값이라 절대 비율이 아닙니다.")
         else:
             st.info("운전 계획 실험 결과 파일이 없어 수치를 보여 주지 못합니다 (안내 자체는 위와 같습니다).")
-        plan_b, eff_a, eff_b = plan_cached(tuple(asdict(body).values()), scen, body_model,
-                                           tuple(asdict(rec.pose).values()))
-        label = ("자세를 바꿔 가는 계획" if plan_b.plan is not None
-                 else "자세를 바꿔 가는 계획 (준비 중)")
-        with st.expander(label, expanded=plan_b.plan is not None):
-            st.caption("단계마다 **다른** 자세로 가는 방식입니다. 실험에서는 같은 횟수라면 이쪽이 "
-                       "먼지 제거 효과가 7~10% 더 높았고 바람도 조금 덜 썼습니다.")
-            if plan_b.plan is None:
-                st.info(plan_b.note)
-                st.caption("준비되면 이 자리에 단계별 안내와 장비 제어 파일이 나옵니다. "
-                           "그때까지는 위의 '한 바퀴 돌기'로 안내합니다.")
-            else:
-                render_plan_b(plan_b, eff_a, eff_b, body, scenario, body_model, booth, scen)
+
+    # 모드 B 는 **화면 전체 너비**로 그린다. 오른쪽 좁은 칸(약 470 px) 안에 두었더니 단계 표의
+    # 안내 문장이 잘려 "…좌우 어느 쪽이든 같습" 처럼 보였다 (가로로 끌어야 읽혔다).
+    plan_b, eff_a, eff_b = plan_cached(tuple(asdict(body).values()), scen, body_model,
+                                       tuple(asdict(rec.pose).values()))
+    label = ("자세를 바꿔 가는 계획" if plan_b.plan is not None
+             else "자세를 바꿔 가는 계획 (준비 중)")
+    with st.expander(label, expanded=plan_b.plan is not None):
+        st.caption("단계마다 **다른** 자세로 가는 방식입니다. 실험에서는 같은 횟수라면 이쪽이 "
+                   "먼지 제거 효과가 7~10% 더 높았고 바람도 조금 덜 썼습니다.")
+        if plan_b.plan is None:
+            st.info(plan_b.note)
+            st.caption("준비되면 이 자리에 단계별 안내와 장비 제어 파일이 나옵니다. "
+                       "그때까지는 위의 '한 바퀴 돌기'로 안내합니다.")
+        else:
+            render_plan_b(plan_b, eff_a, eff_b, body, scenario, body_model, booth, scen)
 
     # ---------------- ⑤ 입자 애니메이션 ----------------
     st.subheader("⑤ 입자 애니메이션")
