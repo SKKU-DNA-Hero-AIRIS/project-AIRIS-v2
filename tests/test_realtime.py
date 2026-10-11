@@ -407,6 +407,8 @@ def test_dashboard_renders_plan_when_model_exists(monkeypatch):
         str(getattr(c, "value", "")) for c in at.caption)
     assert f"단계 {len(plan.phases)}개" in text, "단계 수를 그대로 써야 한다"
     assert "처음과 마지막 단계" in text
+    # 비교 표 다섯 번째 칸은 좁은 칸에서 잘려 글로 옮겼다 (칸을 다시 늘리면 잘린다)
+    assert "총 시간: 그 자세로 한 바퀴 돌기" in text
     # 내려받기 단추가 두 개 (모드 A·B)
     assert len(at.get("download_button")) == 2
 
@@ -448,14 +450,17 @@ def test_plan_steps_uses_per_phase_fan_values():
         assert row["분사구 평균"] == f"{m:.0%}"
 
 
-def test_plan_model_falls_back_without_artifacts():
-    """계획 산출물이 없으면 plan=None 과 사람이 읽을 이유를 돌려준다 (화면은 모드 A 유지)."""
+def test_plan_model_falls_back_without_artifacts(tmp_path):
+    """계획 산출물이 없으면 plan=None 과 사람이 읽을 이유를 돌려준다 (화면은 모드 A 유지).
+
+    산출물이 설치된 PC 에서도 이 길을 봐야 하므로 빈 경로를 넘긴다 (예전에는 건너뛰었다).
+    """
     from airis.realtime import plan_guide as pg
 
-    guide = pg.plan_model(MESH_DEFAULT_BODY, SCENARIOS["default"], STUB_TABLE["default"][0].pose)
-    if guide.plan is not None:
-        pytest.skip("계획 산출물이 설치돼 있다 (폴백 경로를 볼 수 없다)")
-    assert guide.n_phases == 0 and guide.note
+    guide = pg.plan_model(MESH_DEFAULT_BODY, SCENARIOS["default"], STUB_TABLE["default"][0].pose,
+                          path=tmp_path / "없음_plan_flow.pt",
+                          knn_path=tmp_path / "없음_plan_knn.parquet")
+    assert guide.plan is None and guide.n_phases == 0 and guide.note
     assert "준비 중" in guide.note or "없" in guide.note
     for jargon in ("FileNotFoundError", "predict_plan", "plan_flow"):
         assert jargon not in guide.note, f"화면 문구에 내부 용어: {guide.note}"
@@ -463,12 +468,15 @@ def test_plan_model_falls_back_without_artifacts():
 
 def test_plan_model_reads_prediction(monkeypatch):
     """계획이 있으면 단계 수·출처·후보 수를 그대로 받아 온다 (가짜 predict_plan_candidates)."""
+    import inspect
+
     import airis.model.predict as P
 
     from airis.realtime import plan_guide as pg
 
     plan = _p5_plan()
     seen = {}
+    real_params = set(inspect.signature(P.predict_plan_candidates).parameters)
 
     class FakePred:
         def __init__(self):
@@ -490,13 +498,24 @@ def test_plan_model_reads_prediction(monkeypatch):
     assert guide.elapsed_s > 0.0 and not guide.note
     # ④ 의 추천 자세를 넘겨 두 모드가 같은 후보군에서 겨루게 한다
     assert seen.get("rotation_pose") is pose
-    # 계획 쪽에 아직 없는 인자를 미리 넘기지 않는다 (모르는 인자는 TypeError)
-    for absent in ("dedup_deg", "n_threads"):
-        assert absent not in seen
+    # 장비 설정 (총괄 확정 2026-10-11): 상위 7개만 자세히 채점, 스레드 3개
+    assert seen["rescore_top"] == pg.PLAN_RESCORE_TOP == 7
+    assert seen["n_threads"] == pg.PLAN_THREADS == 3
+    # 자세 경로의 2,000/m² 평가기를 계획에 넘기면 모델이 학습·판정 때와 다른 자로 후보를 고른다.
+    # 계획은 기본 재채점기(산출물 도장 1,500/m²)에 맡긴다.
+    assert "evaluator" not in seen and "nozzle" not in seen
+    # 넘기는 인자 이름이 전부 실제 함수에 있어야 한다 (모르는 인자는 TypeError)
+    assert set(seen) <= real_params, sorted(set(seen) - real_params)
+    assert "dedup_deg" not in seen                    # 계획 쪽에는 아직 없다
+
+    # 측정·테스트를 위해 호출자가 덮어쓸 수 있다
+    seen.clear()
+    pg.plan_model(MESH_DEFAULT_BODY, SCENARIOS["default"], pose, rescore_top=3, n_threads=1)
+    assert seen["rescore_top"] == 3 and seen["n_threads"] == 1
 
 
 def test_plan_guide_spots_a_rotation_only_plan():
-    """후보군의 기본 회전 계획이 이기면 '자세를 바꿔 가는 계획'이라고 부르면 안 된다.
+    """후보군의 고정 회전 계획이 이기면 '자세를 바꿔 가는 계획'이라고 부르면 안 된다.
 
     `predict_plan` 후보에 고정 회전 계획이 들어 있어(기본) 그것이 뽑힐 수 있다. 그때 모드 B 자리에
     단계 표를 펼치면 ④-2 위쪽 회전 안내와 **같은 것이 두 번, 다른 이름으로** 나온다.
@@ -528,7 +547,9 @@ def test_plan_guide_source_text_is_plain():
 
     plan = _p5_plan()
     assert pg.PlanGuide(plan, source="knn").source_text == "비슷한 체형 참조"
-    assert pg.PlanGuide(plan, source="fixed").source_text == "기본 회전 계획"
+    # "fixed" 는 제안 자세 회전과 기본 자세 회전을 모두 가리킨다 — "기본" 이라고 쓰면 앞쪽을 오해한다
+    assert pg.PlanGuide(plan, source="fixed").source_text == "고정 회전 계획"
+    assert "기본 회전" not in pg.PLAN_SOURCE_LABELS["fixed"]
     assert pg.PlanGuide(plan, source="새 방식").source_text == "새 방식"
     assert pg.PlanGuide(plan).source_text == ""
     for shown in pg.PLAN_SOURCE_LABELS.values():
@@ -564,7 +585,53 @@ def test_dashboard_folds_step_table_for_rotation_plan(monkeypatch):
     said = " ".join(str(getattr(m, "value", "")) for m in at.success)
     assert "돌기만 하는 쪽이 가장 좋았습니다" in said
     caps = " ".join(str(getattr(c, "value", "")) for c in at.caption)
-    assert "출처: 기본 회전 계획" in caps
+    assert "출처: 고정 회전 계획" in caps
+
+
+def test_dashboard_admits_when_mode_b_scores_lower(monkeypatch):
+    """계획을 고른 자(1,500/m²)와 표를 재는 자(2,000/m²)가 달라 순서가 뒤집힐 수 있다.
+
+    그때 표만 조용히 보여 주면 "자세를 바꿔 가기" 가 더 좋다고 읽힌다. 화면이 그 사실을 말해야 한다.
+    같은 실행으로 **대시보드가 계획 추천에 평가기를 넘기지 않는지**도 확인한다.
+    """
+    pytest.importorskip("streamlit")
+    from pathlib import Path as P
+
+    from streamlit.testing.v1 import AppTest
+
+    import airis.model.predict as P_
+    from airis.realtime import plan_guide as pg
+    from airis.sim.types import Phase, Plan
+
+    rot = pg.rotation_plan(STUB_TABLE["default"][0].pose)
+    phases = list(rot.phases)
+    phases[1] = Phase(replace(phases[1].pose, knee_flexion=40.0), phases[1].duration_s)
+    weak = Plan(phases, np.full(5, 0.05))             # 바람을 거의 끈 계획 → 회전보다 낮다
+    assert not pg.PlanGuide(weak).is_rotation_only, "회전 전용으로 보이면 다른 안내가 뜬다"
+    seen = {}
+
+    class Pred:
+        def __init__(self):
+            self.plan, self.candidates = weak, [weak] * 17
+            self.source, self.margin_fallback, self.n_rescored = "knn", False, 7
+
+    def fake(body, scenario, **kw):
+        seen.update(kw)
+        return Pred()
+
+    monkeypatch.setattr(P_, "predict_plan_candidates", fake)
+    _clear_streamlit_caches()
+    path = P(__file__).resolve().parents[1] / "scripts" / "run_dashboard.py"
+    at = AppTest.from_file(str(path), default_timeout=240)
+    at.query_params["model"] = "capsule"
+    at.run()
+    at.sidebar.radio[0].set_value("체형 직접 입력").run()
+    assert not at.exception, [e.value for e in at.exception]
+
+    said = " ".join(str(getattr(m, "value", "")) for m in at.info)
+    assert "돌기만 하는 쪽이 더 높게" in said, said
+    assert "evaluator" not in seen and "nozzle" not in seen
+    assert seen.get("rescore_top") == pg.PLAN_RESCORE_TOP
 
 
 def test_plan_guide_says_how_many_were_scored(monkeypatch):
