@@ -150,9 +150,16 @@ def control_json(plan: Plan, body: BodyParams | None, scenario: Scenario, *, sou
 # 모드 B: 자세를 바꿔 가는 계획
 # ---------------------------------------------------------------------------
 #: 계획 출처 표시 이름 (화면용. 내부 식별자는 그대로 둔다)
+#: "fixed" 는 **제안 자세 회전과 기본 자세 회전을 모두** 가리키므로 (`predict_plan_candidates` 의
+#: fixed_plans) "기본 회전 계획" 이라고 쓰면 앞쪽을 기본 자세로 오해하게 된다 → "고정 회전 계획".
 PLAN_SOURCE_LABELS = {"knn": "비슷한 체형 참조", "flow": "AI 추천 후보",
-                      "fixed": "기본 회전 계획", "rotation": "기본 회전 계획",
+                      "fixed": "고정 회전 계획", "rotation": "고정 회전 계획",
                       "extra": "고정 후보"}
+
+#: 계획 추천 설정 (총괄 확정 2026-10-11, F 측정 뒤). 점수 순 상위 7개만 자세히 다시 채점하고 그 채점을
+#: 스레드 3개로 나눈다. 판정 기록: 하위 5% 0.9831 · 불가 0 · 평균 응답 1.26 s (휠체어 1.55 s).
+PLAN_RESCORE_TOP = 7
+PLAN_THREADS = 3
 
 #: 구역 표시 이름 (몸 기준. 화면 문구 규약대로 약어를 쓰지 않는다)
 ZONE_LABELS = {"chest_low": "가슴 쪽 아래", "chest_high": "가슴 쪽 위",
@@ -207,15 +214,20 @@ class PlanGuide:
         return f"후보 {self.n_candidates}개를 모두 채점했습니다."
 
 
-def plan_model(body: BodyParams | None, scenario: Scenario, rotation_pose: PoseParams, *,
-               evaluator=None, nozzle=None) -> PlanGuide:
+def plan_model(body: BodyParams | None, scenario: Scenario, rotation_pose: PoseParams,
+               **kw) -> PlanGuide:
     """F 의 계획 추천을 부른다. 산출물이 없거나 못 쓰면 `plan=None` + 이유.
 
     `rotation_pose` 에 ④ 의 추천 자세를 넘기면 "제안 자세 그대로 회전"(= 모드 A)이 후보에 들어간다.
     두 모드가 **같은 후보군에서** 겨루므로, 모드 B 가 뽑혔다는 것은 모드 A 보다 높았다는 뜻이다.
 
-    인자는 `interfaces.md` "계획 모델" 에 있는 것만 넘긴다 — 모르는 인자는 `TypeError` 다
-    (중복 제거·스레드는 계획 쪽에 아직 없다, F 확인 2026-10-06).
+    **평가기를 넘기지 않는다.** 계획 산출물의 도장은 1,500/m² 이고 자세 경로는 2,000/m² 를 쓴다.
+    자세 쪽 평가기를 여기에 넘기면 모델이 학습·판정 때와 다른 자로 후보를 고르게 되므로, 기본
+    재채점기(산출물 도장)에 맡긴다. 화면에 보여 주는 효과 값은 호출자가 따로 잰다.
+
+    `rescore_top`·`n_threads` 는 설정값(`PLAN_RESCORE_TOP`·`PLAN_THREADS`)을 넘기고, 호출자가 `kw` 로
+    덮어쓸 수 있다 (측정·테스트용). 인자 이름은 `interfaces.md` "계획 모델" 에 있는 것만 쓴다 —
+    모르는 인자는 `TypeError` 다.
     """
     import time
 
@@ -224,11 +236,7 @@ def plan_model(body: BodyParams | None, scenario: Scenario, rotation_pose: PoseP
         from ..model.predict import predict_plan_candidates
     except ImportError as exc:
         return PlanGuide(None, note=f"계획 추천을 쓸 수 없습니다 ({exc})")
-    kw = {}
-    if evaluator is not None:
-        kw["evaluator"] = evaluator
-    if nozzle is not None:
-        kw["nozzle"] = nozzle
+    kw = {"rescore_top": PLAN_RESCORE_TOP, "n_threads": PLAN_THREADS, **kw}
     try:
         pred = predict_plan_candidates(body, scenario, rotation_pose=rotation_pose, **kw)
     except FileNotFoundError:

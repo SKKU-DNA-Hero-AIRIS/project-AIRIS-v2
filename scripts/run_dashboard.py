@@ -159,8 +159,10 @@ def plan_cached(body_t: tuple, scenario: str, body_model: str, pose_t: tuple):
     sc = get_scenarios()[scenario]
     body = BodyParams(*body_t)
     pose = PoseParams(*pose_t)
+    # 계획 추천에는 평가기를 넘기지 않는다 — 모델은 산출물 도장(1,500/m²)으로 고르게 둔다.
+    # 아래 두 효과 값은 화면용이라 ④ 와 같은 자(이 몸 모델의 밀도)로 다시 잰다.
+    guide = plan_guide.plan_model(body, sc, pose)
     ev, nz = patch_evaluator(body_model), _nozzles()
-    guide = plan_guide.plan_model(body, sc, pose, evaluator=ev, nozzle=nz)
     if guide.plan is None:
         return guide, None, None
     rot = plan_guide.rotation_plan(pose)
@@ -279,7 +281,7 @@ def render_plan_b(guide, eff_a, eff_b, body, scenario, body_model, booth, scen) 
     """
     plan = guide.plan
     if guide.is_rotation_only:
-        # 후보군에 들어 있는 기본 회전 계획이 이겼다. 위 ④-2 의 안내와 같은 것이므로 두 번 보여 주지 않는다.
+        # 후보군에 들어 있는 고정 회전 계획이 이겼다. 위 ④-2 의 안내와 같은 것이므로 두 번 보여 주지 않는다.
         st.success("이 체형에서는 한 자세로 돌기만 하는 쪽이 가장 좋았습니다. "
                    "위의 회전 안내를 그대로 쓰세요.")
         st.caption("자세를 바꿔 가는 후보들보다 이 쪽 점수가 높았습니다 (드문 경우입니다). "
@@ -291,6 +293,11 @@ def render_plan_b(guide, eff_a, eff_b, body, scenario, body_model, booth, scen) 
                    f"값은 단계마다 다릅니다.")
 
     if eff_a and eff_b:
+        if not guide.is_rotation_only and eff_b["먼지 제거 효과"] < eff_a["먼지 제거 효과"]:
+            # 모델은 산출물 도장(1,500/m²)으로 고르고 이 표는 더 촘촘한 자로 다시 잰다. 자가 다르니
+            # 모델이 고른 쪽이 여기서 낮게 나올 수 있다 — 숨기지 않고 화면이 그대로 말한다.
+            st.info("이 체형을 더 촘촘히 다시 재 보니 **돌기만 하는 쪽이 더 높게** 나왔습니다 "
+                    "(아래 표). 위의 회전 안내를 쓰셔도 됩니다.")
         rows = []
         for name, eff in (("그 자세로 한 바퀴 돌기", eff_a), ("자세를 바꿔 가기", eff_b)):
             rows.append({
@@ -298,10 +305,13 @@ def render_plan_b(guide, eff_a, eff_b, body, scenario, body_model, booth, scen) 
                 "먼지 제거 효과": round(eff["먼지 제거 효과"], 3),
                 "바람 에너지": None if eff["바람 에너지"] is None else round(eff["바람 에너지"], 2),
                 "자세 불편도": round(eff["자세 불편도"], 3),
-                "총 시간": None if eff["총 시간"] is None else f"{eff['총 시간']:.0f}초",
             })
         st.dataframe(rows, **WIDE, hide_index=True)
-        st.caption("이 체형으로 직접 계산한 값입니다 (실험 표와 달리 기본 체형이 아닙니다). "
+        # 칸이 좁아 다섯 번째 칸(총 시간)이 잘렸다. 두 값뿐이라 글로 쓴다.
+        times = " · ".join(f"{r['방식']} {e['총 시간']:.0f}초"
+                           for r, e in zip(rows, (eff_a, eff_b)) if e["총 시간"] is not None)
+        st.caption(f"{'총 시간: ' + times + '. ' if times else ''}"
+                   "이 체형으로 직접 계산한 값입니다 (실험 표와 달리 기본 체형이 아닙니다). "
                    "'바람 에너지' 1.00 = 지금 장비 그대로 20초 운전.")
 
     f1, f2 = st.columns(2)
