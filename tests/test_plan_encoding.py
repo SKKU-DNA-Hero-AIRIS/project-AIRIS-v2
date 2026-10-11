@@ -852,3 +852,131 @@ def test_encoder_for_row_reads_zone_counts_from_stamp():
                        __import__("airis.sim.scenario", fromlist=["x"]).load_scenarios()["default"],
                        PlanLimits(n_phases=3, duration_bounds_s=(6.0, 20.0), cap_ratio=0.5))
     assert np.allclose(normal.clip_zone_strengths(z), same.clip_zone_strengths(z))
+
+
+# ---------- 다듬기 한 바퀴 (총괄 승인 10-11, F 5-fold 90.7% 보고) ----------
+
+def test_neighbour_indices_excludes_self_and_sorts():
+    """이웃은 자기 자신을 빼고 체형이 가까운 순이며, 다른 시나리오 행은 섞이지 않는다."""
+    import pandas as pd
+
+    from airis.optimize.plan_dataset import neighbour_indices
+
+    rows = []
+    for idx, height in enumerate((1.60, 1.62, 1.75, 1.90)):
+        for scenario in ("default", "wheelchair"):
+            rows.append({"body_idx": idx, "scenario": scenario, "body_height_m": height,
+                         "body_shoulder_width_m": 0.34, "body_torso_depth_m": 0.19,
+                         "body_arm_length_m": 0.46, "body_leg_length_m": 0.88})
+    df = pd.DataFrame(rows)
+
+    got = neighbour_indices(df, "default", 0, 2)
+    assert got == [1, 2], "가까운 순이고 자기 자신은 없다"
+    assert neighbour_indices(df, "default", 3, 99) == [2, 1, 0]
+    # 시나리오가 하나뿐인 행에는 이웃이 없다.
+    one = df[(df.scenario == "default") & (df.body_idx == 0)]
+    assert neighbour_indices(one, "default", 0, 4) == []
+
+
+def test_config_from_row_restores_evaluator_settings():
+    """행의 도장만으로 평가기 설정이 되살아난다 (후보·기준선은 끈 상태)."""
+    from airis.optimize.plan_dataset import config_from_row
+
+    row = {"n_phases": 4, "energy_weight": 0.03, "evaluator": "dummy", "patches_per_m2": 800.0,
+           "popsize": 12, "tol_stagnation_gens": 25, "warm_start_sigma0": 0.3, "body_seed": 0}
+    cfg = config_from_row(row)
+    assert (cfg.n_phases, cfg.energy_weight, cfg.evaluator) == (4, 0.03, "dummy")
+    assert (cfg.patches_per_m2, cfg.popsize, cfg.tol_stagnation_gens) == (800.0, 12, 25)
+    assert cfg.candidate_k == 0 and cfg.baselines is False
+
+
+def test_polish_plan_dataset_end_to_end(tmp_path):
+    """더미 평가기 3행 — 더하는 열, polish_score >= score, 이어 돌리기, 같은 파일 거부."""
+    import numpy as np
+    import pandas as pd
+
+    from airis.optimize.plan_dataset import (
+        PlanDatasetConfig, PolishConfig, build_plan_dataset, polish_plan_dataset,
+    )
+    from airis.optimize.plan_encoding import plan_keys
+
+    src = tmp_path / "plan.parquet"
+    cfg = PlanDatasetConfig(n_phases=3, max_evals=300, pose_max_evals=150, popsize=10,
+                            evaluator="dummy", candidate_k=4)
+    build_plan_dataset(src, n_bodies=3, scenarios=["default"], cfg=cfg,
+                       processes=1, flush_every=1, log=lambda *a: None)
+
+    out = tmp_path / "plan_polished.parquet"
+    pol = PolishConfig(k_neighbours=2, n_starts=1, max_evals=120)
+    res = polish_plan_dataset(src, out, pol=pol, processes=1, flush_every=1,
+                              log=lambda *a: None)
+    assert (res["n_rows"], res["n_new"], res["n_done"]) == (3, 3, 3)
+
+    df = pd.read_parquet(out)
+    base = pd.read_parquet(src)
+    # 원래 열은 그대로다 (값까지 같다).
+    for col in base.columns:
+        assert col in df.columns, col
+    assert df["score"].tolist() == base["score"].tolist()
+    # 더하는 열이 다 있고, 다듬은 점수는 원래 점수보다 낮지 않다.
+    for col in ("polish_score", "polish_plan_raw", "polish_source", "polish_gain",
+                "polish_own_score", "polish_n_evals", "polish_starts", "polish_max_evals",
+                "polish_k_neighbours", "polish_elapsed_s"):
+        assert col in df.columns, col
+    assert np.isfinite(df["polish_score"]).all()
+    assert (df["polish_score"] >= df["polish_own_score"] - 1e-9).all(), "원래 계획도 후보에 넣는다"
+    assert (df["polish_gain"] >= -1e-9).all()
+    assert df["polish_k_neighbours"].eq(2).all() and df["polish_max_evals"].eq(120).all()
+    # 저장 벡터는 후보 열과 같은 규약(8N + 5, 원래 단위).
+    dim = len(plan_keys(3))
+    assert all(len(v) == dim for v in df["polish_plan_raw"])
+    assert df["polish_starts"].str.startswith("own").all()
+
+    # 이어 돌리면 다듬은 행을 건너뛴다.
+    again = polish_plan_dataset(src, out, pol=pol, processes=1, log=lambda *a: None)
+    assert (again["n_new"], again["n_done"]) == (0, 3)
+
+    # 입력 파일에 덮어쓰지 않는다 (F 가 읽는 중일 수 있다).
+    with pytest.raises(ValueError, match="다른 파일"):
+        polish_plan_dataset(src, src, pol=pol, processes=1, log=lambda *a: None)
+
+
+def test_polish_plan_dataset_one_scenario_only(tmp_path):
+    """--scenarios 를 주면 그 시나리오 행만 담는다 (이웃도 그 안에서 고른다)."""
+    import pandas as pd
+
+    from airis.optimize.plan_dataset import (
+        PlanDatasetConfig, PolishConfig, build_plan_dataset, polish_plan_dataset,
+    )
+
+    src = tmp_path / "plan.parquet"
+    cfg = PlanDatasetConfig(n_phases=3, max_evals=300, pose_max_evals=150, popsize=10,
+                            evaluator="dummy", candidate_k=0)
+    build_plan_dataset(src, n_bodies=2, scenarios=["default", "wheelchair"], cfg=cfg,
+                       processes=1, flush_every=1, log=lambda *a: None)
+
+    out = tmp_path / "polished.parquet"
+    res = polish_plan_dataset(src, out, pol=PolishConfig(k_neighbours=1, max_evals=120),
+                              scenarios=["wheelchair"], processes=1, log=lambda *a: None)
+    assert res["n_rows"] == 2 and res["n_new"] == 2
+    df = pd.read_parquet(out)
+    assert set(df["scenario"]) == {"wheelchair"}
+
+
+def test_polish_script_cli(tmp_path):
+    """스크립트 경로도 돈다 — 입력과 같은 파일을 주면 2 를 돌려준다."""
+    from scripts.polish_plan_dataset import main as polish_main
+    from scripts.run_plan_dataset import main as plan_main
+
+    src = tmp_path / "plan.parquet"
+    assert plan_main([
+        "--n-bodies", "2", "--scenarios", "default", "--evaluator", "dummy",
+        "--n-phases", "3", "--max-evals", "200", "--pose-max-evals", "100",
+        "--popsize", "10", "--candidate-k", "0", "--processes", "1", "--no-baselines",
+        "--out", str(src)]) == 0
+
+    out = tmp_path / "polished.parquet"
+    assert polish_main(["--in", str(src), "--out", str(out), "--k-neighbours", "1",
+                        "--max-evals", "120", "--processes", "1"]) == 0
+    assert out.exists()
+    assert polish_main(["--in", str(src), "--out", str(src), "--processes", "1"]) == 2
