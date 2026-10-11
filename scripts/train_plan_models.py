@@ -37,8 +37,11 @@ from airis.optimize import cli, explog                       # noqa: E402
 
 FLOW_FILE, KNN_FILE = "plan_flow.pt", "plan_knn.parquet"
 NAMES = (FLOW_FILE, KNN_FILE)
-GATE_METHOD = "hybrid"
-METHODS = "hybrid,hybrid-nofixed,knn+fixed,fixed"
+#: 계획 추천의 기본 구성은 kNN 16 + 고정 회전 계획이다 (총괄 2026-10-11, flow 는 기여가 없었다. 문서 4.6절).
+#: 그래서 판정 대상은 knn+fixed 이고, flow 는 --with-flow 를 주거나 flow 를 쓰는 방법을 비교할 때만 학습한다.
+GATE_METHOD = "knn+fixed"
+METHODS = "knn+fixed,fixed"
+FLOW_METHODS = ("hybrid", "hybrid-nofixed", "flow+fixed")
 
 
 @dataclass(frozen=True)
@@ -57,6 +60,9 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--model-dir", default=None, help="설치 폴더. 기본값: AIRIS_MODEL_DIR 또는 data/models")
     ap.add_argument("--out-dir", default=None, help="기본값: outputs/<plan_refresh_시각[_tag]>")
     ap.add_argument("--tag", default="")
+    ap.add_argument("--with-flow", action="store_true",
+                    help="flow 도 학습해 plan_flow.pt 를 함께 만든다 (기본은 kNN 표만. --methods 에 flow 를 쓰는 "
+                         "방법이 있으면 자동으로 켜진다)")
     ap.add_argument("--steps", type=int, default=4000, help="flow 학습 스텝")
     ap.add_argument("--hidden", type=int, default=128)
     ap.add_argument("--layers", type=int, default=3)
@@ -142,7 +148,9 @@ def install_only(run_dir: Path, model_dir: Path, *, force: bool = False) -> int:
     import train_pose_models as tpm
 
     gate_path = run_dir / "gate.json"
-    missing = [n for n in NAMES if not (run_dir / n).is_file()] + ([] if gate_path.is_file() else ["gate.json"])
+    # kNN 표는 꼭 있어야 하고, flow 는 그 실행이 만들었을 때만 함께 설치한다 (기본 구성은 kNN 표만 쓴다)
+    names = tuple(n for n in NAMES if n == KNN_FILE or (run_dir / n).is_file())
+    missing = [n for n in names if not (run_dir / n).is_file()] + ([] if gate_path.is_file() else ["gate.json"])
     if missing:
         print(f"{run_dir} 에 설치할 것이 없다 (없는 파일: {', '.join(missing)})", file=sys.stderr)
         return 2
@@ -159,7 +167,7 @@ def install_only(run_dir: Path, model_dir: Path, *, force: bool = False) -> int:
               file=sys.stderr)
         return 2
     try:
-        installed, error = [str(p) for p in tpm.install(run_dir, model_dir, NAMES)], None
+        installed, error = [str(p) for p in tpm.install(run_dir, model_dir, names)], None
     except Exception as exc:
         installed, error = [], f"{type(exc).__name__}: {exc}"
     history = list(report.get("installs", []))
@@ -229,20 +237,27 @@ def main(argv: list[str] | None = None) -> int:
     scenarios = load_scenarios()
     names = sorted(set(df["scenario"].astype(str)))
     space = plan_data.plan_space_from_dataset(df, [scenarios[n] for n in names])
-    print(f"[plan-refresh] 1/4 flow 학습 ({args.steps} 스텝, 단계 {limits.n_phases}개 = {space.dim}차원, "
-          f"총 시간 {limits.duration_bounds_s[0]:g}~{limits.duration_bounds_s[1]:g} s)")
-    cfg = flow.FlowConfig(hidden=args.hidden, layers=args.layers, steps=args.steps, batch_size=args.batch_size,
-                          lr=args.lr, seed=args.train_seed, device=args.device)
-    t0 = time.perf_counter()
-    model = flow.train_flow(df, scenarios, cfg, space=space, log=print,
-                            meta={**meta, "dataset": str(dataset), "commit": start_commit,
-                                  "trained_at": time.strftime("%Y-%m-%d %H:%M:%S")})
-    timings["train_s"] = time.perf_counter() - t0
-    model.meta["train_rows"] = int(len(df))
-    # 어느 재필터 임계로 학습한 flow 인지 (두 벌을 비교해 하나를 설치할 때 구분한다). 재필터를 안 했으면 None.
-    model.meta["candidate_refilter_min_dist"] = refilter.get("min_dist")
-    model.save(out_dir / FLOW_FILE)
-    device = model.meta.get("device")
+    cv_methods = [m.strip() for m in args.methods.split(",") if m.strip()]
+    with_flow = args.with_flow or (not args.skip_cv and any(m in FLOW_METHODS for m in cv_methods))
+    device = None
+    if with_flow:
+        print(f"[plan-refresh] 1/4 flow 학습 ({args.steps} 스텝, 단계 {limits.n_phases}개 = {space.dim}차원, "
+              f"총 시간 {limits.duration_bounds_s[0]:g}~{limits.duration_bounds_s[1]:g} s)")
+        cfg = flow.FlowConfig(hidden=args.hidden, layers=args.layers, steps=args.steps, batch_size=args.batch_size,
+                              lr=args.lr, seed=args.train_seed, device=args.device)
+        t0 = time.perf_counter()
+        model = flow.train_flow(df, scenarios, cfg, space=space, log=print,
+                                meta={**meta, "dataset": str(dataset), "commit": start_commit,
+                                      "trained_at": time.strftime("%Y-%m-%d %H:%M:%S")})
+        timings["train_s"] = time.perf_counter() - t0
+        model.meta["train_rows"] = int(len(df))
+        # 어느 재필터 임계로 학습한 flow 인지 (두 벌을 비교해 하나를 설치할 때 구분한다). 재필터를 안 했으면 None.
+        model.meta["candidate_refilter_min_dist"] = refilter.get("min_dist")
+        model.save(out_dir / FLOW_FILE)
+        device = model.meta.get("device")
+    else:
+        print("[plan-refresh] 1/4 flow 학습 안 함 (기본 구성은 kNN + 고정 회전 계획. 학습하려면 --with-flow)")
+        (out_dir / FLOW_FILE).unlink(missing_ok=True)           # 같은 폴더의 앞선 실행이 남긴 flow 를 설치하지 않게
 
     print("[plan-refresh] 2/4 kNN 표")
     PlanKNN.from_dataset(df, min_phase_s=limits.min_phase_s).save(out_dir / KNN_FILE)
@@ -251,9 +266,11 @@ def main(argv: list[str] | None = None) -> int:
     if not args.skip_cv:
         print(f"[plan-refresh] 3/4 체형 {args.folds}-fold ({args.methods})")
         t0 = time.perf_counter()
-        cv_args = ["--model", str(out_dir / FLOW_FILE), "--dataset", str(dataset), "--folds", str(args.folds),
+        cv_args = ["--dataset", str(dataset), "--folds", str(args.folds),
                    "--methods", args.methods, "--n-flow", str(args.n_flow), "--n-knn", str(args.n_knn),
                    "--rotation-pose", args.rotation_pose, "--out", str(out_dir / "e5plan.csv")]
+        if with_flow:
+            cv_args += ["--model", str(out_dir / FLOW_FILE)]
         for flag, value in (("--pose-model", args.pose_model), ("--pose-knn", args.pose_knn),
                             ("--limit", args.limit), ("--rescore-top", args.rescore_top),
                             ("--n-threads", args.n_threads if args.n_threads > 1 else None)):
@@ -282,6 +299,7 @@ def main(argv: list[str] | None = None) -> int:
               "candidate_refilter": refilter,
               "limits": asdict(limits), "space_dim": space.dim, "gate": asdict(PlanGate()), "verdict": verdict,
               "installed": [], "install_error": None, "model_dir": str(model_dir), "device": device,
+              "with_flow": bool(with_flow),
               "timings": {k: round(v, 1) for k, v in timings.items()}, "args": vars(args)}
     (out_dir / "gate.json").write_text(json.dumps(report, ensure_ascii=False, indent=2, default=str),
                                        encoding="utf-8")

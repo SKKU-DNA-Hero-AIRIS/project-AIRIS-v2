@@ -159,15 +159,21 @@ worktree에서 돌릴 때는 데이터셋 경로를 본 폴더로 주고, 설치
 
 총괄 2026-10-06: 계획 데이터셋(C, 설계 결정 뒤 생성)이 나오기 전에 학습·추천·평가 코드를 미리 만든다.
 
-### 4.1 혼합 계획 추천 (`predict_plan`)
+### 4.1 계획 추천 (`predict_plan`)
 
-    후보 = flow 샘플 n_flow 개 (data/models/plan_flow.pt)
-         + 가까운 학습 체형의 최적 계획 n_knn 개 (data/models/plan_knn.parquet, knn.PlanKNN)
+**기본 구성(총괄 2026-10-11)은 kNN 16 + 고정 회전 계획이다.** flow 는 기본에서 뺐다(`n_flow` 기본 0). 300행 5-fold 에서
+flow 샘플이 뽑힌 행이 없었고 같은 채점 수에서 kNN 16개가 flow 8 + kNN 8 보다 높았다(4.6절). flow 코드는 그대로 있고
+`n_flow` 를 주면 예전처럼 섞어 쓴다. 설치 산출물도 기본은 `plan_knn.parquet` 하나다(`plan_flow.pt` 는
+`train_plan_models.py --with-flow` 로 만들 때만).
+
+    후보 = 가까운 학습 체형의 최적 계획 n_knn 개 (기본 16, data/models/plan_knn.parquet, knn.PlanKNN)
+         + flow 샘플 n_flow 개 (기본 0. 주면 data/models/plan_flow.pt 에서 뽑는다)
          + 고정 회전 계획 (제안 자세 그대로 회전 / 기본 자세 회전, C 의 rotation_plan, 10단계)
          + extra_candidates
     → 패치판 evaluate_plan 재채점 → 가장 높은 계획
 
 - 자세 추천(1절)과 같은 구조다. 한쪽 산출물만 있으면 있는 쪽으로 돌아가고(경고), 둘 다 없으면 FileNotFoundError.
+  기본 구성에서 kNN 표가 없고 flow 산출물만 있으면 flow 샘플 8개 + 고정 회전 계획으로 돌아간다(경고).
 - **고정 회전 계획**: E7 에서 최적 자세로 도는 회전이 전 시나리오 1위였다. 그래서 모델 후보가 그보다 나쁘면
   회전 계획이 뽑히게 고정 후보로 넣는다. "제안 자세 그대로 회전"은 호출하는 쪽이 자세 추천 결과를
   `rotation_pose` 로 넘길 때 들어가고, "기본 자세 회전"은 항상 들어간다. 단계 수는 10(`ROTATION_STEPS`,
@@ -223,26 +229,29 @@ python scripts/train_plan_models.py --install-from outputs/<결과 폴더> --mod
 1. **데이터셋 확인**: 설정 도장(물리·노즐 해시, 몸 모델, 패치 밀도, 계획 채점 설정, 단계 수, 에너지 가중)과
    계획 한도가 데이터셋 안에서 한 값인지 본다. 여러 값이면 멈춘다(계획 점수는 에너지 가중·단계 수·한도에 따라
    달라져 서로 비교할 수 없다). 지금 설정과 다르면 경고한다. `commit` 은 출처 기록이라 여러 값이어도 진행한다.
-2. **flow 학습**: 출력 공간은 데이터셋의 단계 수·한도로 만든다(8N + 5 차원).
+2. **flow 학습**(선택, `--with-flow` 또는 flow 를 쓰는 방법을 비교할 때만): 출력 공간은 데이터셋의 단계 수·한도로
+   만든다(8N + 5 차원).
 3. **kNN 표**: `PlanKNN`.
 4. **체형 5-fold** (`scripts/run_e5_plan.py`): fold 마다 학습 체형만으로 flow 를 다시 학습하고 kNN 표를 다시 만든다.
    점수 비율 = 추천 계획 점수 / 그 체형을 직접 최적화한 계획 점수(데이터셋 `score`).
-5. **판정**(혼합, 완성도 F2·F3): 하위 5% ≥ 0.97, 불가 0, 평균 응답 ≤ 1.5 s. `--limit` 빠른 점검은 판정 무효.
-6. **설치**: 합격이면 `plan_flow.pt`·`plan_knn.parquet` 을 설치 폴더로. 기존 파일은 `*.prev`. 설치 이력은
+5. **판정**(kNN + 고정 회전 계획 = `knn+fixed`, 완성도 F2·F3): 하위 5% ≥ 0.97, 불가 0, 평균 응답 ≤ 1.5 s.
+   `--limit` 빠른 점검은 판정 무효. 2026-10-11 까지는 판정 대상이 혼합(`hybrid`)이었다(4.6절의 실행).
+6. **설치**: 합격이면 `plan_knn.parquet`(flow 를 학습했으면 `plan_flow.pt` 도)을 설치 폴더로. 기존 파일은 `*.prev`. 설치 이력은
    `gate.json` 의 `installs` 에 쌓인다.
 
 5-fold 가 비교하는 방법(괄호 = 체형 하나에 쓰는 계획 채점 횟수, F = 고정 회전 계획 수):
 
 | 방법 | 후보 |
 |---|---|
-| `hybrid` | flow 8 + kNN 8 + 고정 회전 계획 (16 + F). `predict_plan` 기본 동작, 판정 대상 |
+| `hybrid` | flow 8 + kNN 8 + 고정 회전 계획 (16 + F). 2026-10-11 까지의 기본 동작 |
 | `hybrid-nofixed` | flow 8 + kNN 8 (16). 고정 회전 계획이 얼마나 받쳐 주는지 본다 |
 | `flow+fixed` | flow 16 + 고정 회전 계획 |
-| `knn+fixed` | kNN 16 + 고정 회전 계획 |
+| `knn+fixed` | kNN 16 + 고정 회전 계획. **`predict_plan` 기본 동작, 판정 대상** |
 | `fixed` | 고정 회전 계획만 (F). "그냥 회전" 기준선 |
 
-`train_plan_models.py` 의 기본 비교는 이 가운데 4개다(`flow+fixed` 제외. flow 재학습은 `hybrid` 가 이미 쓰므로
-추가 학습 비용은 없고 채점 횟수만 는다). 5개를 다 보려면 `--methods hybrid,hybrid-nofixed,flow+fixed,knn+fixed,fixed`.
+`train_plan_models.py` 의 기본 비교는 `knn+fixed`·`fixed` 둘이다. 이때는 flow 를 학습하지 않고 kNN 표만 만든다.
+flow 를 쓰는 방법(`hybrid`, `hybrid-nofixed`, `flow+fixed`)을 `--methods` 에 넣거나 `--with-flow` 를 주면 flow 도
+학습해 `plan_flow.pt` 를 함께 만들고 설치한다.
 응답 시간 열은 fold 산출물을 미리 읽은 뒤에 잰다(로드 시간 제외).
 
 결과 표에는 고른 계획의 총 시간과 고정 회전 계획이 뽑힌 비율을 함께 싣는다(총 시간이 다르면 점수 비교가 공정하지
@@ -301,7 +310,9 @@ PR #159)도 도장으로 본다. 섞여 있으면 멈추고, 열이 없는 예�
 
 - flow 샘플에는 순위를 매길 점수가 없다. 그래서 출처를 돌아가며 각 출처의 앞에서부터 고른다
   (`predict.rescore_subset`): kNN 1등(가장 가까운 체형의 최적 계획) → 고정 회전 계획 1번(제안 자세 회전, 없으면
-  기본 자세 회전) → flow 1번 → kNN 2등 → …
+  기본 자세 회전) → flow 1번 → kNN 2등 → … 고정 회전 계획 2번(제안 자세가 있을 때의 기본 자세 회전)은 다른 출처가
+  다 떨어진 뒤에 고른다(2026-10-11: 300행 모두에서 제안 자세 회전이 더 높았고, 그 자리는 kNN 후보에 쓰는 편이 낫다).
+  기본 구성에서 k = 5 는 kNN 4개 + 회전 1개다.
 - k ≥ 1 이면 "가장 가까운 체형의 최적 계획보다 나빠지지 않는다", k ≥ 2 이면 "그냥 회전보다 나빠지지 않는다"가
   유지된다. 자세 추천에서 선별만 쓰면 표 보장이 깨졌던 것(5.2절)을 피하려는 규칙이다.
 - 채점하지 않은 후보는 `scores` 가 NaN 이고 고르지 않는다(`rescored`, `n_rescored` 에 기록). 부스 안 판정 여유도

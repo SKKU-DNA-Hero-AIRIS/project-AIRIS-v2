@@ -178,6 +178,21 @@ def test_extra_candidates_keep_or_clip_by_phase_count(artifacts, scenarios):
     assert kept is other_n, "단계 수가 다른 계획은 그대로 채점한다"
 
 
+def test_default_is_knn_plus_fixed_rotation(artifacts, scenarios):
+    """기본 구성(총괄 2026-10-11): 가까운 체형의 최적 계획 + 고정 회전 계획. flow 는 n_flow 를 줄 때만 쓴다."""
+    sc = scenarios["default"]
+    assert (pred.PLAN_N_FLOW, pred.PLAN_N_KNN) == (0, 16)
+    ev = PlanScorer()
+    p = pred.predict_plan_candidates(BodyParams(), sc, evaluator=ev, rotation_pose=PoseParams(shoulder_abduction=90.0),
+                                     **kw(artifacts))
+    assert p.sources == ["knn"] * 16 + ["fixed"] * 2 and len(ev.calls) == 18
+    assert all(len(c.phases) == N for c in p.candidates[:16])
+    with_flow = pred.predict_plan_candidates(BodyParams(), sc, evaluator=PlanScorer(), n_flow=3, **kw(artifacts))
+    assert with_flow.sources == ["flow"] * 3 + ["knn"] * 16 + ["fixed"], "flow 는 옵션으로 남아 있다"
+    # 자세 추천의 기본 후보 수는 그대로다
+    assert (pred.N_FLOW, pred.N_KNN) == (8, 8)
+
+
 # ---------- 폴백과 예외 ----------
 
 def test_falls_back_to_available_artifact_with_warning(artifacts, scenarios):
@@ -186,10 +201,15 @@ def test_falls_back_to_available_artifact_with_warning(artifacts, scenarios):
         only_flow = pred.predict_plan_candidates(BodyParams(), sc, evaluator=PlanScorer(), path=artifacts["flow"],
                                                  knn_path=artifacts["none"], nozzle=object())
     assert set(only_flow.sources) == {"flow", "fixed"} and only_flow.sources.count("flow") == pred.N_FLOW
-    with pytest.warns(RuntimeWarning, match="flow 산출물 없음"):
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")                          # 기본 구성은 flow 를 찾지 않는다: 경고 없음
         only_knn = pred.predict_plan_candidates(BodyParams(), sc, evaluator=PlanScorer(), path=artifacts["none"],
                                                 knn_path=artifacts["knn"], nozzle=object())
     assert set(only_knn.sources) == {"knn", "fixed"} and len(only_knn.candidates[0].phases) == N
+    with pytest.warns(RuntimeWarning, match="flow 산출물 없음"):    # flow 를 달라고 했는데(n_flow > 0) 없으면 경고
+        asked = pred.predict_plan_candidates(BodyParams(), sc, evaluator=PlanScorer(), n_flow=4, n_knn=4,
+                                             path=artifacts["none"], knn_path=artifacts["knn"], nozzle=object())
+    assert set(asked.sources) == {"knn", "fixed"}
     with warnings.catch_warnings():
         warnings.simplefilter("error")                          # backend 를 정했으면 경고 없이 그쪽만
         k = pred.predict_plan_candidates(BodyParams(), sc, evaluator=PlanScorer(), backend="knn", n_knn=5,
@@ -229,8 +249,11 @@ def test_rescore_subset_rotates_sources_and_keeps_nearest_table_plan():
     assert pred.rescore_subset(src, 1) == [4], "1개면 가장 가까운 체형의 최적 계획"
     assert pred.rescore_subset(src, 2) == [4, 7], "2개면 고정 회전 계획 1번이 더해진다"
     assert pred.rescore_subset(src, 3) == [0, 4, 7], "3개면 flow 1번"
-    assert pred.rescore_subset(src, 5) == [0, 4, 5, 7, 8]
-    assert pred.rescore_subset(src, 8) == [0, 1, 2, 4, 5, 6, 7, 8], "한 출처가 떨어지면 남은 출처에서 채운다"
+    assert pred.rescore_subset(src, 5) == [0, 1, 4, 5, 7], "고정 회전 계획 2번은 돌아가는 순서에 넣지 않는다"
+    assert pred.rescore_subset(src, 8) == [0, 1, 2, 3, 4, 5, 6, 7], "다른 출처가 다 떨어진 뒤에야 2번을 고른다"
+    knn_default = ["knn"] * 16 + ["fixed"] * 2                  # 기본 구성 + 제안 자세가 있을 때
+    assert pred.rescore_subset(knn_default, 5) == [0, 1, 2, 3, 16], "kNN 4개 + 제안 자세 회전"
+    assert pred.rescore_subset(knn_default, 17) == list(range(17)), "기본 자세 회전(17번)이 마지막"
     assert pred.rescore_subset(["flow", "knn", "fixed", "extra", "extra"], 1) == [1, 3, 4], "extra 는 항상, 세지 않고"
     assert pred.rescore_subset(["flow"] * 3, 2) == [0, 1] and pred.rescore_subset(["fixed"], 3) == [0]
     with pytest.raises(ValueError, match="1 이상"):

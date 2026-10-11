@@ -232,7 +232,7 @@ def test_refresh_records_candidate_refilter(tmp_path, scorer):
         out_dir = tmp_path / ("run" + "".join(flags))
         assert tpl.main(["--dataset", str(path), "--out-dir", str(out_dir), "--model-dir", str(tmp_path / "m"),
                          "--steps", "30", "--hidden", "16", "--layers", "1", "--skip-cv", "--no-install",
-                         *flags]) == 0
+                         "--with-flow", *flags]) == 0
         report = json.loads((out_dir / "gate.json").read_text(encoding="utf-8"))
         assert report["candidate_refilter"]["applied"] is applied
         assert pred.load_model(out_dir / tpl.FLOW_FILE, kind="plan").meta["train_rows"] == 12
@@ -343,7 +343,7 @@ def test_plan_cv_rotation_pose_and_bad_arguments(dataset_path, tmp_path, scorer,
 # ---------- 판정 ----------
 
 def stats_row(**over):
-    row = {"method": "hybrid", "n": 100, "n_evals": 17.0, "median": 1.0, "p05": 0.98, "min": 0.9, "below_095": 0.01,
+    row = {"method": "knn+fixed", "n": 100, "n_evals": 17.0, "median": 1.0, "p05": 0.98, "min": 0.9, "below_095": 0.01,
            "infeasible": 0.0, "mean_s": 1.2, "p95_s": 1.4, "plan_duration_s": 19.0, "fixed_picked": 0.25}
     return pd.DataFrame([{**row, **over}])
 
@@ -368,38 +368,58 @@ def test_gate_is_p05_infeasible_and_response_time():
 def run_refresh(dataset_path, out_dir, model_dir, *more):
     return tpl.main(["--dataset", str(dataset_path), "--out-dir", str(out_dir), "--model-dir", str(model_dir),
                      "--steps", "60", "--hidden", "32", "--layers", "2", "--batch-size", "64", "--folds", "2",
-                     "--n-flow", "2", "--n-knn", "2", "--methods", "hybrid,fixed", *more])
+                     "--n-flow", "2", "--n-knn", "2", *more])
 
 
 def test_refresh_end_to_end_then_install(dataset_path, tmp_path, scorer):
     out_dir, model_dir = tmp_path / "run", tmp_path / "models"
     assert run_refresh(dataset_path, out_dir, model_dir, "--no-install") == 0
-    assert all((out_dir / n).is_file() for n in (*tpl.NAMES, "e5plan.csv", "e5plan_overall.csv", "gate.md"))
+    assert all((out_dir / n).is_file() for n in (tpl.KNN_FILE, "e5plan.csv", "e5plan_overall.csv", "gate.md"))
+    assert not (out_dir / tpl.FLOW_FILE).exists(), "기본 구성은 kNN + 회전이라 flow 를 학습하지 않는다"
+    assert list(pd.read_csv(out_dir / "e5plan_overall.csv")["method"]) == ["knn+fixed", "fixed"]
     assert not model_dir.exists() or not list(model_dir.iterdir()), "--no-install 이면 설치 폴더를 건드리지 않는다"
     report = json.loads((out_dir / "gate.json").read_text(encoding="utf-8"))
-    assert report["verdict"]["passed"] and report["installed"] == []
+    assert report["verdict"]["passed"] and report["installed"] == [] and report["verdict"]["method"] == "knn+fixed"
+    assert report["with_flow"] is False
     assert report["limits"]["n_phases"] == N and report["space_dim"] == 8 * N + 5
     assert report["dataset_stamp"]["energy_weight"] == pytest.approx(0.03)
 
     # 산출물은 데이터셋의 단계 수·한도·도장을 가진다
-    model = pred.load_model(out_dir / tpl.FLOW_FILE, kind="plan")
     knn = PlanKNN.load(out_dir / tpl.KNN_FILE)
-    assert model.meta["n_phases"] == N and model.meta["dataset_commit"] == "c0" and model.meta["train_rows"] == 24
-    lim = pred.plan_limits_for(model, knn)
+    assert knn.meta["n_phases"] == N and len(knn.table) == 24
+    lim = pred.plan_limits_for(None, knn)
     assert lim.n_phases == N and lim.duration_bounds_s == pytest.approx((6.0, 20.0))
 
     # 설치만 따로. 두 번 하면 이력이 쌓이고 앞 산출물이 .prev 로 남는다
     assert tpl.main(["--install-from", str(out_dir), "--model-dir", str(model_dir)]) == 0
-    assert sorted(p.name for p in model_dir.iterdir()) == sorted(tpl.NAMES)
+    assert [p.name for p in model_dir.iterdir()] == [tpl.KNN_FILE], "kNN 표만 설치한다"
     assert tpl.main(["--install-from", str(out_dir), "--model-dir", str(model_dir)]) == 0
-    assert sorted(p.name for p in model_dir.iterdir()) == sorted([*tpl.NAMES, *(n + ".prev" for n in tpl.NAMES)])
+    assert sorted(p.name for p in model_dir.iterdir()) == [tpl.KNN_FILE, tpl.KNN_FILE + ".prev"]
     report = json.loads((out_dir / "gate.json").read_text(encoding="utf-8"))
     assert len(report["installs"]) == 2 and all(i["error"] is None and not i["forced"] for i in report["installs"])
     # 설치한 산출물로 추천이 된다
     scs = load_scenarios()
     p = pred.predict_plan_candidates(pred.BodyParams(), scs["default"], evaluator=ConstScorer(), nozzle=object(),
                                      path=model_dir / tpl.FLOW_FILE, knn_path=model_dir / tpl.KNN_FILE)
-    assert p.sources.count("flow") == pred.N_FLOW and "knn" in p.sources and "fixed" in p.sources
+    assert p.sources == ["knn"] * 12 + ["fixed"], "flow 산출물 없이 기본 구성으로 추천한다 (표의 체형이 12명뿐)"
+
+
+def test_refresh_with_flow_trains_and_installs_both(dataset_path, tmp_path, scorer):
+    """--with-flow 나 flow 를 쓰는 방법을 주면 flow 도 학습하고 함께 설치한다 (flow 는 옵션으로 남아 있다)."""
+    out_dir, model_dir = tmp_path / "run", tmp_path / "models"
+    assert run_refresh(dataset_path, out_dir, model_dir, "--methods", "knn+fixed,hybrid,fixed", "--no-install") == 0
+    report = json.loads((out_dir / "gate.json").read_text(encoding="utf-8"))
+    assert report["with_flow"] is True and report["verdict"]["method"] == "knn+fixed"
+    model = pred.load_model(out_dir / tpl.FLOW_FILE, kind="plan")
+    assert model.meta["n_phases"] == N and model.meta["dataset_commit"] == "c0" and model.meta["train_rows"] == 24
+    assert pred.plan_limits_for(model, PlanKNN.load(out_dir / tpl.KNN_FILE)).n_phases == N
+    assert tpl.main(["--install-from", str(out_dir), "--model-dir", str(model_dir)]) == 0
+    assert sorted(p.name for p in model_dir.iterdir()) == sorted(tpl.NAMES)
+    # flow 를 쓰는 방법을 비교하려면 run_e5_plan 에 --model 이 필요하다
+    assert run_e5_plan.main(["--dataset", str(dataset_path), "--methods", "hybrid", "--folds", "2"]) == 2
+    # 같은 폴더에 flow 없이 다시 돌리면 앞 실행의 flow 가 남지 않는다
+    assert run_refresh(dataset_path, out_dir, model_dir, "--no-install") == 0
+    assert not (out_dir / tpl.FLOW_FILE).exists()
 
 
 def test_failed_gate_does_not_install(dataset_path, tmp_path, scorer):
@@ -414,7 +434,7 @@ def test_failed_gate_does_not_install(dataset_path, tmp_path, scorer):
     assert not model_dir.exists() or not list(model_dir.iterdir())
     assert tpl.main(["--install-from", str(out_dir), "--model-dir", str(model_dir), "--install"]) == 0, "강제 설치"
     report = json.loads((out_dir / "gate.json").read_text(encoding="utf-8"))
-    assert report["installs"][-1]["forced"] and (model_dir / tpl.FLOW_FILE).is_file()
+    assert report["installs"][-1]["forced"] and (model_dir / tpl.KNN_FILE).is_file()
 
 
 def test_refresh_guards(dataset_path, tmp_path, scorer):
