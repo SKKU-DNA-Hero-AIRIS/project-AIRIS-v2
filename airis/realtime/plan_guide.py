@@ -256,11 +256,22 @@ def plan_model(body: BodyParams | None, scenario: Scenario, rotation_pose: PoseP
                      margin_fallback=bool(getattr(pred, "margin_fallback", False)))
 
 
+def zone_text(plan: Plan) -> str:
+    """계획 전체의 벽별 바람 세기 한 줄. 구역 세기는 **계획에 하나**라 단계마다 같다.
+
+    단계 표 안에 넣었더니 아홉 줄이 모두 같은 긴 문장이라 '자세' 칸을 밀어내 잘렸다 — 표 밖에 한 번만
+    쓴다 (단계마다 달라지는 값은 '분사구 평균' 이다).
+    """
+    zones = np.asarray(plan.zone_strengths, dtype=np.float64).reshape(-1)
+    return " · ".join(f"{ZONE_LABELS[z]} {v:.0%}" for z, v in zip(ZONE_NAMES, zones))
+
+
 def plan_steps(plan: Plan, scenario: Scenario) -> list[dict]:
-    """단계 표. 단계마다 자세 안내 문장·시간·그 단계의 벽별 바람 세기.
+    """단계 표. 단계마다 자세 안내 문장·시간·그 단계 분사구 평균.
 
     구역 세기는 계획 전체에 하나지만 **가슴 쪽 벽이 단계마다 바뀌므로** 노즐에 실제로 실리는 값은
-    단계마다 다르다. 그래서 `apply_zone_strengths` 를 단계마다 다시 불러 그 단계의 값을 보여 준다.
+    단계마다 다르다. 그래서 `apply_zone_strengths` 를 단계마다 다시 불러 그 평균을 보여 준다.
+    벽별 세기 자체는 단계마다 같으므로 `zone_text` 로 표 밖에 한 번만 쓴다.
     """
     nozzle = load_nozzles()
     zones = np.asarray(plan.zone_strengths, dtype=np.float64).reshape(-1)
@@ -272,7 +283,6 @@ def plan_steps(plan: Plan, scenario: Scenario) -> list[dict]:
             "단계": i,
             "시간": f"{ph.duration_s:.1f}초",
             "자세": " / ".join(pose_instructions(ph.pose, scenario)),
-            "바람 세기": " · ".join(f"{ZONE_LABELS[z]} {v:.0%}" for z, v in zip(ZONE_NAMES, zones)),
             "분사구 평균": f"{fans.mean():.0%}",
         })
     return rows

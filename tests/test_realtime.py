@@ -364,6 +364,11 @@ def _p5_plan(scenario="default", weight=0.1):
     return Plan(phases, zones)
 
 
+def plan_guide_zone_labels():
+    from airis.realtime import plan_guide as pg
+    return list(pg.ZONE_LABELS.values())
+
+
 def _clear_streamlit_caches() -> None:
     """대시보드의 st.cache_data 는 **프로세스 전역**이라 테스트끼리 샌다.
 
@@ -407,8 +412,15 @@ def test_dashboard_renders_plan_when_model_exists(monkeypatch):
         str(getattr(c, "value", "")) for c in at.caption)
     assert f"단계 {len(plan.phases)}개" in text, "단계 수를 그대로 써야 한다"
     assert "처음과 마지막 단계" in text
-    # 비교 표 다섯 번째 칸은 좁은 칸에서 잘려 글로 옮겼다 (칸을 다시 늘리면 잘린다)
-    assert "총 시간: 그 자세로 한 바퀴 돌기" in text
+    # 모드 B 는 좁은 칸 안에 두면 단계 표의 안내 문장이 잘린다 → 화면 전체 너비에 둔다
+    in_column = any("자세를 바꿔 가는 계획" in str(getattr(e, "label", ""))
+                    for col in at.columns for e in col.expander)
+    assert not in_column, "모드 B 가 다시 좁은 칸 안으로 들어갔다 (단계 표가 잘린다)"
+    assert any("자세를 바꿔 가는 계획" in str(getattr(e, "label", "")) for e in at.expander)
+    # 벽별 바람 세기는 표에서 뺐으니 표 밖 한 줄에 반드시 남아 있어야 한다
+    assert "바람 세기(계획 전체 공통)" in text
+    for z in plan_guide_zone_labels():
+        assert z in text
     # 내려받기 단추가 두 개 (모드 A·B)
     assert len(at.get("download_button")) == 2
 
@@ -425,8 +437,9 @@ def test_plan_steps_shows_every_phase():
     for row, ph in zip(rows, plan.phases):
         assert row["시간"] == f"{ph.duration_s:.1f}초"
         assert row["자세"], "단계마다 자세 안내 문장이 있어야 한다"
-        for z in pg.ZONE_LABELS.values():                 # 벽별 바람 세기를 쉬운 말로
-            assert z in row["바람 세기"]
+        assert "바람 세기" not in row, "아홉 줄이 모두 같은 긴 문장이라 표 밖으로 뺐다"
+    for z in pg.ZONE_LABELS.values():                     # 벽별 바람 세기를 쉬운 말로 (표 밖 한 줄)
+        assert z in pg.zone_text(plan)
     # 칸 수가 다른 계획도 그대로 그린다
     assert len(pg.plan_steps(pg.rotation_plan(PoseParams(), steps=3, step_s=4.0), sc)) == 3
 
